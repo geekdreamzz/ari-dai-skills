@@ -597,8 +597,9 @@ Publish all artifacts to the target datasphere in one pass. Idempotent — safe 
 7. **Ensure status groups** — for each `statusGroups` entry, GET then POST if missing.
 
 8. **Ensure initiative Plan Mode** — if `tasks.yaml` has an `initiative` field (any task with `initiative: <slug>`):
-   - GET `/api/v2/dataspheres/:dsId/plan-modes` — look for a plan mode whose filter includes the initiative tag.
+   - GET `/api/v2/dataspheres/:dsId/plan-modes` — look for a plan mode whose `tagFilter` includes the initiative tag.
    - If none found, POST `/api/v2/dataspheres/:dsId/plan-modes` with `{ name: "<initiative> Initiative", tagFilter: ["<initiative>"] }`.
+   - **Capture and store the plan mode `id`** from the response (create or existing) — used in the final summary URL.
    - This creates a dedicated planner board scoped to all tasks tagged with this initiative — one user can have many projects/initiatives, each with its own board.
 
 9. **Publish tasks** — POST `/api/v2/dataspheres/:dsId/tasks/bulk` with full task list. `content` must be the full hand-off doc HTML.
@@ -620,7 +621,7 @@ Publish all artifacts to the target datasphere in one pass. Idempotent — safe 
     POST as `{ status: "PUBLISHED", isPubliclyVisible: false }`.
 
 14. **Print summary — always use `$DATASPHERES_PUBLIC_URL`, never `$BASE_URL`, for these links:**
-    - Planner (initiative board): `$DATASPHERES_PUBLIC_URL/app/<uri>/planner`
+    - Planner (initiative board): `$DATASPHERES_PUBLIC_URL/app/<uri>/planner?mode=<planModeId>` — use the plan mode ID captured in step 8
     - Dashboard: `$DATASPHERES_PUBLIC_URL/app/<uri>/docs/<dashboard-slug>`
     - Tracker dataset: `$DATASPHERES_PUBLIC_URL/app/<uri>/datasets/<dataset-slug>`
 
