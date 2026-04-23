@@ -91,16 +91,22 @@ Feature Spec (Dataspheres page)
 Credentials only. Shared across all projects.
 
 ```bash
-DATASPHERES_API_KEY=dsk_...            # your developer key
-DATASPHERES_BASE_URL=http://localhost:5173   # local dev (default)
+DATASPHERES_API_KEY=dsk_...                    # your developer key
+DATASPHERES_BASE_URL=http://localhost:5173     # API calls (internal — never changes)
+DATASPHERES_PUBLIC_URL=https://dev.dataspheres.ai  # links shown to user (dev tunnel or prod)
 ```
+
+`BASE_URL` is used for all API calls. `PUBLIC_URL` is used exclusively for the clickable links printed at the end of every publish — it is whatever URL the user can actually open in their browser.
+
+- Local dev with tunnel: `PUBLIC_URL=https://dev.dataspheres.ai`
+- Production: `PUBLIC_URL=https://dataspheres.ai`
 
 Load before any SDD command:
 ```bash
 export $(grep -v '^#' ~/.dataspheres.env | xargs)
 ```
 
-**NEVER put `BASE_URL=https://dataspheres.ai` here.** Local is the default; production is an explicit `/sdd promote` step.
+**NEVER put `DATASPHERES_DEFAULT_URI` here.** The target datasphere is per-project and always comes from `tasks.yaml:targetDatasphere`.
 
 ### Project-level: `specs/<project>/tasks.yaml`
 
@@ -613,12 +619,10 @@ Publish all artifacts to the target datasphere in one pass. Idempotent — safe 
     ```
     POST as `{ status: "PUBLISHED", isPubliclyVisible: false }`.
 
-14. **Print summary:**
-    - Public docs: `$BASE_URL/docs/<uri>`
-    - Planner (initiative board): `$BASE_URL/app/<uri>/planner?initiative=<initiative>`
-    - Planner (all): `$BASE_URL/app/<uri>/planner`
-    - Tracker: `$BASE_URL/app/<uri>/datasets/<dataset-slug>`
-    - Dashboard: `$BASE_URL/app/<uri>/docs/<dashboard-slug>`
+14. **Print summary — always use `$DATASPHERES_PUBLIC_URL`, never `$BASE_URL`, for these links:**
+    - Planner (initiative board): `$DATASPHERES_PUBLIC_URL/app/<uri>/planner`
+    - Dashboard: `$DATASPHERES_PUBLIC_URL/app/<uri>/docs/<dashboard-slug>`
+    - Tracker dataset: `$DATASPHERES_PUBLIC_URL/app/<uri>/datasets/<dataset-slug>`
 
 ### `/sdd publish <project> --dry-run`
 
@@ -720,6 +724,7 @@ Every SDD-managed datasphere must surface quick-links. Render this template and 
    ```bash
    echo "DATASPHERES_API_KEY=dsk_..." >> ~/.dataspheres.env
    echo "DATASPHERES_BASE_URL=http://localhost:5173" >> ~/.dataspheres.env
+   echo "DATASPHERES_PUBLIC_URL=https://dev.dataspheres.ai" >> ~/.dataspheres.env
    ```
 3. Create a `specs/<my-project>/` directory with your spec markdown files.
 4. Add `tasks.yaml` with `targetDatasphere: <your-datasphere-uri>`.
