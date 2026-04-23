@@ -79,12 +79,19 @@ link_or_copy() {
   fi
 
   mkdir -p "$(dirname "$dst")"
-  if ln -sf "$src" "$dst" 2>/dev/null; then
+  if ln -sf "$src" "$dst" 2>/dev/null && readlink "$dst" &>/dev/null; then
     echo "  (symlinked — edits in dai-skills are live)"
+  elif command -v powershell.exe &>/dev/null; then
+    # Windows: use directory junction (no admin needed, live like a symlink)
+    local win_src win_dst
+    win_src=$(echo "$src" | sed 's|/|\\|g' | sed 's|^\\\\?\\||')
+    win_dst=$(echo "$dst" | sed 's|/|\\|g' | sed 's|^\\\\?\\||')
+    powershell.exe -NoProfile -Command "New-Item -ItemType Junction -Path '$win_dst' -Target '$win_src' -Force | Out-Null" 2>/dev/null \
+      && echo "  (junction — edits in dai-skills are live)" \
+      || { cp -r "$src" "$dst"; echo "  (copied — junction failed)"; }
   else
-    # Symlink failed (Windows without Developer Mode) — fall back to copy
     cp -r "$src" "$dst"
-    echo "  (copied — enable Windows Developer Mode for live symlinks)"
+    echo "  (copied — enable symlinks for live updates)"
   fi
 }
 
