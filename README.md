@@ -28,20 +28,27 @@ Unzip it, then open the folder in your IDE:
 - **Cursor** — `File → Open Folder`
 - **VS Code + Copilot** — `File → Open Folder`
 
-### 3. Tell your AI to set it up
+### 3. Add your credentials
 
-Paste this into the chat (fill in your key and workspace):
+Create a file called `.env` in this folder (it's gitignored — your key stays local):
 
 ```
-Set up dai-skills for me.
-
-My Dataspheres AI API key: dsk_your_key_here
-My workspace URI: my-workspace
-
-Please install and configure everything so I can use Dataspheres AI tools.
+DATASPHERES_API_KEY=dsk_your_key_here
+DATASPHERES_BASE_URL=https://dataspheres.ai
+DATASPHERES_DEFAULT_URI=my-workspace-uri
 ```
 
-Your AI reads this folder, runs the install commands, and configures the MCP connection automatically.
+Your workspace URI is the slug in the URL when you're logged in: `dataspheres.ai/app/my-workspace-uri/...`
+
+**Don't paste your API key into chat** — it ends up in conversation history.
+
+### 4. Tell your AI to set it up
+
+```
+Set up dai-skills for me. My credentials are in the .env file.
+```
+
+Your AI reads this folder and the `.env` file, runs the install commands, and configures the MCP connection automatically.
 
 That's it. Once it confirms setup is done, you can ask it to do anything in your Dataspheres AI workspace.
 
