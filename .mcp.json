@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "dai-skills": {
+      "command": "uvx",
+      "args": ["dai-skills", "mcp", "start"],
+      "env": {
+        "DATASPHERES_API_KEY": "${DATASPHERES_API_KEY}",
+        "DATASPHERES_BASE_URL": "${DATASPHERES_BASE_URL}",
+        "DATASPHERES_DEFAULT_URI": "${DATASPHERES_DEFAULT_URI}"
+      }
+    }
+  }
+}

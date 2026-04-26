@@ -22,12 +22,13 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SKILLS_DIR="$SCRIPT_DIR/skills"
 
 usage() {
   echo "Usage: ./install.sh <skill> [--project /path] [--copy] [--ide claude|cursor|copilot]"
   echo ""
   echo "Available skills:"
-  for dir in "$SCRIPT_DIR"/*/; do
+  for dir in "$SKILLS_DIR"/*/; do
     skill=$(basename "$dir")
     [[ -f "$dir/SKILL.md" ]] && echo "  - $skill"
   done
@@ -97,7 +98,7 @@ link_or_copy() {
 
 install_skill() {
   local skill_name="$1"
-  local source_dir="$SCRIPT_DIR/$skill_name"
+  local source_dir="$SKILLS_DIR/$skill_name"
 
   if [[ ! -d "$source_dir" ]]; then
     echo "Error: skill '$skill_name' not found"
@@ -138,7 +139,7 @@ install_skill() {
 
 if [[ "$INSTALL_ALL" == true ]]; then
   count=0
-  for dir in "$SCRIPT_DIR"/*/; do
+  for dir in "$SKILLS_DIR"/*/; do
     skill=$(basename "$dir")
     if [[ -f "$dir/SKILL.md" ]]; then
       install_skill "$skill"

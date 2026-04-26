@@ -1,4 +1,31 @@
-.sdd/
-*.local
-.env
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+dist/
+build/
+*.egg-info/
+
+# Local state DB
+*.db
+
+# User workspace
+workspace/
+
+# IDE
+.vscode/
+.idea/
+.claude/
+
+# OS
 .DS_Store
+Thumbs.db
+
+# Test
+.pytest_cache/
+.coverage
+
+# Local env
+.env
+*.local
+.sdd/

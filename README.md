@@ -1,114 +1,103 @@
+<div align="center">
+
 # dai-skills
 
-Claude Code skills for [Dataspheres AI](https://dataspheres.ai).
+**Give your AI assistant full control over Dataspheres AI**
 
-Each skill is a slash command that runs inside Claude Code. Skills require a Dataspheres AI developer key — they work against any datasphere you own, on any project.
+[![PyPI](https://img.shields.io/pypi/v/dai-skills)](https://pypi.org/project/dai-skills/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
----
-
-## Skills
-
-| Skill | Command | What it does |
-|---|---|---|
-| [all-dai-sdd](./all-dai-sdd/SKILL.md) | `/all-dai-sdd` | Spec-Driven Development — publish specs, track tasks, live dashboard |
+</div>
 
 ---
 
-## Getting started
+## Setup (3 steps)
 
-### 1. Get a Dataspheres AI developer key
+### 1. Get your API key
 
-Log in to [dataspheres.ai](https://dataspheres.ai), open any datasphere, go to **Settings → Developers**, and create an API key.
+Sign in at [dataspheres.ai](https://dataspheres.ai) → open any datasphere → **Settings → Developers → New Key**.
 
-### 2. Set up your credentials
+Your key looks like `dsk_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx`.
+
+### 2. Download and open this folder
+
+[**⬇ Download ZIP**](https://github.com/geekdreamzz/ari-dai-skills/archive/refs/heads/main.zip) — no GitHub account needed.
+
+Unzip it, then open the folder in your IDE:
+- **Claude Code** — `File → Open Folder`
+- **Cursor** — `File → Open Folder`
+- **VS Code + Copilot** — `File → Open Folder`
+
+### 3. Tell your AI to set it up
+
+Paste this into the chat (fill in your key and workspace):
+
+```
+Set up dai-skills for me.
+
+My Dataspheres AI API key: dsk_your_key_here
+My workspace URI: my-workspace
+
+Please install and configure everything so I can use Dataspheres AI tools.
+```
+
+Your AI reads this folder, runs the install commands, and configures the MCP connection automatically.
+
+That's it. Once it confirms setup is done, you can ask it to do anything in your Dataspheres AI workspace.
+
+---
+
+## Try it
+
+```
+Create a task called "Launch checklist" in my planner
+Draft a newsletter about this week's updates
+Run research on our top three competitors
+List all my pages and summarize them
+```
+
+---
+
+## What you get
+
+14 skill domains — pages, planner, datasets, library, newsletters, surveys, research, dataspheres, sequences, presentations, AI drafting, spec-driven development, context management, and export.
+
+---
+
+## Manual setup (if you prefer to do it yourself)
 
 ```bash
-cat >> ~/.dataspheres.env << 'EOF'
-DATASPHERES_API_KEY=dsk_your_key_here
-DATASPHERES_BASE_URL=http://localhost:5173
-EOF
-```
+# 1. Install uv (fast Python runner)
+curl -LsSf https://astral.sh/uv/install.sh | sh      # Mac/Linux
+powershell -c "irm https://astral.sh/uv/install.ps1 | iex"  # Windows
 
-`DATASPHERES_BASE_URL` points to your local dev server by default. Change to `https://dataspheres.ai` for production-only workflows.
+# 2. Install dai-skills
+uv tool install dai-skills
 
-### 3. Install skills
+# 3. Authenticate
+dai login --key dsk_your_key_here --base-url https://dataspheres.ai
 
-Clone this repo and run `install.sh` to add skills to a project:
+# 4. Set your workspace
+dai use my-workspace
 
-```bash
-git clone https://github.com/dataspheres-ai/dai-skills
-cd dai-skills
-
-# Install into a specific project
-./install.sh all-dai-sdd --project /path/to/your/project
-
-# Install all skills into a project
-./install.sh --all --project /path/to/your/project
-```
-
-This copies the skill into `.claude/skills/<skill-name>/` in your project directory. Claude Code picks it up automatically — no restart needed.
-
-### 4. Use a skill
-
-Open Claude Code in your project and invoke:
-
-```
-/all-dai-sdd publish specs/my-feature
+# 5. Check everything works
+dai status
 ```
 
 ---
 
-## Using all-dai-sdd
+## Keeping it updated
 
-Minimal project setup — two files in your repo:
+Re-download the ZIP and open the new folder, or tell your AI:
 
 ```
-specs/my-feature/
-├── 001-vision.md        ← spec pages (CommonMark + YAML frontmatter)
-├── tasks.yaml           ← task definitions + targetDatasphere
-└── tracker-schema.yaml  ← dataset schema + dashboard config
-```
-
-`tasks.yaml` must include `targetDatasphere` — the URI of the datasphere to publish to:
-
-```yaml
-project: my-feature
-targetDatasphere: my-datasphere-uri
-```
-
-Then run `/all-dai-sdd publish specs/my-feature` and get back links to:
-- Public spec docs
-- Planner (filtered by initiative)
-- Live tracker dataset
-- Progress dashboard
-
-See [all-dai-sdd/SKILL.md](./all-dai-sdd/SKILL.md) for the full workflow.
-
----
-
-## Updating skills
-
-Skills are plain markdown files. To update:
-
-```bash
-cd dai-skills
-git pull
-./install.sh all-dai-sdd --project /path/to/your/project
+Update dai-skills to the latest version
 ```
 
 ---
 
-## Contributing
+<div align="center">
 
-1. Fork this repo.
-2. Add or edit a skill in its own directory (`my-skill/SKILL.md`).
-3. Update this README's skills table.
-4. Open a PR.
+Built by [Dataspheres AI](https://dataspheres.ai) · *Use all dai. Every dai.*
 
-Skill frontmatter must include `name`, `description`, and `argument-hint`.
-
----
-
-## License
-
-MIT
+</div>
