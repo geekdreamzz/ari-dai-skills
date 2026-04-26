@@ -47,7 +47,11 @@ Set up dai-skills for me. My credentials are in the .env file.
 
 Your AI reads this folder and the `.env` file, runs the install commands, and configures the MCP connection automatically.
 
-That's it. Once it confirms setup is done, you can ask it to do anything in your Dataspheres AI workspace.
+When it's done, it will ask you to do two things:
+1. **Type `/mcp` in the chat input** — find `dai-skills` in the list and click Enable
+2. **Reload the window** — `Cmd/Ctrl+Shift+P → Reload Window`
+
+That's it. After the reload, Ari is fully connected and ready to work.
 
 ---
 

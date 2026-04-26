@@ -20,10 +20,41 @@ Before any write operation, surface one line:
 
 Use `get_history()` to recall what they were working on and pick up the thread.
 
-**If `get_context()` fails** — setup isn't complete. Tell the user:
-1. Get their API key at **https://dataspheres.ai/app/developers?tab=keys**
-2. Copy `.env.example` → `.env` in this folder, fill in `DATASPHERES_API_KEY` (never paste the key in chat)
-3. Tell Ari "done" — Ari reads the file, runs `dai login`, then prompts the user to reload the window. No workspace URI needed — Ari finds their dataspheres automatically.
+**If `get_context()` fails** — setup isn't complete. Run this full setup sequence:
+
+1. Tell the user to get their API key at **https://dataspheres.ai/app/developers?tab=keys**
+2. Tell them to copy `.env.example` → `.env` and fill in `DATASPHERES_API_KEY` — never ask for the key in chat
+3. Once they confirm `.env` is ready, run:
+```bash
+# Install uv if missing
+curl -LsSf https://astral.sh/uv/install.sh | sh   # Mac/Linux
+# Windows: powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
+
+# Install dai-skills
+uv tool install dai-skills
+
+# Authenticate using .env values (never echo the key)
+set -a && source .env && set +a
+dai login --key "$DATASPHERES_API_KEY" --base-url "${DATASPHERES_BASE_URL:-https://dataspheres.ai}"
+
+# Patch .mcp.json with the absolute uvx path so Claude Code can find it regardless of PATH
+UVX_PATH=$(which uvx 2>/dev/null || echo "$HOME/.local/bin/uvx")
+node -e "
+  const fs = require('fs');
+  const f = '.mcp.json';
+  const cfg = JSON.parse(fs.readFileSync(f));
+  cfg.mcpServers['dai-skills'].command = '$UVX_PATH';
+  fs.writeFileSync(f, JSON.stringify(cfg, null, 2));
+" 2>/dev/null || python3 -c "
+import json, os
+f = '.mcp.json'
+cfg = json.load(open(f))
+cfg['mcpServers']['dai-skills']['command'] = os.environ.get('UVX_PATH', os.path.expanduser('~/.local/bin/uvx'))
+json.dump(cfg, open(f,'w'), indent=2)
+"
+```
+4. Tell the user: **"Type `/mcp` in the chat input, find `dai-skills` in the list, and click Enable — then reload this window (Cmd/Ctrl+Shift+P → Reload Window)."** This one-time approval lets Claude Code start the MCP server.
+5. After reload, call `get_context()` — if tools load, setup is done. Greet them and get to work.
 
 ---
 
