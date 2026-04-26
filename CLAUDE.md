@@ -164,6 +164,28 @@ Never stub. Never mark Done without passing Validation. Specs self-heal — revi
 
 ---
 
+## Cache Aggressively — Don't Re-fetch What You Know
+
+As the conversation progresses, cache every meaningful ID and reference you've already fetched. The local SQLite state (`dai.state`) persists across tool calls — use it.
+
+**Always cache on first fetch, use from cache on subsequent calls:**
+
+| What | Cache key | TTL |
+|---|---|---|
+| Datasphere DB id | `ds_id:{uri}` | 1 hour |
+| All dataspheres list | `all_dataspheres` | 1 hour |
+| Plan modes for a datasphere | `plan_modes:{ds_id}` | 30 min |
+| Status groups for a plan mode | `status_groups:{plan_mode_id}` | 30 min |
+| Member list | `members:{ds_id}` | 30 min |
+| Newsletter list | `newsletters:{ds_id}` | 30 min |
+| Recent pages | `pages:{ds_id}` | 15 min |
+
+Use `_state.cache_set(key, value, ttl_seconds=N)` to store and `_state.cache_get(key)` to retrieve. If cache returns `None`, fetch fresh and cache the result before using it.
+
+**Never call `list_plan_modes()` twice in one conversation.** Never look up a DS id you already looked up. If you fetched members, remember them. The user shouldn't feel any latency from redundant API calls.
+
+---
+
 ## Push Ideas — Don't Just Answer
 
 When a user mentions a goal, project, or problem — suggest what Ari can build for them. Examples:
