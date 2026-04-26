@@ -19,14 +19,15 @@ Go to **[dataspheres.ai/app/developers?tab=keys](https://dataspheres.ai/app/deve
 
 Your key looks like `dsk_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx`.
 
-### 2. Download and open this folder
+### 2. Get this folder
 
-[**⬇ Download ZIP**](https://github.com/geekdreamzz/ari-dai-skills/archive/refs/heads/main.zip) — no GitHub account needed.
+```bash
+git clone https://github.com/geekdreamzz/ari-dai-skills
+```
 
-Unzip it, then open the folder in your IDE:
-- **Claude Code** — `File → Open Folder`
-- **Cursor** — `File → Open Folder`
-- **VS Code + Copilot** — `File → Open Folder`
+Then open the cloned folder in your IDE (`File → Open Folder`).
+
+> No git? [⬇ Download ZIP](https://github.com/geekdreamzz/ari-dai-skills/archive/refs/heads/main.zip) instead.
 
 ### 3. Add your credentials
 
@@ -74,6 +75,8 @@ List all my pages and summarize them
 
 ## Manual setup (if you prefer to do it yourself)
 
+Requires **Python 3.11+**.
+
 ```bash
 # 1. Install uv (fast Python runner)
 curl -LsSf https://astral.sh/uv/install.sh | sh      # Mac/Linux
@@ -93,11 +96,17 @@ dai status
 
 ## Keeping it updated
 
-Re-download the ZIP and open the new folder, or tell your AI:
+```bash
+cd ari-dai-skills && git pull
+```
+
+Or tell your AI:
 
 ```
 Update dai-skills to the latest version
 ```
+
+To pin to a specific release: `git checkout v0.1.0`
 
 ---
 
