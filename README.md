@@ -35,10 +35,7 @@ Create a file called `.env` in this folder (it's gitignored — your key stays l
 ```
 DATASPHERES_API_KEY=dsk_your_key_here
 DATASPHERES_BASE_URL=https://dataspheres.ai
-DATASPHERES_DEFAULT_URI=my-workspace-uri
 ```
-
-Your workspace URI is the slug in the URL when you're logged in: `dataspheres.ai/app/my-workspace-uri/...`
 
 **Don't paste your API key into chat** — it ends up in conversation history.
 
@@ -84,10 +81,7 @@ uv tool install dai-skills
 # 3. Authenticate
 dai login --key dsk_your_key_here --base-url https://dataspheres.ai
 
-# 4. Set your workspace
-dai use my-workspace
-
-# 5. Check everything works
+# 4. Check everything works
 dai status
 ```
 
