@@ -15,7 +15,7 @@
 
 ### 1. Get your API key
 
-Sign in at [dataspheres.ai](https://dataspheres.ai) → open any datasphere → **Settings → Developers → New Key**.
+Go to **[dataspheres.ai/app/developers?tab=keys](https://dataspheres.ai/app/developers?tab=keys)** and create a new key.
 
 Your key looks like `dsk_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx`.
 

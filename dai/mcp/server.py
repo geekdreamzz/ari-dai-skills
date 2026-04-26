@@ -36,6 +36,11 @@ import dai.mcp.tools.presentations  # noqa: F401
 import dai.mcp.tools.export         # noqa: F401
 import dai.mcp.tools.sdd            # noqa: F401
 
+# Dynamic loader — registers every tool from /api/mcp/schema that isn't
+# already covered by a hand-written module above. Runs once at startup.
+from dai.mcp.dynamic import load_remote_tools as _load_remote_tools
+_load_remote_tools()
+
 
 def main() -> None:
     """Entry point for `dai mcp start`."""
