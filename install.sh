@@ -24,6 +24,18 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SKILLS_DIR="$SCRIPT_DIR/skills"
 
+# Preflight: Python 3.11+ required (uv manages its own Python, so this only matters for plain pip users)
+if command -v python3 >/dev/null 2>&1; then
+  PY_VER=$(python3 -c 'import sys; print(sys.version_info[:2])' 2>/dev/null || echo "(0, 0)")
+  if python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3,11) else 1)' 2>/dev/null; then
+    : # ok
+  else
+    echo "Warning: Python 3.11+ required. Found: $(python3 --version 2>&1)"
+    echo "  Use uv (recommended) — it bundles its own Python:"
+    echo "  curl -LsSf https://astral.sh/uv/install.sh | sh && uv tool install dai-skills"
+  fi
+fi
+
 usage() {
   echo "Usage: ./install.sh <skill> [--project /path] [--copy] [--ide claude|cursor|copilot]"
   echo ""

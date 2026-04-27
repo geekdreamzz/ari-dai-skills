@@ -19,40 +19,33 @@ Go to **[dataspheres.ai/app/developers?tab=keys](https://dataspheres.ai/app/deve
 
 Your key looks like `dsk_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx`.
 
-### 2. Get this folder
+### 2. Clone and configure
 
 ```bash
 git clone https://github.com/geekdreamzz/ari-dai-skills
+cd ari-dai-skills
+cp .env.example .env
 ```
 
-Then open the cloned folder in your IDE (`File → Open Folder`).
+Open `.env` and replace `dsk_your_key_here` with your real key. **Don't paste keys into chat** — they end up in conversation history.
 
-> No git? [⬇ Download ZIP](https://github.com/geekdreamzz/ari-dai-skills/archive/refs/heads/main.zip) instead.
+> No git? [⬇ Download ZIP](https://github.com/geekdreamzz/ari-dai-skills/archive/refs/heads/main.zip) and unzip it instead.
 
-### 3. Add your credentials
+### 3. Run bootstrap
 
-Create a file called `.env` in this folder (it's gitignored — your key stays local):
-
-```
-DATASPHERES_API_KEY=dsk_your_key_here
-DATASPHERES_BASE_URL=https://dataspheres.ai
+```bash
+./bootstrap.sh
 ```
 
-**Don't paste your API key into chat** — it ends up in conversation history.
+This installs uv (if needed), installs dai-skills, authenticates against your API key, and configures the MCP connection — all in one shot.
 
-### 4. Tell your AI to set it up
-
-```
-Set up dai-skills for me. My credentials are in the .env file.
-```
-
-Your AI reads this folder and the `.env` file, runs the install commands, and configures the MCP connection automatically.
-
-When it's done, it will ask you to do two things:
-1. **Type `/mcp` in the chat input** — find `dai-skills` in the list and click Enable
+When it finishes, it will tell you to:
+1. **Type `/mcp` in Claude Code** — find `dai-skills` and click Enable
 2. **Reload the window** — `Cmd/Ctrl+Shift+P → Reload Window`
 
-That's it. After the reload, Ari is fully connected and ready to work.
+That's it. After the reload, open Claude Code in this folder and Ari is ready.
+
+> **Something not working?** Run `dai doctor` — it checks every layer and tells you exactly what to fix.
 
 ---
 
@@ -75,21 +68,21 @@ List all my pages and summarize them
 
 ## Manual setup (if you prefer to do it yourself)
 
-Requires **Python 3.11+**.
+Requires **Python 3.11+** and [uv](https://docs.astral.sh/uv/).
 
 ```bash
-# 1. Install uv (fast Python runner)
+# Install uv
 curl -LsSf https://astral.sh/uv/install.sh | sh      # Mac/Linux
 powershell -c "irm https://astral.sh/uv/install.ps1 | iex"  # Windows
 
-# 2. Install dai-skills
+# Install dai-skills
 uv tool install dai-skills
 
-# 3. Authenticate
-dai login --key dsk_your_key_here --base-url https://dataspheres.ai
+# Authenticate (reads DATASPHERES_BASE_URL from env if set, defaults to prod)
+dai login --key dsk_your_key_here
 
-# 4. Check everything works
-dai status
+# Verify everything
+dai doctor
 ```
 
 ---
