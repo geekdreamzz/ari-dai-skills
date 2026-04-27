@@ -8,29 +8,16 @@ from typing import Optional
 from datetime import datetime, timezone
 
 from dai.mcp.registry import mcp
+from dai.mcp._ds import resolve_ds_id
 from dai.client import DaiClient
 import dai.state as _state
-
-
-def _ds_id() -> str:
-    uri = _state.get_active_datasphere()
-    if not uri:
-        raise ValueError("No active datasphere. Run: dai use <uri>")
-    client = DaiClient.from_state()
-    cached = _state.cache_get(f"ds_id:{uri}")
-    if cached:
-        return cached
-    result = client.get(f"/api/v1/dataspheres/{uri}")
-    ds_id = result["id"]
-    _state.cache_set(f"ds_id:{uri}", ds_id, ttl_seconds=3600)
-    return ds_id
 
 
 @mcp.tool()
 def sdd_status(plan_mode_id: str) -> dict:
     """Get initiative progress: count of tasks by column (North Stars/Epics/Execution/Validation/Done)."""
     client = DaiClient.from_state()
-    ds = _ds_id()
+    ds = resolve_ds_id()
     # Get all tasks in this plan mode
     tasks = client.get(f"/api/v2/dataspheres/{ds}/tasks", params={"planModeId": plan_mode_id, "limit": 500})
     if not isinstance(tasks, list):
@@ -51,7 +38,7 @@ def sdd_status(plan_mode_id: str) -> dict:
 def sdd_task_start(task_id: str, plan_mode_id: str, execution_group_id: str) -> dict:
     """Mark an SDD Execution task as started. Stamps startDate and posts a comment."""
     client = DaiClient.from_state()
-    ds = _ds_id()
+    ds = resolve_ds_id()
     now = datetime.now(timezone.utc).isoformat()
     client.patch(f"/api/v2/dataspheres/{ds}/tasks/{task_id}", json={"statusGroupId": execution_group_id, "startDate": now})
     client.post(f"/api/v2/dataspheres/{ds}/tasks/{task_id}/comments", json={
@@ -66,7 +53,7 @@ def sdd_task_done(task_id: str, done_group_id: str, summary: str,
                    verified_criteria: Optional[list[str]] = None, screenshot_urls: Optional[list[str]] = None) -> dict:
     """Mark an SDD Execution task as Done. Posts completion comment and moves to Done column."""
     client = DaiClient.from_state()
-    ds = _ds_id()
+    ds = resolve_ds_id()
     criteria_list = "\n".join(f"- {c} ✅" for c in (verified_criteria or []))
     comment = f"[all-dai-sdd-system-message]\n\n**Completion summary:** {summary}"
     if criteria_list:

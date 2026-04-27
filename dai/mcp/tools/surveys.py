@@ -66,3 +66,10 @@ def get_analytics(survey_id: str) -> dict:
     """Get survey analytics — response counts, completion rates, answer distributions."""
     client = DaiClient.from_state()
     return client.get(f"/api/surveys/{survey_id}/analytics")
+
+
+@mcp.tool()
+def delete_survey(survey_id: str) -> dict:
+    """Delete a survey and all its questions and responses."""
+    client = DaiClient.from_state()
+    return client.delete(f"/api/surveys/{survey_id}")

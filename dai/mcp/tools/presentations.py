@@ -19,9 +19,14 @@ def _ds() -> str:
 def list_presentations() -> list:
     """List all presentations in the active datasphere."""
     client = DaiClient.from_state()
-    result = client.get(f"/api/v1/dataspheres/{_ds()}/presentations")
-    items = result if isinstance(result, list) else result.get("presentations", [])
-    return link(items, "presentation")
+    try:
+        result = client.get(f"/api/v1/dataspheres/{_ds()}/presentations")
+        items = result if isinstance(result, list) else result.get("presentations", [])
+        return link(items, "presentation")
+    except Exception as e:
+        if "404" in str(e) or "not found" in str(e).lower():
+            return []
+        raise
 
 
 @mcp.tool()

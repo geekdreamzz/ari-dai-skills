@@ -4,22 +4,8 @@ from __future__ import annotations
 from typing import Optional, Any
 from dai.mcp.registry import mcp
 from dai.mcp._links import link
+from dai.mcp._ds import resolve_ds_id
 from dai.client import DaiClient
-import dai.state as _state
-
-
-def _ds_id() -> str:
-    uri = _state.get_active_datasphere()
-    if not uri:
-        raise ValueError("No active datasphere. Run: dai use <uri>")
-    cached = _state.cache_get(f"ds_id:{uri}")
-    if cached:
-        return cached
-    client = DaiClient.from_state()
-    result = client.get(f"/api/v1/dataspheres/{uri}")
-    ds_id = result["id"]
-    _state.cache_set(f"ds_id:{uri}", ds_id, ttl_seconds=3600)
-    return ds_id
 
 
 @mcp.tool()
@@ -31,7 +17,7 @@ def list_sequences(status: Optional[str] = None, trigger_type: Optional[str] = N
         params["status"] = status
     if trigger_type:
         params["triggerType"] = trigger_type
-    result = client.get(f"/api/v2/dataspheres/{_ds_id()}/sequences", params=params)
+    result = client.get(f"/api/v2/dataspheres/{resolve_ds_id()}/sequences", params=params)
     items = result if isinstance(result, list) else result.get("sequences", [])
     return link(items, "sequence")
 
@@ -40,7 +26,7 @@ def list_sequences(status: Optional[str] = None, trigger_type: Optional[str] = N
 def get_sequence(sequence_id: str) -> dict:
     """Get a sequence by ID, including its graph and run status."""
     client = DaiClient.from_state()
-    result = client.get(f"/api/v2/dataspheres/{_ds_id()}/sequences/{sequence_id}")
+    result = client.get(f"/api/v2/dataspheres/{resolve_ds_id()}/sequences/{sequence_id}")
     return link(result, "sequence")
 
 
@@ -54,7 +40,7 @@ def create_sequence(name: str, description: Optional[str] = None, trigger_type: 
         payload["description"] = description
     if max_cost is not None:
         payload["maxCost"] = max_cost
-    result = client.post(f"/api/v2/dataspheres/{_ds_id()}/sequences", json=payload)
+    result = client.post(f"/api/v2/dataspheres/{resolve_ds_id()}/sequences", json=payload)
     return link(result, "sequence")
 
 
@@ -65,7 +51,7 @@ def execute_sequence(sequence_id: str, input_data: Optional[dict] = None) -> dic
     payload: dict[str, Any] = {}
     if input_data:
         payload["inputData"] = input_data
-    return client.post(f"/api/v2/dataspheres/{_ds_id()}/sequences/{sequence_id}/execute", json=payload)
+    return client.post(f"/api/v2/dataspheres/{resolve_ds_id()}/sequences/{sequence_id}/execute", json=payload)
 
 
 @mcp.tool()
@@ -75,7 +61,7 @@ def list_executions(sequence_id: str, limit: int = 20, status: Optional[str] = N
     params: dict[str, Any] = {"limit": limit}
     if status:
         params["status"] = status
-    result = client.get(f"/api/v2/dataspheres/{_ds_id()}/sequences/{sequence_id}/executions", params=params)
+    result = client.get(f"/api/v2/dataspheres/{resolve_ds_id()}/sequences/{sequence_id}/executions", params=params)
     return result if isinstance(result, list) else result.get("executions", [])
 
 
@@ -83,4 +69,4 @@ def list_executions(sequence_id: str, limit: int = 20, status: Optional[str] = N
 def delete_sequence(sequence_id: str) -> dict:
     """Delete a sequence by ID."""
     client = DaiClient.from_state()
-    return client.delete(f"/api/v2/dataspheres/{_ds_id()}/sequences/{sequence_id}")
+    return client.delete(f"/api/v2/dataspheres/{resolve_ds_id()}/sequences/{sequence_id}")

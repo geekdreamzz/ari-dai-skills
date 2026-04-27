@@ -17,7 +17,7 @@ _PATTERNS: dict[str, str] = {
     "datasphere":       "/app/{uri}",
     "page":             "/app/{uri}/pages/{slug}",
     "page_public":      "/pages/{uri}/{slug}",
-    "task":             "/app/{uri}/planner",
+    "task":             "/app/{uri}/planner?task={id}",
     "plan_mode":        "/app/{uri}/planner?mode={id}",
     "newsletter":       "/app/{uri}/newsletters/{id}",
     "newsletter_public": "/newsletters/{id}",   # id = newsletter URI slug here
@@ -68,7 +68,7 @@ def _attach(item: dict, resource_type: str, uri: str, public_url: str, **explici
     """Mutate item in-place, adding _url."""
     # Pull common identifier fields from the item so callers don't have to
     inferred: dict[str, str] = {
-        "id":          str(item.get("id") or ""),
+        "id":          str(item.get("id") or item.get("planModeId") or ""),
         "slug":        str(item.get("slug") or item.get("id") or ""),
         "page_id":     str(item.get("pageId") or item.get("page_id") or item.get("id") or ""),
         "sequence_id": str(item.get("sequenceId") or item.get("sequence_id") or ""),

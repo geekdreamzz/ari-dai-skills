@@ -4,6 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 from dai.mcp.registry import mcp
+from dai.mcp._ds import resolve_ds_id
 from dai.client import DaiClient
 import dai.state as _state
 
@@ -13,19 +14,6 @@ def _ds() -> str:
     if not uri:
         raise ValueError("No active datasphere. Run: dai use <uri>")
     return uri
-
-
-def _ds_id() -> str:
-    # v2 endpoints require the DB id, not the URI. Resolve and cache.
-    uri = _ds()
-    cached = _state.cache_get(f"ds_id:{uri}")
-    if cached:
-        return cached
-    client = DaiClient.from_state()
-    result = client.get(f"/api/v1/dataspheres/{uri}")
-    ds_id = result["id"]
-    _state.cache_set(f"ds_id:{uri}", ds_id, ttl_seconds=3600)
-    return ds_id
 
 
 def _workspace() -> Path:
@@ -62,7 +50,7 @@ def export_tasks(plan_mode_id: Optional[str] = None, format: str = "json", filen
     params = {"limit": 500}
     if plan_mode_id:
         params["planModeId"] = plan_mode_id
-    tasks = client.get(f"/api/v2/dataspheres/{_ds_id()}/tasks", params=params)
+    tasks = client.get(f"/api/v2/dataspheres/{resolve_ds_id()}/tasks", params=params)
     if not isinstance(tasks, list):
         tasks = tasks.get("tasks", [])
     ws = _workspace()

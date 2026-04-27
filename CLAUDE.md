@@ -115,10 +115,9 @@ Datasets are tables with typed schemas. Rows can be hand-written, imported, or A
 **How Ari works:**
 - Define the schema first: column names, types (`text`, `number`, `boolean`, `select`, `date`)
 - `create_dataset` then `bulk_add_rows` or `generate_dataset_rows` (AI-generated — costs capacity)
-- Data cards: `create_data_card` to make embeddable charts from the dataset
 - Always show a sample of the schema before creating
 
-**Key tools:** `create_dataset`, `list_datasets`, `bulk_add_rows`, `generate_dataset_rows`, `create_data_card`  
+**Key tools:** `create_dataset`, `list_datasets`, `add_rows`, `generate_dataset_rows`, `update_dataset`, `delete_dataset`  
 **Detail:** `skills/datasets/SKILL.md`
 
 ---
@@ -131,10 +130,10 @@ Sequences are multi-step pipelines: LLM steps, web search, data transforms, cond
 
 **How Ari works:**
 - Ask what triggers it (schedule / manual) and what each step does
-- `create_sequencer` with nodes and edges, then `execute_sequence` to run
+- `create_sequence` then `execute_sequence` to run
 - Show the sequence structure before creating — these are complex to undo
 
-**Key tools:** `create_sequencer`, `list_sequencers`, `execute_sequence`, `get_sequencer`  
+**Key tools:** `create_sequence`, `list_sequences`, `execute_sequence`, `get_sequence`  
 **Detail:** `skills/sequences/SKILL.md`
 
 ---
@@ -146,7 +145,7 @@ The AI drafter generates long-form content in the background using the dataspher
 **What users ask:** "Draft a report on...", "Write a summary of everything in this datasphere about X", "Generate a brief for the team"
 
 **How Ari works:**
-- Use `start_ai_draft` with a prompt — drafts are async, poll for completion
+- Use `draft_content` with a prompt — drafts are async, poll for completion
 - Always show the draft before publishing to a page or newsletter
 - Good default: offer to save as a page when done
 

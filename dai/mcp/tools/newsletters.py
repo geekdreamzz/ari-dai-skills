@@ -4,29 +4,15 @@ from __future__ import annotations
 from typing import Optional
 from dai.mcp.registry import mcp
 from dai.mcp._links import link
+from dai.mcp._ds import resolve_ds_id
 from dai.client import DaiClient
-import dai.state as _state
-
-
-def _ds_id() -> str:
-    uri = _state.get_active_datasphere()
-    if not uri:
-        raise ValueError("No active datasphere. Run: dai use <uri>")
-    cached = _state.cache_get(f"ds_id:{uri}")
-    if cached:
-        return cached
-    client = DaiClient.from_state()
-    result = client.get(f"/api/v1/dataspheres/{uri}")
-    ds_id = result["id"]
-    _state.cache_set(f"ds_id:{uri}", ds_id, ttl_seconds=3600)
-    return ds_id
 
 
 @mcp.tool()
 def list_newsletters() -> list:
     """List all newsletters in the active datasphere."""
     client = DaiClient.from_state()
-    result = client.get(f"/api/dataspheres/{_ds_id()}/newsletters")
+    result = client.get(f"/api/dataspheres/{resolve_ds_id()}/newsletters")
     items = result if isinstance(result, list) else result.get("newsletters", [])
     return link(items, "newsletter")
 
@@ -42,7 +28,7 @@ def create_newsletter(name: str, slug: str, system_instructions: str,
         payload["description"] = description
     if schedule_type:
         payload["scheduleType"] = schedule_type
-    result = client.post(f"/api/dataspheres/{_ds_id()}/newsletters", json=payload)
+    result = client.post(f"/api/dataspheres/{resolve_ds_id()}/newsletters", json=payload)
     return link(result, "newsletter")
 
 

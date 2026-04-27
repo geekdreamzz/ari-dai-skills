@@ -41,3 +41,23 @@ def create_datasphere(name: str, uri: str, description: Optional[str] = None, pr
     client = DaiClient.from_state()
     result = client.post("/api/v1/dataspheres", json={"name": name, "uri": uri, "description": description or "", "isPrivate": private})
     return link(result, "datasphere", uri=uri)
+
+
+@mcp.tool()
+def update_datasphere(uri: str, name: Optional[str] = None, description: Optional[str] = None) -> dict:
+    """Update a datasphere's name or description."""
+    client = DaiClient.from_state()
+    payload: dict = {}
+    if name:
+        payload["name"] = name
+    if description is not None:
+        payload["description"] = description
+    result = client.patch(f"/api/v1/dataspheres/{uri}", json=payload)
+    return link(result, "datasphere", uri=uri)
+
+
+@mcp.tool()
+def delete_datasphere(uri: str) -> dict:
+    """Delete a datasphere. This is irreversible — all content will be lost."""
+    client = DaiClient.from_state()
+    return client.delete(f"/api/v1/dataspheres/{uri}")

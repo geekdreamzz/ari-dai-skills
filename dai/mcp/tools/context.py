@@ -115,10 +115,10 @@ def set_active_datasphere(uri: str) -> dict:
     """Switch the active datasphere for all subsequent tool calls."""
     client = DaiClient.from_state()
     details = client.get(f"/api/v1/dataspheres/{uri}")
+    ds_data = details.get("datasphere", details) if isinstance(details, dict) else details
     _state.set_active_datasphere(uri)
-    # Invalidate DS ID cache
-    _state.cache_set(f"ds_id:{uri}", details.get("id"), ttl_seconds=3600)
-    return {"active_datasphere": uri, "name": details.get("name")}
+    _state.cache_set(f"ds_id:{uri}", ds_data.get("id"), ttl_seconds=3600)
+    return {"active_datasphere": uri, "name": ds_data.get("name")}
 
 
 @mcp.tool()
