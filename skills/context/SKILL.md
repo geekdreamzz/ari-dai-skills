@@ -1,3 +1,4 @@
+<!-- dai-sync: skip -->
 ---
 name: context
 description: Manage active datasphere context and session state

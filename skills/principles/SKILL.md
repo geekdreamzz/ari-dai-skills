@@ -1,3 +1,4 @@
+<!-- dai-sync: skip -->
 ---
 name: principles
 description: Coding principles, completion standards, file headers, and the dai-skills motto. Read before writing any code or marking any task done.

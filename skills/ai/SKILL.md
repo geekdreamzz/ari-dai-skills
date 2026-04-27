@@ -1,3 +1,4 @@
+<!-- dai-sync: skip -->
 ---
 name: ai
 description: Background AI drafting for Dataspheres AI pages

@@ -1,3 +1,4 @@
+<!-- dai-sync: skip -->
 ---
 name: newsletters
 description: Create and manage AI-powered newsletters in Dataspheres AI

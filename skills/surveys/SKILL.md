@@ -1,3 +1,4 @@
+<!-- dai-sync: skip -->
 ---
 name: surveys
 description: Design, run, and analyze surveys in Dataspheres AI

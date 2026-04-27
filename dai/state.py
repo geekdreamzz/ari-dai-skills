@@ -48,6 +48,11 @@ def _ensure_schema(con: sqlite3.Connection) -> None:
             result TEXT,
             ts REAL NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS tool_schema (
+            tool_id TEXT PRIMARY KEY,
+            data TEXT NOT NULL,
+            expires_at REAL NOT NULL
+        );
     """)
     con.commit()
 
@@ -170,6 +175,46 @@ def cache_get(key: str) -> Any | None:
 def cache_clear() -> None:
     with _conn() as con:
         con.execute("DELETE FROM cache WHERE expires_at < ?", (time.time(),))
+
+
+# ---------------------------------------------------------------------------
+# History
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Tool schema cache (per-tool, 24h TTL)
+# ---------------------------------------------------------------------------
+
+def tool_schema_set(tool_id: str, data: Any, ttl_seconds: int = 86400) -> None:
+    with _conn() as con:
+        con.execute(
+            "INSERT OR REPLACE INTO tool_schema VALUES (?, ?, ?)",
+            (tool_id, json.dumps(data), time.time() + ttl_seconds),
+        )
+
+
+def tool_schema_get(tool_id: str) -> Any | None:
+    with _conn() as con:
+        row = con.execute(
+            "SELECT data, expires_at FROM tool_schema WHERE tool_id=?", (tool_id,)
+        ).fetchone()
+    if not row or row["expires_at"] < time.time():
+        return None
+    return json.loads(row["data"])
+
+
+def tool_schema_get_all() -> list[dict]:
+    now = time.time()
+    with _conn() as con:
+        rows = con.execute(
+            "SELECT data FROM tool_schema WHERE expires_at > ?", (now,)
+        ).fetchall()
+    return [json.loads(r["data"]) for r in rows]
+
+
+def tool_schema_clear() -> None:
+    with _conn() as con:
+        con.execute("DELETE FROM tool_schema")
 
 
 # ---------------------------------------------------------------------------

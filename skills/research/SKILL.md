@@ -1,3 +1,4 @@
+<!-- dai-sync: skip -->
 ---
 name: research
 description: AI-powered web research via Dataspheres AI assistant conversations

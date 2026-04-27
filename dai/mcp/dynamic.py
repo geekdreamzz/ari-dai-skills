@@ -146,11 +146,36 @@ def _make_executor(tool_def: dict):
     return executor
 
 
-def load_remote_tools() -> int:
-    """Fetch /api/mcp/schema and register all platform tools not already registered.
+def _fetch_schema(base_url: str, api_key: str) -> list[dict]:
+    """Fetch tool list from API, fall back to state.db cache if API is unreachable."""
+    try:
+        resp = httpx.get(
+            f"{base_url}/api/mcp/schema",
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=10.0,
+        )
+        resp.raise_for_status()
+        tools = resp.json().get("tools", [])
+        # Persist each tool to the cache (24h TTL)
+        for t in tools:
+            if t.get("id"):
+                _state.tool_schema_set(t["id"], t)
+        logger.info("[dynamic] Fetched %d tools from /api/mcp/schema", len(tools))
+        return tools
+    except Exception as exc:
+        logger.warning("[dynamic] /api/mcp/schema unreachable (%s) — loading from cache", exc)
+        cached = _state.tool_schema_get_all()
+        if cached:
+            logger.info("[dynamic] Loaded %d tools from schema cache", len(cached))
+        return cached
 
+
+def load_remote_tools() -> int:
+    """Register all platform tools not already covered by hand-written modules.
+
+    Checks state.db cache first (24h TTL) — startup is instant on warm cache.
+    Falls back to live API fetch on cache miss or expiry.
     Returns the number of tools registered.
-    Called once at MCP server startup, after all hand-written tools are imported.
     """
     global _STUB
 
@@ -161,20 +186,18 @@ def load_remote_tools() -> int:
         logger.warning("[dynamic] Skipping remote tools (not authenticated): %s", exc)
         return 0
 
-    try:
-        resp = httpx.get(
-            f"{base_url}/api/mcp/schema",
-            headers={"Authorization": f"Bearer {api_key}"},
-            timeout=10.0,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-    except Exception as exc:
-        logger.warning("[dynamic] Could not fetch /api/mcp/schema: %s", exc)
+    # Warm cache path — skip network entirely if all tools are fresh
+    cached = _state.tool_schema_get_all()
+    if cached:
+        tools = cached
+        logger.info("[dynamic] Using cached schema (%d tools)", len(tools))
+    else:
+        tools = _fetch_schema(base_url, api_key)
+
+    if not tools:
         return 0
 
     if _STUB is None:
-        # One-time scaffold — fn and schema are overridden per tool via model_copy
         _STUB = FunctionTool.from_function(
             lambda _x="": {},
             name="_dynamic_stub",
@@ -182,12 +205,12 @@ def load_remote_tools() -> int:
         )
 
     registered = 0
-    for tool_def in data.get("tools", []):
+    for tool_def in tools:
         tool_id = tool_def.get("id")
         if not tool_id:
             continue
 
-        # Hand-written tools take priority — check sync component registry
+        # Hand-written tools take priority
         components = mcp._local_provider._components
         if any(k.startswith(f"tool:{tool_id}") for k in components):
             continue
@@ -208,5 +231,5 @@ def load_remote_tools() -> int:
         except Exception as exc:
             logger.warning("[dynamic] Failed to register tool %s: %s", tool_id, exc)
 
-    logger.info("[dynamic] Registered %d remote tools from platform schema", registered)
+    logger.info("[dynamic] Registered %d remote tools", registered)
     return registered

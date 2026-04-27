@@ -1,3 +1,4 @@
+<!-- dai-sync: skip -->
 ---
 name: presentations
 description: Create and manage slide decks in Dataspheres AI

@@ -23,20 +23,18 @@ def ping() -> dict:
     }
 
 # Register all tool domains by importing them (side-effect: @mcp.tool decorators fire)
-import dai.mcp.tools.pages          # noqa: F401
-import dai.mcp.tools.library        # noqa: F401
-import dai.mcp.tools.ai             # noqa: F401
-import dai.mcp.tools.planner        # noqa: F401
-import dai.mcp.tools.datasets       # noqa: F401
-import dai.mcp.tools.newsletters    # noqa: F401
-import dai.mcp.tools.surveys        # noqa: F401
-import dai.mcp.tools.research       # noqa: F401
-import dai.mcp.tools.dataspheres    # noqa: F401
-import dai.mcp.tools.context        # noqa: F401
-import dai.mcp.tools.sequences      # noqa: F401
-import dai.mcp.tools.presentations  # noqa: F401
-import dai.mcp.tools.export         # noqa: F401
-import dai.mcp.tools.sdd            # noqa: F401
+import dai.mcp.tools.pages          # noqa: F401  — delete_page (not in schema)
+import dai.mcp.tools.library        # noqa: F401  — upload_file (local filesystem)
+import dai.mcp.tools.ai             # noqa: F401  — draft_content, get/accept/dismiss draft
+import dai.mcp.tools.newsletters    # noqa: F401  — not in schema
+import dai.mcp.tools.surveys        # noqa: F401  — not in schema
+import dai.mcp.tools.research       # noqa: F401  — conversation-based research (different from schema web_search)
+import dai.mcp.tools.dataspheres    # noqa: F401  — delete_datasphere (not in schema)
+import dai.mcp.tools.context        # noqa: F401  — session state (get_context, set_active_datasphere, get_history)
+import dai.mcp.tools.sequences      # noqa: F401  — not in schema (v2 schema uses sequencers resource)
+import dai.mcp.tools.presentations  # noqa: F401  — not in schema
+import dai.mcp.tools.export         # noqa: F401  — local filesystem export
+import dai.mcp.tools.sdd            # noqa: F401  — SDD lifecycle tools (not in schema)
 
 # Dynamic loader — registers every tool from /api/mcp/schema that isn't
 # already covered by a hand-written module above. Runs in a background

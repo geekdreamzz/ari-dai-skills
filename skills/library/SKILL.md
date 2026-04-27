@@ -1,3 +1,4 @@
+<!-- dai-sync: skip -->
 ---
 name: library
 description: Upload and manage media in the Dataspheres AI library
