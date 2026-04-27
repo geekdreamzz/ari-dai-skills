@@ -438,6 +438,19 @@ def update(
             console.print(f"[red]Git pull failed:[/red] {result.stderr.strip()}")
             raise typer.Exit(1)
         console.print(f"[green]✓[/green] {result.stdout.strip() or 'Already up to date.'}")
+
+        # Reinstall the package from local source so the dai binary reflects the new code.
+        # Without this, Python changes (new commands, bug fixes) don't take effect.
+        uv_bin = shutil.which("uv") or "uv"
+        console.print("Reinstalling dai-skills from local source...")
+        r = subprocess.run(
+            [uv_bin, "tool", "install", str(dai_dir), "--reinstall"],
+            capture_output=True, text=True,
+        )
+        if r.returncode == 0:
+            console.print("  [green]✓[/green] Package reinstalled")
+        else:
+            console.print(f"  [yellow]Warning:[/yellow] reinstall failed — run manually: uv tool install {dai_dir} --reinstall")
     else:
         # Global uv tool install — upgrade via uv instead of git
         uv_bin = shutil.which("uv") or "uv"
