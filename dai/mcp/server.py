@@ -5,6 +5,8 @@ All tool domains self-register on import via @mcp.tool decorators.
 
 from __future__ import annotations
 
+import threading
+
 import dai.state as _state
 from dai.mcp.registry import mcp
 
@@ -37,9 +39,10 @@ import dai.mcp.tools.export         # noqa: F401
 import dai.mcp.tools.sdd            # noqa: F401
 
 # Dynamic loader — registers every tool from /api/mcp/schema that isn't
-# already covered by a hand-written module above. Runs once at startup.
+# already covered by a hand-written module above. Runs in a background
+# thread so a slow or unreachable /api/mcp/schema never blocks MCP startup.
 from dai.mcp.dynamic import load_remote_tools as _load_remote_tools
-_load_remote_tools()
+threading.Thread(target=_load_remote_tools, daemon=True).start()
 
 
 def main() -> None:

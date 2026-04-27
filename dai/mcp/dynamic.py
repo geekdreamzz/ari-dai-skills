@@ -20,6 +20,7 @@ import httpx
 from fastmcp.tools.function_tool import FunctionTool
 
 import dai.state as _state
+from dai.mcp._ds import resolve_ds_id
 from dai.mcp.registry import mcp
 
 logger = logging.getLogger(__name__)
@@ -106,22 +107,7 @@ def _make_executor(tool_def: dict):
     async def executor(**kwargs: Any) -> Any:
         base_url = _state.get_base_url()
         api_key = _state.get_api_key()
-
-        uri = _state.get_active_datasphere()
-        if not uri:
-            raise ValueError("No active datasphere — run: dai use <uri>")
-
-        ds_id = _state.cache_get(f"ds_id:{uri}")
-        if not ds_id:
-            # Resolve once and cache
-            r = httpx.get(
-                f"{base_url}/api/v1/dataspheres/{uri}",
-                headers={"Authorization": f"Bearer {api_key}"},
-                timeout=10.0,
-            )
-            r.raise_for_status()
-            ds_id = r.json()["id"]
-            _state.cache_set(f"ds_id:{uri}", ds_id, ttl_seconds=3600)
+        ds_id = resolve_ds_id()
 
         url = f"{base_url}{_resolve_url(path, path_params, kwargs, ds_id)}"
 

@@ -22,6 +22,15 @@ import dai.state as _state
 from dai import __version__
 from dai.client import DaiClient, ApiError
 
+# Force UTF-8 output on Windows so Rich's Unicode checkmarks don't crash
+# legacy cmd.exe/PowerShell sessions that use cp1252 by default.
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except AttributeError:
+        pass  # Python < 3.7 fallback — no-op
+
 app = typer.Typer(
     name="dai",
     help="dai-skills — AI-native Dataspheres AI skill library. Use all dai.",
@@ -52,6 +61,19 @@ def _find_dai_bin() -> str:
         Path.home() / ".cargo" / "bin" / "dai",
         Path("/usr/local/bin/dai"),
     ]
+    if sys.platform == "win32":
+        appdata = os.getenv("APPDATA", "")
+        localappdata = os.getenv("LOCALAPPDATA", "")
+        if appdata:
+            candidates += [
+                Path(appdata) / "uv" / "bin" / "dai.exe",
+                Path(appdata) / "Python" / "Scripts" / "dai.exe",
+            ]
+        if localappdata:
+            candidates += [
+                Path(localappdata) / "uv" / "bin" / "dai.exe",
+                Path(localappdata) / "Programs" / "Python" / "Scripts" / "dai.exe",
+            ]
     for c in candidates:
         if c.exists():
             return str(c)
@@ -144,7 +166,7 @@ def status():
     mode_label = (
         "[green]local[/green]  (dev server — localhost)"
         if mode == "local"
-        else "[blue]remote[/blue] (production — dataspheres.ai)"
+        else f"[blue]remote[/blue] ({base_url})"
     )
 
     table = Table(show_header=False, box=None, padding=(0, 2))
@@ -156,7 +178,9 @@ def status():
     table.add_row("public_url", public_url)
     table.add_row("api_key", f"{key[:8]}...{key[-4:]}")
     table.add_row("active_ds", active or "[dim]none — run: dai use <uri>[/dim]")
-    table.add_row("tool_domains", "14 (full local install)")
+    _tools_dir = Path(__file__).parent.parent / "mcp" / "tools"
+    domain_count = sum(1 for f in _tools_dir.glob("*.py") if not f.name.startswith("_"))
+    table.add_row("tool_domains", str(domain_count))
     console.print(table)
 
 
@@ -403,20 +427,37 @@ def doctor():
 def update(
     project: Optional[str] = typer.Option(None, "--project", "-p", help="Target project path (default: CWD)"),
 ):
-    """Pull latest dai-skills from GitHub and re-install into your project."""
+    """Pull latest dai-skills from GitHub (local clone) or upgrade via uv (global install)."""
     dai_dir = Path(__file__).parent.parent.parent
+    is_git_repo = (dai_dir / ".git").exists()
 
-    console.print("Pulling latest dai-skills...")
-    result = subprocess.run(["git", "pull"], cwd=str(dai_dir), capture_output=True, text=True)
-    if result.returncode != 0:
-        console.print(f"[red]Git pull failed:[/red] {result.stderr}")
-        raise typer.Exit(1)
-    console.print(f"[green]✓[/green] {result.stdout.strip() or 'Already up to date.'}")
+    if is_git_repo:
+        console.print("Pulling latest dai-skills...")
+        result = subprocess.run(["git", "pull"], cwd=str(dai_dir), capture_output=True, text=True)
+        if result.returncode != 0:
+            console.print(f"[red]Git pull failed:[/red] {result.stderr.strip()}")
+            raise typer.Exit(1)
+        console.print(f"[green]✓[/green] {result.stdout.strip() or 'Already up to date.'}")
+    else:
+        # Global uv tool install — upgrade via uv instead of git
+        uv_bin = shutil.which("uv") or "uv"
+        console.print("Upgrading dai-skills via uv...")
+        result = subprocess.run(
+            [uv_bin, "tool", "upgrade", "dai-skills"],
+            capture_output=True, text=True,
+        )
+        if result.returncode != 0:
+            console.print(f"[red]Upgrade failed:[/red] {result.stderr.strip()}")
+            raise typer.Exit(1)
+        console.print(f"[green]✓[/green] {result.stdout.strip() or 'dai-skills upgraded.'}")
 
     if project:
         install_sh = dai_dir / "install.sh"
-        subprocess.run([str(install_sh), "--all", "--project", project], check=True)
-        console.print(f"[green]✓[/green] Skills reinstalled into {project}")
+        if install_sh.exists():
+            subprocess.run([str(install_sh), "--all", "--project", project], check=True)
+            console.print(f"[green]✓[/green] Skills reinstalled into {project}")
+        else:
+            console.print("[dim]install.sh not available in global install — skills are embedded.[/dim]")
     else:
         console.print("Run [cyan]dai update --project /path/to/project[/cyan] to reinstall skills.")
 

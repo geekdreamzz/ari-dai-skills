@@ -182,6 +182,10 @@ def add_history(action: str, result: Any = None) -> None:
             "INSERT INTO history (action, result, ts) VALUES (?, ?, ?)",
             (action, json.dumps(result) if result else None, time.time()),
         )
+        # Rolling cap — keep only the 500 most recent entries to prevent unbounded growth
+        con.execute(
+            "DELETE FROM history WHERE id NOT IN (SELECT id FROM history ORDER BY ts DESC LIMIT 500)"
+        )
 
 
 def get_history(limit: int = 20) -> list[dict]:

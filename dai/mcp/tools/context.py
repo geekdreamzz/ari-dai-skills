@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 from importlib.metadata import version as _pkg_version, PackageNotFoundError
+from pathlib import Path
 from typing import Optional
 from dai.mcp.registry import mcp
 from dai.client import DaiClient
 import dai.state as _state
+
+_TOOLS_DIR = Path(__file__).parent
 
 
 def _package_version() -> str:
@@ -33,10 +36,11 @@ def _auto_select_datasphere(client: DaiClient) -> tuple[str | None, list, dict |
     # Cache the full list for this session
     _state.cache_set("all_dataspheres", items, ttl_seconds=3600)
 
-    # Pick best default: prefer private + owner, then any owned, then first
+    # Pick best default: prefer private + owner, then any owned, then first.
+    # API returns role at top level and uses "status" for visibility (not "visibility").
     def _score(ds: dict) -> int:
-        role = (ds.get("membership") or {}).get("role", "")
-        vis = ds.get("visibility", "")
+        role = ds.get("role", "") or (ds.get("membership") or {}).get("role", "")
+        vis = ds.get("status", "") or ds.get("visibility", "")
         if role == "OWNER" and vis == "PRIVATE":
             return 3
         if role == "OWNER":
@@ -91,7 +95,7 @@ def get_context() -> dict:
         "api_url": base_url,
         "public_url": public_url,
         "tool_source": "dai-skills (local Python MCP server)",
-        "tool_domains": 14,
+        "tool_domains": sum(1 for f in _TOOLS_DIR.glob("*.py") if not f.name.startswith("_")),
         "package_version": _package_version(),
     }
 

@@ -5,10 +5,14 @@ Requires DATASPHERES_API_KEY and DATASPHERES_BASE_URL env vars. Skips if not set
 
 import os
 import time
+import warnings
 import pytest
 
 SKIP = not (os.getenv("DATASPHERES_API_KEY") and os.getenv("DATASPHERES_BASE_URL"))
-skip_reason = "DATASPHERES_API_KEY / DATASPHERES_BASE_URL not set"
+skip_reason = "E2E tests skipped — set DATASPHERES_API_KEY and DATASPHERES_BASE_URL to run"
+
+if SKIP:
+    warnings.warn(skip_reason, stacklevel=1)
 
 
 @pytest.fixture(scope="session")
