@@ -103,6 +103,59 @@ To pin to a specific release: `git checkout v0.1.0`
 
 ---
 
+## Other IDEs
+
+### Cursor
+
+After running `bootstrap.sh`, install the skill into your project:
+
+```bash
+./install.sh all-dai-sdd --project /path/to/your/project --ide cursor
+```
+
+This writes `all-dai-sdd.mdc` into `.cursor/rules/` so Cursor picks it up automatically. For MCP, add the server manually in **Cursor Settings → MCP**:
+
+```json
+{
+  "mcpServers": {
+    "dai-skills": {
+      "command": "dai",
+      "args": ["mcp", "start"]
+    }
+  }
+}
+```
+
+Then restart Cursor. The `dai` binary path comes from `dai bootstrap` — if Cursor can't find it, run `which dai` and use the full path as `"command"`.
+
+### GitHub Copilot (VS Code)
+
+After running `bootstrap.sh`, install the skill:
+
+```bash
+./install.sh all-dai-sdd --project /path/to/your/project --ide copilot
+```
+
+This writes `all-dai-sdd.md` into `.github/instructions/`. Copilot picks up `.github/instructions/*.md` files as custom instructions automatically in VS Code.
+
+MCP support in GitHub Copilot is available in VS Code 1.99+. Add the server in `.vscode/mcp.json` inside your project:
+
+```json
+{
+  "servers": {
+    "dai-skills": {
+      "type": "stdio",
+      "command": "dai",
+      "args": ["mcp", "start"]
+    }
+  }
+}
+```
+
+Then open the Copilot chat panel and select **Agent mode** — the dai-skills tools will be available.
+
+---
+
 <div align="center">
 
 Built by [Dataspheres AI](https://dataspheres.ai) · *Use all dai. Every dai.*
