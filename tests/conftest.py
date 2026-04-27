@@ -9,9 +9,17 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
-def tmp_db(tmp_path: Path):
-    """Redirect SQLite state DB to an isolated temp dir for every test."""
+def tmp_db(tmp_path: Path, monkeypatch):
+    """Redirect SQLite state DB to an isolated temp dir for every test.
+
+    Also strips real credentials from the environment so developer shells
+    with DATASPHERES_API_KEY set don't bleed into the test suite.
+    """
     db_path = tmp_path / ".dai-skills" / "state.db"
+    monkeypatch.delenv("DATASPHERES_API_KEY", raising=False)
+    monkeypatch.delenv("DATASPHERES_BASE_URL", raising=False)
+    monkeypatch.delenv("DATASPHERES_PUBLIC_URL", raising=False)
+    monkeypatch.delenv("DATASPHERES_DEFAULT_URI", raising=False)
     with patch("dai.state._DB_PATH", db_path):
         yield db_path
 
