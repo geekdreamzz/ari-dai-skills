@@ -7,7 +7,9 @@ works for both local dev and production without hardcoding.
 
 from __future__ import annotations
 
+from collections import defaultdict
 from typing import Any
+from urllib.parse import parse_qsl, urlencode
 
 import dai.state as _state
 
@@ -35,10 +37,26 @@ def build_url(resource_type: str, *, uri: str = "", public_url: str = "", **ids:
     """Return the canonical DS UI URL for a resource."""
     base = (public_url or _state.get_public_url()).rstrip("/")
     pattern = _PATTERNS.get(resource_type, "/app/{uri}")
+
+    # Split pattern so path and query are formatted differently:
+    # - Path segments: strict — KeyError (missing slug/id) falls back to datasphere home
+    # - Query params: lenient — missing keys default to "" and are stripped from output
+    if "?" in pattern:
+        path_pattern, query_pattern = pattern.split("?", 1)
+    else:
+        path_pattern, query_pattern = pattern, ""
+
     try:
-        path = pattern.format(uri=uri, **ids)
+        path = path_pattern.format(uri=uri, **ids)
     except KeyError:
-        path = f"/app/{uri}"
+        return base + f"/app/{uri}"
+
+    if query_pattern:
+        query_str = query_pattern.format_map(defaultdict(str, uri=uri, **ids))
+        filtered = [(k, v) for k, v in parse_qsl(query_str, keep_blank_values=True) if v]
+        if filtered:
+            path = path + "?" + urlencode(filtered)
+
     return base + path
 
 

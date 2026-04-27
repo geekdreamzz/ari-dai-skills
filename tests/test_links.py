@@ -28,6 +28,11 @@ class TestBuildUrl:
         url = build_url("task", uri="my-ds", public_url="https://dataspheres.ai")
         assert url == "https://dataspheres.ai/app/my-ds/planner"
 
+    def test_task_url_with_id(self):
+        from dai.mcp._links import build_url
+        url = build_url("task", uri="my-ds", public_url="https://dataspheres.ai", id="t1")
+        assert url == "https://dataspheres.ai/app/my-ds/planner?task=t1"
+
     def test_plan_mode_url_includes_mode_query(self):
         from dai.mcp._links import build_url
         url = build_url("plan_mode", uri="my-ds", public_url="https://dataspheres.ai", id="pm_abc")
