@@ -474,6 +474,23 @@ def update(
     else:
         console.print("Run [cyan]dai update --project /path/to/project[/cyan] to reinstall skills.")
 
+    # Refresh tool schema and SKILL.md files if authenticated — silent skip if not.
+    if _state.is_authenticated():
+        console.print("Syncing tool schema...")
+        _state.tool_schema_clear()
+        try:
+            from dai.client import DaiClient
+            from collections import defaultdict as _dd
+            client = DaiClient.from_state()
+            result = client.get("/api/mcp/schema")
+            tools = result.get("tools", [])
+            for t in tools:
+                if t.get("id"):
+                    _state.tool_schema_set(t["id"], t)
+            console.print(f"  [green]✓[/green] {len(tools)} tools cached")
+        except Exception as e:
+            console.print(f"  [yellow]Schema sync failed (non-fatal):[/yellow] {e}")
+
 
 @app.command()
 def sync(
