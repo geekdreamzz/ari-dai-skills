@@ -139,25 +139,31 @@ Capture `planModeId`. The planner URL is `?mode=<planModeId>` — NOT `?planMode
 
 ---
 
-### Step 8 of 14 — Create 5 scoped status groups
+### Step 8 of 14 — Create 5 scoped status groups + delete defaults
 → *Detail: line 122 (Column Architecture)*
 
-**CRITICAL — do NOT reuse existing status groups from other plan modes or the datasphere defaults.** The plan mode auto-creates a `Done` group; POST the other four explicitly with `planModeId` set.
+**CRITICAL — do NOT reuse existing status groups from other plan modes or the datasphere defaults.** Creating the plan mode auto-creates 3 default columns (`To Do`, `In Progress`, `In Review`) AND a `Done` group. You must DELETE the 3 defaults and POST the 4 SDD groups — the auto-created `Done` is kept.
 
 ```bash
-# Run for each: North Stars (order:0), Epics (order:1), Execution (order:2), Validation (order:3)
+# 1. GET all groups scoped to this plan mode — find and DELETE the 3 defaults
+curl "$DATASPHERES_BASE_URL/api/v2/dataspheres/<dsId>/tasks/status-groups" \
+  -H "Authorization: Bearer $DATASPHERES_API_KEY"
+# → filter by planModeId, then DELETE each non-SDD group:
+curl -X DELETE "$DATASPHERES_BASE_URL/api/v2/dataspheres/<dsId>/tasks/status-groups/<toDoId>" \
+  -H "Authorization: Bearer $DATASPHERES_API_KEY"
+# Repeat for In Progress and In Review
+
+# 2. POST the 4 SDD groups (North Stars, Epics, Execution, Validation)
 curl -X POST "$DATASPHERES_BASE_URL/api/v2/dataspheres/<dsId>/tasks/status-groups" \
   -H "Authorization: Bearer $DATASPHERES_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"name":"North Stars","order":0,"planModeId":"<planModeId>"}'
+# Repeat for Epics (order:1), Execution (order:2), Validation (order:3)
 
-# Done is auto-created by the plan mode — GET it, do not POST a second one
-curl "$DATASPHERES_BASE_URL/api/v2/dataspheres/<dsId>/tasks/status-groups" \
-  -H "Authorization: Bearer $DATASPHERES_API_KEY" \
-  | # filter by planModeId to find the auto-created Done group
+# 3. GET again — confirm exactly 5 remain: North Stars, Epics, Execution, Validation, Done
 ```
 
-**Gate evidence required:** `5 groups confirmed: NS=<id> EP=<id> EX=<id> VA=<id> DONE=<id>`
+**Gate evidence required:** `5 groups confirmed (3 defaults deleted): NS=<id> EP=<id> EX=<id> VA=<id> DONE=<id>`
 
 ---
 
@@ -203,10 +209,10 @@ Create or update the tracker dataset. Add dataCards for progress metrics. Skip i
 
 Use the exact template from line 74. Widgets: `progress-ring`, `column-breakdown`, `active-tasks`, `task-activity-feed`. **No other `data-widget-type` values are valid** — any other value crashes the renderer.
 
-The planner link in the dashboard content MUST use `?mode=<planModeId>` — not `?planMode=`.
+The planner link in the dashboard content MUST use `?mode=<planModeId>` — not `?planMode=`. No emojis in page content (they render as `??` in the platform renderer).
 
 ```html
-<p>📋 <a href="$DATASPHERES_PUBLIC_URL/app/<uri>/planner?mode=<planModeId>">Open in Planner → <initiative> plan mode</a></p>
+<p><a href="$DATASPHERES_PUBLIC_URL/app/<uri>/planner?mode=<planModeId>">[Planner] <initiative> plan mode</a></p>
 ```
 
 **Gate evidence required:** `slug=<dashboard-slug> HTTP 200/201`
@@ -258,35 +264,48 @@ Output the following, then stop:
 ## Dashboard Page Template
 → *Referenced by: Step 12*
 
+**CRITICAL — no emojis or special Unicode anywhere in this page.** The platform's page renderer displays emojis as `??` or diamond question marks. Use plain ASCII only in all titles, headings, link text, and widget labels.
+
 ```html
-<p>📋 <a href="$DATASPHERES_PUBLIC_URL/app/<uri>/planner?mode=<planModeId>">Open in Planner → <initiative> plan mode</a></p>
-<h1>🚀 <Project> — Initiative Dashboard</h1>
+<p><a href="$DATASPHERES_PUBLIC_URL/app/<uri>/planner?mode=<planModeId>">[Planner] <initiative> plan mode</a></p>
+<h1><Project> - Initiative Dashboard</h1>
 <p>Live progress tracker. All widgets query the planner in real time.</p>
 
-<h2>📊 At a Glance</h2>
+<h2>At a Glance</h2>
 <div data-type="plannerWidget"
      data-widget-type="progress-ring"
      data-datasphere-id="<dsId>"
+     data-datasphere-uri="<uri>"
      data-plan-mode-id="<planModeId>"></div>
 
-<h2>📈 Work Distribution</h2>
+<h2>Work Distribution</h2>
 <div data-type="plannerWidget"
      data-widget-type="column-breakdown"
      data-datasphere-id="<dsId>"
+     data-datasphere-uri="<uri>"
      data-plan-mode-id="<planModeId>"></div>
 
-<h2>⚡ Active Execution</h2>
+<h2>Active Execution</h2>
 <div data-type="plannerWidget"
      data-widget-type="active-tasks"
      data-datasphere-id="<dsId>"
+     data-datasphere-uri="<uri>"
      data-plan-mode-id="<planModeId>"></div>
 
-<h2>💬 Live Activity Feed</h2>
+<h2>Live Activity Feed</h2>
 <div data-type="plannerWidget"
      data-widget-type="task-activity-feed"
      data-datasphere-id="<dsId>"
+     data-datasphere-uri="<uri>"
      data-plan-mode-id="<planModeId>"></div>
+
+<h2>Quick Links</h2>
+<ul>
+  <li><p><a href="$DATASPHERES_PUBLIC_URL/app/<uri>/docs/<vision-slug>">Vision and Architecture</a></p></li>
+</ul>
 ```
+
+The `data-datasphere-uri` attribute enables deep links from the activity feed — each comment card links to its task in the planner at `/app/<uri>/planner?mode=<planModeId>&taskId=<taskId>`.
 
 ### Valid `data-widget-type` values
 
@@ -362,17 +381,107 @@ Setting only `statusGroupId` moves the card visually but leaves `status=TODO` in
 
 ---
 
+## Checklist Format — TipTap TaskList
+
+All checklists in task content (Acceptance Checklist, Execution Checklist, North Star Checklist) MUST use the TipTap `taskList` format. Do NOT use `☐`/`☑` Unicode characters — they are not interactive and do not render as real checkboxes.
+
+**Unchecked item:**
+```html
+<ul data-type="taskList">
+  <li data-type="taskItem" data-checked="false"><p>criterion text</p></li>
+</ul>
+```
+
+**Checked item (when marking done):**
+```html
+<li data-type="taskItem" data-checked="true"><p>criterion text</p></li>
+```
+
+The platform styles `data-checked="true"` with strikethrough + gray text automatically.
+
+### Epic Execution Checklist format
+
+```html
+<h3>Execution Checklist</h3>
+<ul data-type="taskList">
+  <li data-type="taskItem" data-checked="false"><p>T-001 · short task title</p></li>
+  <li data-type="taskItem" data-checked="false"><p>T-002 · short task title</p></li>
+</ul>
+```
+
+### North Star Checklist format
+
+```html
+<h3>North Star Checklist</h3>
+<ul data-type="taskList">
+  <li data-type="taskItem" data-checked="false"><p>E-001 · Phase 1 name - Epic complete</p></li>
+  <li data-type="taskItem" data-checked="false"><p>E-002 · Phase 2 name - Epic complete</p></li>
+</ul>
+```
+
+---
+
 ## Sub-Checklist Propagation
 
 When an Execution task moves to Done:
 1. Fetch parent Epic content
-2. Replace `☐ T-XXX ·` with `☑ T-XXX ·` in the Epic HTML
-3. PATCH the Epic task content
-4. If all items ticked → post comment on Epic: "All Execution tasks complete. Ready for Validation."
+2. Find `<li data-type="taskItem" data-checked="false"><p>T-XXX ·` in the Epic HTML
+3. Replace `data-checked="false"` → `data-checked="true"` for that item
+4. PATCH the Epic task content
+5. If no `data-checked="false"` items remain → post comment on Epic: "All Execution tasks complete. Ready for Validation."
 
 When an Epic moves to Done:
-1. Tick the Epic's `☐ E-XXX ·` item in the parent North Star content
-2. If all Epic items ticked → move North Star to Done
+1. Find `<li data-type="taskItem" data-checked="false"><p>E-XXX ·` in the parent North Star content
+2. Replace `data-checked="false"` → `data-checked="true"` for that item
+3. If no `data-checked="false"` items remain → move North Star to Done
+
+---
+
+## Task Done Workflow — Completion Comment with Screenshots
+
+When marking a task Done, post a structured completion comment. The activity feed widget on the dashboard renders these comments — including screenshot thumbnails that link to full-size images.
+
+### Upload Playwright screenshots
+
+```bash
+SCREENSHOT_URLS=""
+shopt -s nullglob
+for SHOT in tests/e2e/screenshots/**/*.png; do
+  RESP=$(curl -s -X POST "$DATASPHERES_BASE_URL/api/media/upload" \
+    -H "Authorization: Bearer $DATASPHERES_API_KEY" \
+    -F "file=@$(realpath $SHOT)")
+  URL=$(echo "$RESP" | sed -n 's/.*"url":"\([^"]*\)".*/\1/p')
+  [ -n "$URL" ] && SCREENSHOT_URLS="${SCREENSHOT_URLS}\"$URL\","
+done
+SCREENSHOT_URLS="[${SCREENSHOT_URLS%,}]"
+```
+
+If no screenshots exist, set `SCREENSHOT_URLS="[]"`.
+
+### Post the completion comment
+
+```bash
+curl -X POST "$DATASPHERES_BASE_URL/api/v2/dataspheres/<dsId>/tasks/<taskId>/comments" \
+  -H "Authorization: Bearer $DATASPHERES_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"content\": \"[all-dai-sdd-system-message]\n\n**Duration:** <Xh Ym>\n\n**Completion summary:** <one paragraph>\n\n**Verified criteria:**\n- <criterion 1>\n- <criterion 2>\n\n**Tests:** npx tsc --noEmit OK\",
+    \"screenshots\": $SCREENSHOT_URLS
+  }"
+```
+
+The `screenshots` array (CDN URLs) shows up as clickable thumbnail gallery in the activity feed widget. The `[all-dai-sdd-system-message]` prefix adds a purple SDD badge on the comment card.
+
+### Then PATCH task to Done
+
+```bash
+curl -X PATCH "$DATASPHERES_BASE_URL/api/v2/dataspheres/<dsId>/tasks/<taskId>" \
+  -H "Authorization: Bearer $DATASPHERES_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"statusGroupId":"<doneGroupId>","status":"DONE"}'
+```
+
+Always set BOTH `statusGroupId` and `status` — setting only `statusGroupId` moves the card visually but leaves `status=TODO` in the DB.
 
 ---
 
@@ -440,12 +549,14 @@ tasks:
     rollbackSafe: safe | manual
     userApproved: yes | no
     content: |
-      <h3>✅ Acceptance Checklist</h3>
-      <ul>
-        <li><p>☐ Observable criterion 1</p></li>
-        <li><p>☐ Observable criterion 2</p></li>
+      <h3>Acceptance Checklist</h3>
+      <ul data-type="taskList">
+        <li data-type="taskItem" data-checked="false"><p>Observable criterion 1</p></li>
+        <li data-type="taskItem" data-checked="false"><p>Observable criterion 2</p></li>
+        <li data-type="taskItem" data-checked="false"><p>Test written and green</p></li>
+        <li data-type="taskItem" data-checked="false"><p>Screenshot captured</p></li>
       </ul>
-      <h3>🛠 Implementation Scope</h3>
+      <h3>Implementation Scope</h3>
       <p>Files to touch + what to do in each.</p>
 ```
 
