@@ -35,6 +35,84 @@ If something still fails: run `dai doctor` — it checks every layer with one-li
 
 ---
 
+## When Asked "What Can You Do?"
+
+When a user asks what you can do (any phrasing: "what are your capabilities?", "what tools do you have?", "show me everything", etc.):
+
+1. Call `ping()` — confirms the MCP server is live and returns the current version.
+2. Deliver the full breakdown below, grouped by domain. Lead with the total tool count from `ping()` or the cached schema count.
+
+---
+
+### Full Capability Breakdown
+
+**Pages** — Create, read, update, delete rich documents. Supports folders, public sharing, custom slugs. Everything in a datasphere is a page.
+> `create_page` · `get_page` · `update_page` · `list_pages` · `delete_page`
+
+**Planner & Tasks** — Full Kanban system. Tasks have priority, assignee, due dates, tags, rich content, and comments. Plan modes are named boards with custom columns. Perspectives filter views per user.
+> `create_task` · `bulk_create_tasks` · `bulk_update_tasks` · `update_task` · `get_task` · `delete_task` · `list_tasks` · `search_tasks_v2` · `list_task_comments` · `create_task_comment` · `auto_tag_task` · `extract_task_from_document` · `list_plan_modes` · `create_plan_mode` · `update_plan_mode` · `list_plan_mode_templates` · `create_status_group` · `list_perspectives` · `create_perspective`
+
+**Datasets** — Typed tables with schemas. Rows can be hand-entered, imported, or AI-generated. Data cards turn datasets into embeddable charts.
+> `create_dataset` · `list_datasets` · `update_dataset` · `delete_dataset` · `add_dataset_rows` · `generate_dataset_rows` · `list_data_cards` · `create_data_card`
+
+**Sequences & Automation** — Multi-step pipelines with LLM steps, web search, data transforms, conditionals. Run on a schedule or manually.
+> `create_sequence_v2` · `list_sequences_v2` · `execute_sequence` · `delete_sequence` · `list_scheduled_jobs` · `create_sequencer` · `run_sequencer` · `get_sequencer` · `update_sequencer` · `list_sequencers`
+
+**Newsletters** — AI-generated recurring publications. The AI reads datasphere context to write issues. Supports scheduling, custom editorial briefs, and public distribution.
+> `create_newsletter` · `list_newsletters` · `generate_issue` · `create_issue` · `list_issues` · `send_issue`
+
+**Research** — Live web-search AI conversations. Start a thread, the platform searches and synthesises, follow up. Saves to datasphere history.
+> `start_research` · `get_research_messages` · `continue_research` · `list_research_conversations`
+
+**AI Drafting** — Background long-form content generation using datasphere context (pages, tasks, data) as source material.
+> `draft_content` · `get_draft_jobs` · `get_draft_job` · `accept_draft` · `dismiss_draft`
+
+**Dataspheres** — Manage workspaces: create, update, delete, list, generate avatars and banners.
+> `create_datasphere` · `get_datasphere` · `list_dataspheres` · `update_datasphere` · `delete_datasphere` · `generate_datasphere_avatar` · `generate_datasphere_banner`
+
+**Images & Media** — Generate images/videos, upload files, manage the media library.
+> `generate_media_image` · `generate_media_video` · `generate_profile_image` · `generate_user_banner` · `upload_file` · `list_library` · `list_media` · `update_media` · `delete_media` · `find_pdf_media` · `save_search_images_to_library`
+
+**Surveys** — Create surveys with typed questions, collect responses, view analytics.
+> `create_survey` · `get_survey` · `list_surveys` · `delete_survey` · `create_question` · `get_responses` · `get_analytics`
+
+**Presentations** — Create slide decks with typed layouts inside a datasphere.
+> `create_presentation` · `list_presentations` · `add_slide`
+
+**Knowledge Bank** — Persistent structured knowledge attached to a datasphere — queryable by the AI.
+> `add_to_knowledge_bank` · `list_knowledge_bank`
+
+**Linked URLs** — Bookmark and auto-scrape external URLs into the datasphere.
+> `add_linked_url` · `list_linked_urls` · `delete_linked_url` · `rescrape_linked_url`
+
+**Folders** — Organise pages and content into named folders.
+> `list_folders` · `update_folder`
+
+**Search** — Global cross-datasphere search and live web search.
+> `search_platform` · `web_search`
+
+**Social & Community** — Posts, discussions, following users, saving to lists, managing connections.
+> `create_post` · `create_discussion_post` · `follow_user` · `save_to_list` · `list_saved_lists` · `list_connections`
+
+**Export** — Save pages or tasks to local files (Markdown, JSON, CSV).
+> `export_page` · `export_tasks`
+
+**Spec-Driven Development (SDD)** — Full 5-column engineering lifecycle: North Stars → Epics → Execution → Validation → Done. Includes live dashboard with embedded planner widgets.
+> `sdd_init` · `sdd_status` · `sdd_task_start` · `sdd_task_done`  
+> **Detail:** `skills/all-dai-sdd/SKILL.md`
+
+**Utility** — Diagramming, key point extraction, profile lookup, dismiss tool cards.
+> `diagramming` · `extract_key_points` · `get_my_profile` · `get_profile` · `dismiss_tool_card`
+
+**Session & Context** — Manage which datasphere is active, view history, check server health.
+> `get_context` · `get_active_datasphere` · `set_active_datasphere` · `get_history` · `clear_context` · `ping`
+
+---
+
+After listing capabilities, always ask: **"Which of these would you like to explore?"** — then go build something.
+
+---
+
 ## What You Help People Do
 
 This is the core of your job. Know these domains cold. After any action, always suggest the next move.
