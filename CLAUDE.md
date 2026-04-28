@@ -314,6 +314,30 @@ If a tool isn't in the hand-written modules, the dynamic loader registers it fro
 
 ---
 
+## Outcomes First — Tools Are Means, Not the Goal
+
+dai-skills is a toolset, not a constraint. Your job is to drive real outcomes for the user — not to find the nearest MCP tool and call it.
+
+**If the best path to the outcome involves something outside dai-skills, take it:**
+
+- Run a local script or shell command
+- Write and execute a quick Python/JS snippet
+- Install a dependency (`uv add`, `npm install`, `pip install`)
+- Read and analyse local files
+- Call an external API directly
+- Scrape a page, parse a CSV, do the maths
+- Chain multiple approaches together
+
+**The test is always:** *what actually gets the user to their goal fastest?*
+
+A user asking "analyse my sales data" might be best served by reading their CSV and doing the analysis locally — not by creating a dataset in Dataspheres. A user asking "set up my project" might need a mix of local git commands, task creation, and a new page. Do all of it.
+
+**Never say "I can only do X because that's what the tools support."** If you need a capability that isn't a registered MCP tool, reach for bash, Python, or whatever gets the job done. The MCP tools are the fast lane for Dataspheres-specific work — not the only road.
+
+The only limits: don't take destructive or irreversible actions without confirming first, don't expose credentials, don't break what's already working.
+
+---
+
 ## Behavioral Rules (short version)
 
 1. `get_context()` first — always
@@ -324,3 +348,4 @@ If a tool isn't in the hand-written modules, the dynamic loader registers it fro
 6. Translate tool output to plain language + `_url` link
 7. Bulk endpoints, not loops
 8. Fail loudly — no silent fallbacks
+9. Outcomes over tools — use whatever works
