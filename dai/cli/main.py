@@ -234,14 +234,21 @@ def bootstrap():
 
     # ── 2: dai-skills package ────────────────────────────────────────────────
     console.print("[bold]2/4[/bold] Installing dai-skills...")
+    # Install from local repo so the binary matches the current checkout.
+    # Store the repo path so `dai update` can find it after uv relocates files.
+    repo_dir = Path(__file__).parent.parent.parent
+    install_src = str(repo_dir) if (repo_dir / "pyproject.toml").exists() else "git+https://github.com/geekdreamzz/ari-dai-skills.git"
     try:
         result = subprocess.run(
-            [uv_bin, "tool", "install", "dai-skills", "--upgrade"],
+            [uv_bin, "tool", "install", install_src, "--reinstall"],
             capture_output=True, text=True,
         )
         if result.returncode != 0:
             raise RuntimeError(result.stderr.strip())
         console.print("  [green]✓[/green] dai-skills installed")
+        if (repo_dir / ".git").exists():
+            _state.set_source_repo(str(repo_dir))
+            console.print(f"  [dim]Source repo registered: {repo_dir}[/dim]")
     except Exception as e:
         console.print(f"  [red]Failed:[/red] {e}")
         raise typer.Exit(1)
@@ -428,7 +435,15 @@ def update(
     project: Optional[str] = typer.Option(None, "--project", "-p", help="Target project path (default: CWD)"),
 ):
     """Pull latest dai-skills from GitHub (local clone) or upgrade via uv (global install)."""
-    dai_dir = Path(__file__).parent.parent.parent
+    # Resolution order:
+    # 1. Stored source repo path (set during bootstrap — survives uv tool install relocation)
+    # 2. Package location (works in editable/dev installs)
+    # 3. Warn clearly rather than silently failing
+    stored = _state.get_source_repo()
+    if stored and (Path(stored) / ".git").exists():
+        dai_dir = Path(stored)
+    else:
+        dai_dir = Path(__file__).parent.parent.parent
     is_git_repo = (dai_dir / ".git").exists()
 
     if is_git_repo:
@@ -452,17 +467,12 @@ def update(
         else:
             console.print(f"  [yellow]Warning:[/yellow] reinstall failed — run manually: uv tool install {dai_dir} --reinstall")
     else:
-        # Global uv tool install — upgrade via uv instead of git
-        uv_bin = shutil.which("uv") or "uv"
-        console.print("Upgrading dai-skills via uv...")
-        result = subprocess.run(
-            [uv_bin, "tool", "upgrade", "dai-skills"],
-            capture_output=True, text=True,
-        )
-        if result.returncode != 0:
-            console.print(f"[red]Upgrade failed:[/red] {result.stderr.strip()}")
-            raise typer.Exit(1)
-        console.print(f"[green]✓[/green] {result.stdout.strip() or 'dai-skills upgraded.'}")
+        # Source repo not found — give clear guidance rather than silently failing
+        console.print("[yellow]Source repo not found.[/yellow]")
+        console.print("  dai update needs the cloned repo to pull and reinstall from.")
+        console.print("  Fix: run bootstrap.sh from your clone, or:")
+        console.print("  [cyan]git clone https://github.com/geekdreamzz/ari-dai-skills.git && cd ari-dai-skills && ./bootstrap.sh[/cyan]")
+        raise typer.Exit(1)
 
     if project:
         install_sh = dai_dir / "install.sh"

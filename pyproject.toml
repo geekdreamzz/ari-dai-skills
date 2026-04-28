@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "dai-skills"
-version = "0.1.0"
+version = "0.2.0"
 description = "AI-native skill library for Dataspheres AI — use all dai, every dai"
 authors = [{ name = "Dataspheres AI", email = "dev@dataspheres.ai" }]
 license = { text = "MIT" }

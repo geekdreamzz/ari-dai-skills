@@ -31,7 +31,12 @@ fi
 
 # ── 2. Install dai-skills ────────────────────────────────────────────────────
 echo "Installing dai-skills..."
-uv tool install dai-skills --upgrade
+# Install from local clone if we're running from one; fall back to GitHub URL otherwise.
+if [ -f "$DAI_DIR/pyproject.toml" ]; then
+  uv tool install "$DAI_DIR" --reinstall
+else
+  uv tool install "git+https://github.com/geekdreamzz/ari-dai-skills.git" --reinstall
+fi
 echo "✓ dai-skills installed"
 
 # ── 3. Hand off to `dai bootstrap` for auth + MCP config + instructions ──────

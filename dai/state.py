@@ -113,6 +113,18 @@ def set_public_url(url: str) -> None:
         con.execute("INSERT OR REPLACE INTO auth VALUES ('public_url', ?)", (url,))
 
 
+def set_source_repo(path: str) -> None:
+    """Store the path of the cloned dai-skills repo so dai update can find it after uv install."""
+    with _conn() as con:
+        con.execute("INSERT OR REPLACE INTO auth VALUES ('source_repo', ?)", (str(Path(path).resolve()),))
+
+
+def get_source_repo() -> str | None:
+    with _conn() as con:
+        row = con.execute("SELECT value FROM auth WHERE key='source_repo'").fetchone()
+    return row["value"] if row else None
+
+
 def clear_credentials() -> None:
     with _conn() as con:
         con.execute("DELETE FROM auth")
