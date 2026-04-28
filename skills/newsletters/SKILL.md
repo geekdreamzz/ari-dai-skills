@@ -53,6 +53,89 @@ create_issue(
 )
 ```
 
+---
+
+## Issue Content Schema (HTML)
+
+Newsletter issues accept HTML in the `content` field. Issues render in two different contexts with different constraints:
+
+**Platform UI** — full Tiptap renderer, all nodes work (data cards, embeds, mermaid, dataset previews).
+
+**Email distribution** — email clients block JS and iframes. Use only the email-safe subset below.
+
+### Email-Safe Elements (always safe)
+
+```html
+<!-- Headings -->
+<h1>Main headline</h1>
+<h2>Section header</h2>
+<h3>Subsection</h3>
+
+<!-- Body + inline formatting -->
+<p>Text with <strong>bold</strong>, <em>italic</em>, and <a href="https://...">links</a>.</p>
+
+<!-- Lists -->
+<ul><li>Bullet item</li></ul>
+<ol><li>Numbered item</li></ol>
+
+<!-- Blockquote -->
+<blockquote><p>Pull quote or highlight.</p></blockquote>
+
+<!-- Divider -->
+<hr />
+
+<!-- Hosted image — must be a public HTTPS URL -->
+<figure data-image-figure data-alignment="center" data-size="full">
+  <img src="https://cdn.example.com/image.jpg" alt="Description" />
+  <figcaption>Optional caption</figcaption>
+</figure>
+
+<!-- Basic table -->
+<table class="tiptap-table">
+  <tbody>
+    <tr class="tiptap-table-row">
+      <td class="tiptap-table-cell"><p>Cell A</p></td>
+      <td class="tiptap-table-cell"><p>Cell B</p></td>
+    </tr>
+  </tbody>
+</table>
+
+<!-- Code block -->
+<pre><code class="language-python">print("hello")</code></pre>
+```
+
+### NOT Safe for Email Distribution
+
+| Node | Why it fails in email |
+|---|---|
+| `<div data-type="dataCard" ...>` | Requires JS — blank in email |
+| `<div data-type="datasetEmbed" ...>` | Requires JS — blank in email |
+| `<div data-type="mermaid" ...>` | Requires JS renderer — blank in email |
+| `<figure data-type="embed" data-url="...">` | iframes blocked by email clients |
+| `<div data-type="customAudio" ...>` | Audio unsupported in email |
+
+If the newsletter is **platform-only** (readers open it in the browser, never emailed), all page nodes work. If it's distributed via email, stick to the email-safe subset.
+
+### Embedding AI-Generated Images in Issues
+
+`generate_media_image` returns a hosted HTTPS URL. Use it directly in the email-safe `<figure>` node:
+
+```python
+# 1. Generate the image
+img = generate_media_image(prompt="Hero banner for Q2 launch, clean and modern", style="photorealistic")
+url = img["url"]
+
+# 2. Embed in the issue content
+content = f"""
+<figure data-image-figure data-alignment="center" data-size="full">
+  <img src="{url}" alt="Q2 Launch" />
+</figure>
+<h1>Q2 is here</h1>
+<p>Here's what shipped this quarter...</p>
+"""
+create_issue(newsletter_id="nl_abc123", title="Q2 Launch", content=content, subject="Q2 is live 🚀")
+```
+
 ### List and send issues
 
 ```python

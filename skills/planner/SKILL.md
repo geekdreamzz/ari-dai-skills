@@ -99,6 +99,80 @@ list_status_groups(plan_mode_id="<id>")
 ### Add a comment to a task
 ```
 add_comment(task_id="<id>", content="Done — tested on staging ✅")
+
+# With screenshot attachments (hosted HTTPS URLs)
+add_comment(task_id="<id>", content="Reproduced on staging — see screenshot",
+            screenshots=["https://cdn.example.com/bug-shot.png"])
+```
+
+---
+
+## Rich Content in Tasks and Comments
+
+### Task Description (`content` field)
+
+Task descriptions support full Tiptap HTML — the same schema as pages. Use this to write detailed specs, acceptance criteria, or reference material directly on the card.
+
+```html
+<!-- Acceptance criteria as a checklist -->
+<h2>Acceptance Criteria</h2>
+<ul>
+  <li>User can reset password via email link</li>
+  <li>Link expires after 24 hours</li>
+  <li>Errors shown inline, not as alerts</li>
+</ul>
+
+<!-- Code reference -->
+<h2>Relevant Code</h2>
+<pre><code class="language-typescript">// auth/reset.ts — current implementation
+export async function sendResetLink(email: string) { ... }
+</code></pre>
+
+<!-- Mermaid diagram — flow or sequence diagrams work well for specs -->
+<div data-type="mermaid" data-source="sequenceDiagram
+  User->>API: POST /auth/reset
+  API->>Email: Send link
+  User->>API: GET /auth/reset?token=xyz
+  API->>User: Redirect to /new-password"></div>
+
+<!-- Embedded data card (live chart) -->
+<div data-type="dataCard"
+     data-datacard-id="card_abc"
+     data-dataset-id="ds_xyz"
+     data-datasphere-id="ds_default">[Data Card: Error Rate]</div>
+
+<!-- Link to a related page -->
+<p>See <a href="https://dataspheres.ai/app/my-ds/pages/auth-design">Auth Design Doc</a> for context.</p>
+```
+
+### Comment `content` Field
+
+Comments support plain text and basic inline formatting. For visual evidence (screenshots, screen recordings), use the `screenshots` array — these render as inline image attachments on the task card.
+
+```python
+# Plain text — most common
+add_comment(task_id="t1", content="Fixed in PR #42 — deploying to staging now.")
+
+# With screenshots — pass hosted HTTPS URLs (generate_media_image or upload_file first)
+add_comment(
+    task_id="t1",
+    content="Reproduced on Chrome/Windows. Screenshot attached.",
+    screenshots=["https://cdn.example.com/bug-chrome.png", "https://cdn.example.com/bug-win.png"],
+)
+```
+
+### Producing Artifacts to Attach
+
+**Generate an image, then attach to a comment:**
+```python
+img = generate_media_image(prompt="Architecture diagram, dark theme, clean lines")
+add_comment(task_id="t1", content="Proposed architecture:", screenshots=[img["url"]])
+```
+
+**Upload a local file, then attach:**
+```python
+result = upload_file("/path/to/screenshot.png")
+add_comment(task_id="t1", content="Screen recording from QA:", screenshots=[result["url"]])
 ```
 
 ## Priority Values

@@ -249,6 +249,84 @@ Never stub. Never mark Done without passing Validation. Specs self-heal — revi
 
 ---
 
+## Producing & Embedding Artifacts
+
+Content in Dataspheres AI is HTML (Tiptap). Knowing *how* to produce an artifact and *how* to embed it are two separate steps — connect them automatically rather than leaving the user to wire them up.
+
+### The Full Flow
+
+**Generated image → embedded in page or newsletter:**
+```python
+img = generate_media_image(prompt="Hero banner, dark tech aesthetic")
+# Use img["url"] directly in the HTML content field:
+# <figure data-image-figure data-alignment="center" data-size="full">
+#   <img src="{img['url']}" alt="Hero" />
+# </figure>
+```
+
+**Generated video → embedded in page:**
+```python
+video = generate_media_video(prompt="Product demo, 10 seconds, cinematic")
+# <figure data-type="embed" data-url="{video['url']}"><figcaption>Demo</figcaption></figure>
+```
+
+**Mermaid diagram → embedded anywhere:**
+```python
+# No generation tool needed — write mermaid syntax directly into the HTML:
+# <div data-type="mermaid" data-source="graph TD; A-->B; B-->C;"></div>
+# Works in: pages, task descriptions. NOT in email newsletters.
+```
+
+**Data card → embedded in page or task description:**
+```python
+cards = list_data_cards(datasphere_uri="my-ds")
+card = cards[0]
+# <div data-type="dataCard"
+#      data-datacard-id="{card['id']}"
+#      data-dataset-id="{card['datasetId']}"
+#      data-datasphere-id="{ds_id}">[Data Card: {card['name']}]</div>
+# Works in: pages, task descriptions. NOT in email newsletters (requires JS).
+```
+
+**Uploaded local file → image in page or comment screenshot:**
+```python
+result = upload_file("/path/to/file.png")
+# For pages: use result["url"] in a <figure data-image-figure> node
+# For task comments: pass result["url"] in screenshots=[...]
+```
+
+**YouTube/Vimeo/X → embedded in page:**
+```python
+# No tool needed — put the URL in an embed node:
+# <figure data-type="embed" data-url="https://youtube.com/watch?v=...">
+#   <figcaption>Optional caption</figcaption>
+# </figure>
+```
+
+### Where Each Artifact Type Works
+
+| Artifact | Pages | Task description | Email newsletter | Platform newsletter |
+|---|---|---|---|---|
+| Hosted image (`<figure>`) | ✓ | ✓ | ✓ | ✓ |
+| Generated video | ✓ | ✓ | ✗ (iframe) | ✓ |
+| Mermaid diagram | ✓ | ✓ | ✗ (JS) | ✓ |
+| Data card | ✓ | ✓ | ✗ (JS) | ✓ |
+| Dataset embed | ✓ | ✓ | ✗ (JS) | ✓ |
+| YouTube/embed | ✓ | ✓ | ✗ (iframe) | ✓ |
+| Audio player | ✓ | ✓ | ✗ | ✓ |
+| Comment screenshots | ✗ | ✓ (screenshots=[]) | ✗ | ✗ |
+
+**Planner widgets** (progress-ring, column-breakdown, active-tasks, task-activity-feed) are a special case — they only work in **datasphere pages** wired to a plan mode via `data-plan-mode-id`. See `skills/all-dai-sdd/SKILL.md` for the full dashboard template.
+
+### Always Close the Loop
+
+After producing any artifact, don't just return the URL — offer to embed it:
+- "I generated the image. Want me to add it to the launch page?"
+- "Here's the mermaid diagram. Want me to embed it in the spec task?"
+- "Data card created. Want me to write a narrative page around it?"
+
+---
+
 ## Cache Aggressively — Don't Re-fetch What You Know
 
 As the conversation progresses, cache every meaningful ID and reference you've already fetched. The local SQLite state (`dai.state`) persists across tool calls — use it.
