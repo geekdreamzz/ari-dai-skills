@@ -437,11 +437,71 @@ When an Epic moves to Done:
 
 ---
 
+## Task In-Progress Workflow — Dashboard Visibility
+
+**REQUIRED before starting any task.** Mark the task `IN_PROGRESS` so it appears in the "Active Execution" dashboard widget. Without this, the dashboard shows no in-flight work.
+
+```bash
+curl -X PATCH "$DATASPHERES_BASE_URL/api/v2/dataspheres/<dsId>/tasks/<taskId>" \
+  -H "Authorization: Bearer $DATASPHERES_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"status":"IN_PROGRESS"}'
+```
+
+Post a start comment so the activity feed shows movement:
+
+```bash
+curl -X POST "$DATASPHERES_BASE_URL/api/v2/dataspheres/<dsId>/tasks/<taskId>/comments" \
+  -H "Authorization: Bearer $DATASPHERES_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"content":"[all-dai-sdd-system-message]\n\n🔵 **IN PROGRESS** — Starting <T-XXX>. Depends-on cleared."}'
+```
+
+---
+
 ## Task Done Workflow — Completion Comment with Screenshots
 
-When marking a task Done, post a structured completion comment. The activity feed widget on the dashboard renders these comments — including screenshot thumbnails that link to full-size images.
+When marking a task Done, follow this **ordered sequence** — every step is mandatory:
 
-### Upload Playwright screenshots
+### Step 1: Tick acceptance checklist FIRST (gate — do not skip)
+
+Before posting the comment or moving to Done, **PATCH the task content** to mark every verified acceptance criterion as `data-checked="true"`.
+
+```bash
+# Fetch current task content
+TASK_JSON=$(curl -s "$DATASPHERES_BASE_URL/api/v2/dataspheres/<dsId>/tasks/<taskId>" \
+  -H "Authorization: Bearer $DATASPHERES_API_KEY")
+
+# Tick ALL verified criteria (replace false → true for each verified item)
+# Use node to safely manipulate the JSON content:
+node -e "
+const json = $(echo "$TASK_JSON");
+const updated = json.content.replace(
+  /data-checked=\"false\"><p>YOUR CRITERION TEXT/g,
+  'data-checked=\"true\"><p>YOUR CRITERION TEXT'
+);
+console.log(JSON.stringify({ content: updated }));
+" > /tmp/task_patch.json
+
+curl -X PATCH "$DATASPHERES_BASE_URL/api/v2/dataspheres/<dsId>/tasks/<taskId>" \
+  -H "Authorization: Bearer $DATASPHERES_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d @/tmp/task_patch.json
+```
+
+**To tick ALL criteria at once** (when all are verified):
+```bash
+UPDATED=$(echo "$TASK_JSON" | sed 's/data-checked=\\"false\\"/data-checked=\\"true\\"/g')
+CONTENT=$(echo "$UPDATED" | grep -o '"content":"[^"\\]*\(\\.[^"\\]*\)*"' | head -1 | sed 's/^"content":"//;s/"$//')
+curl -X PATCH "$DATASPHERES_BASE_URL/api/v2/dataspheres/<dsId>/tasks/<taskId>" \
+  -H "Authorization: Bearer $DATASPHERES_API_KEY" \
+  -H "Content-Type: application/json" \
+  --data-raw "{\"content\": \"$CONTENT\"}"
+```
+
+**VERIFY** the PATCH response includes `data-checked="true"` items before proceeding.
+
+### Step 2: Upload Playwright screenshots
 
 ```bash
 SCREENSHOT_URLS=""
@@ -458,7 +518,7 @@ SCREENSHOT_URLS="[${SCREENSHOT_URLS%,}]"
 
 If no screenshots exist, set `SCREENSHOT_URLS="[]"`.
 
-### Post the completion comment
+### Step 3: Post the completion comment
 
 ```bash
 curl -X POST "$DATASPHERES_BASE_URL/api/v2/dataspheres/<dsId>/tasks/<taskId>/comments" \
@@ -472,7 +532,7 @@ curl -X POST "$DATASPHERES_BASE_URL/api/v2/dataspheres/<dsId>/tasks/<taskId>/com
 
 The `screenshots` array (CDN URLs) shows up as clickable thumbnail gallery in the activity feed widget. The `[all-dai-sdd-system-message]` prefix adds a purple SDD badge on the comment card.
 
-### Then PATCH task to Done
+### Step 4: PATCH task to Done
 
 ```bash
 curl -X PATCH "$DATASPHERES_BASE_URL/api/v2/dataspheres/<dsId>/tasks/<taskId>" \
