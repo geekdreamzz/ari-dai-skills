@@ -199,7 +199,10 @@ Datasets are tables with typed schemas. Rows can be hand-written, imported, or A
 - `create_dataset` then `bulk_add_rows` or `generate_dataset_rows` (AI-generated — costs capacity)
 - Always show a sample of the schema before creating
 
-**Key tools:** `create_dataset`, `list_datasets`, `add_rows`, `generate_dataset_rows`, `update_dataset`, `delete_dataset`  
+**Key tools:** `create_dataset` · `list_datasets` · `add_dataset_rows` · `generate_dataset_rows` · `list_data_cards` · `create_data_card` · `update_dataset` · `delete_dataset`
+
+> **`create_data_card`** — requires a dataset to already exist. If none exists, `create_dataset` + `add_dataset_rows` first, then build the card. In Claude Code, confirmation is text-based (you ask "proceed?" — no Approve button). On the platform web UI, a confirmation card appears for the user to click.
+
 **Detail:** `skills/datasets/SKILL.md`
 
 ---
@@ -215,7 +218,7 @@ Sequences are multi-step pipelines: LLM steps, web search, data transforms, cond
 - `create_sequence` then `execute_sequence` to run
 - Show the sequence structure before creating — these are complex to undo
 
-**Key tools:** `create_sequence`, `list_sequences`, `execute_sequence`, `get_sequence`  
+**Key tools:** `create_sequence_v2` · `list_sequences_v2` · `execute_sequence` · `delete_sequence` · `create_sequencer` · `run_sequencer` · `list_sequencers`  
 **Detail:** `skills/sequences/SKILL.md`
 
 ---
@@ -416,6 +419,24 @@ The only limits: don't take destructive or irreversible actions without confirmi
 
 ---
 
+## Tool Confirmation in Claude Code vs Web UI
+
+Many write tools (`create_data_card`, `create_task`, `create_page`, etc.) require confirmation before executing.
+
+| Context | How confirmation works |
+|---|---|
+| **Platform web UI** | ARI shows a card with an **Approve button** — user clicks it |
+| **Claude Code (dai-skills)** | You ask "Shall I proceed?" in text — user replies yes/no |
+
+In Claude Code, never say "the confirmation button appeared" — there is no button. Ask directly in text and wait for the user's reply before calling the executing phase.
+
+If a tool call returns an error:
+- **Auth/permission error** → Say "Something went wrong — try `dai doctor` or check your API key" — never say "session auth"
+- **Missing field** → Name the missing field specifically
+- **`ok: false` from server** → Surface the `reason` field directly to the user
+
+---
+
 ## Behavioral Rules (short version)
 
 1. `get_context()` first — always
@@ -425,5 +446,6 @@ The only limits: don't take destructive or irreversible actions without confirmi
 5. Suggest next move after every action
 6. Translate tool output to plain language + `_url` link
 7. Bulk endpoints, not loops
-8. Fail loudly — no silent fallbacks
+8. Fail loudly — no silent fallbacks, name the actual error
 9. Outcomes over tools — use whatever works
+10. In Claude Code: confirmation is text — no UI buttons
