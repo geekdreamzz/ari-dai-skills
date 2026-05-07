@@ -1173,6 +1173,29 @@ validates_ref: SPEC-{DOMAIN}-NNN
 
 ---
 
+### Images in Context and Result Specs
+
+Images are first-class content in context and result specs. Napkin drawings, wireframes, app screenshots, whiteboard photos, UI mockups — all of these belong embedded in the spec page, not in a separate folder or skipped.
+
+**Ari's image protocol when creating any context or result spec:**
+
+1. If the user pastes, attaches, or mentions an image → embed it immediately. Never skip.
+2. If the user provides a local file path → `upload_file(path)` first, then embed the returned URL.
+3. If the image is already a hosted HTTPS URL → embed directly.
+4. If the context involves UI work, flows, or physical sketches → **proactively ask**: "Do you have any screenshots or sketches to include?"
+
+**Embedding pattern (same as pages):**
+```html
+<figure data-image-figure data-alignment="center" data-size="full">
+  <img src="https://cdn.dataspheres.ai/uploads/sketch-001.png" alt="Napkin sketch — auth flow" />
+  <figcaption>Napkin sketch from kickoff — JWT flow overview</figcaption>
+</figure>
+```
+
+For multiple images, embed them in sequence under a `## Visual References` section. Each gets a caption explaining what it shows and why it's relevant to the spec.
+
+---
+
 ### Template: `ctx-prompt`
 
 Context specs are created as **pages** in the datasphere (folder: "Context"), not as planner tasks. Ari creates them automatically when the user shares a prompt, research thread, code snippet, or doc as input to an execution spec.
@@ -1192,6 +1215,13 @@ cited_by: [SPEC-AUTH-001, SPEC-AUTH-002]
 <p>Verbatim or lightly cleaned user prompt / voice memo transcription. Preserved exactly — this is the authoritative record of what was asked.</p>
 
 <blockquote><p>"Build a JWT-based auth system. Users log in with email + password. Tokens expire in 15 minutes. Refresh tokens rotate on use. Must work with our current Redis setup."</p></blockquote>
+
+<h2>Visual References <!-- #images --></h2>
+<p>Napkin drawings, whiteboard photos, wireframes, or annotated screenshots shared alongside the brief.</p>
+<figure data-image-figure data-alignment="center" data-size="full">
+  <img src="{uploaded-url}" alt="Napkin sketch — initial auth flow concept" />
+  <figcaption>Sketch from kickoff: shows the intended token flow from login to refresh</figcaption>
+</figure>
 
 <h2>Key Intent <!-- #intent --></h2>
 <ul>
@@ -1246,6 +1276,13 @@ class SessionAuth:
   <li>Redis key pattern: <code>session:{token}</code> → adapt to <code>refresh:{token}</code></li>
   <li>TTL handling: keep the same Redis SETEX pattern</li>
 </ul>
+
+<h2>Visual References <!-- #images --></h2>
+<p>Screenshots of the code in context, IDE views, or annotated diffs. Upload with upload_file() if local.</p>
+<figure data-image-figure data-alignment="center" data-size="full">
+  <img src="{uploaded-url}" alt="Screenshot: SessionAuth class in IDE" />
+  <figcaption>SessionAuth as it exists today — annotated to show the Redis key pattern</figcaption>
+</figure>
 ```
 
 ---
@@ -1374,6 +1411,17 @@ def generate_jwt(user_id: str, expires_in: int = 900) -> str:
   <li>Integration tests: 4 passing</li>
   <li>Coverage: 94% on src/auth/jwt.py</li>
 </ul>
+
+<h2>Screenshots <!-- #screenshots --></h2>
+<p>Visual evidence of the built feature — running UI, test output, terminal output, before/after comparisons. Upload with upload_file() if local.</p>
+<figure data-image-figure data-alignment="center" data-size="full">
+  <img src="{uploaded-url}" alt="Login flow — working in staging" />
+  <figcaption>Login endpoint returning tokens in staging — matches SPEC-AUTH-001#td-api response schema</figcaption>
+</figure>
+<figure data-image-figure data-alignment="center" data-size="full">
+  <img src="{uploaded-url}" alt="Test suite passing" />
+  <figcaption>All 16 auth tests green — npx jest src/auth 2025-03-22</figcaption>
+</figure>
 
 <h2>Deviations from Spec <!-- #deviations --></h2>
 <p>Any spec sections not implemented, scope changes made during execution, or decisions that differ from the original spec. If none: "None — implemented as specced."</p>
