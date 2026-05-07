@@ -279,6 +279,22 @@ Pattern: <div data-experience-block data-experience-spec="{json-escaped spec}"><
 Example: (advanced — ask the user before using)
 When to use: Only when the user explicitly says "make this a presentation" or "slide experience".
 
+### citation ⭐ ANTI-HALLUCINATION
+Inline source citation badge [N] — links a claim to a numbered reference in the appendix.
+Pattern: <span data-type="citation" data-citation-n="{N}" data-citation-title="{URL-encoded title}" data-citation-url="{url}" data-citation-excerpt="{URL-encoded excerpt}" class="citation-marker"><sup>[{N}]</sup></span>
+Required attrs: data-type="citation", data-citation-n, data-citation-url
+Example: <p>The global AI market reached $207B in 2023<span data-type="citation" data-citation-n="1" data-citation-title="AI%20Market%20Report%202023" data-citation-url="https://example.com/report" data-citation-excerpt="" class="citation-marker"><sup>[1]</sup></span>.</p>
+When to use: After ANY factual claim from a web_search result — statistics, quotes, findings. Place immediately after the claim. Number sequentially from 1. This PREVENTS hallucination by requiring every fact to trace to a real URL.
+Rules: data-citation-n must be sequential integers from 1; data-citation-title and data-citation-excerpt must be URL-encoded; Always pair with a citationAppendix block; Use real URLs from web_search results — never invent URLs
+
+### citationAppendix ⭐ ANTI-HALLUCINATION
+Auto-generated reference list block — appears at the bottom, lists all citations.
+Pattern: <div data-type="citationAppendix" class="citation-appendix-placeholder">[Citation References]</div>
+Required attrs: data-type="citationAppendix"
+Example: <div data-type="citationAppendix" class="citation-appendix-placeholder">[Citation References]</div>
+When to use: Add exactly ONE at the very end of every page that contains citation badges. The editor populates it automatically — the inner text is just a placeholder.
+Rules: Only ONE citationAppendix per document; Place at the very end after all content; Required whenever you use citation badges
+
 ### mention
 @-mention of a datasphere (inline pill that links to the datasphere).
 Pattern: <span class="mention" data-type="datasphere" data-mention-id="{id}" data-mention-label="{uri}" data-display-name="{name}">@{name}</span>
@@ -305,9 +321,10 @@ When to use: Citing a source, linking to an external reference. Always include c
 
 
 ## CRITICAL REMINDERS
-- Every custom block (`dataCard`, `datasetEmbed`, `mermaid`, `embed`, `customImage`, etc.) is a <div> or <figure> with `data-type="..."`. Never omit the data-type.
+- Every custom block (`dataCard`, `datasetEmbed`, `mermaid`, `embed`, `customImage`, `citationAppendix`, etc.) is a <div> or <figure> with `data-type="..."`. Never omit the data-type.
 - For `dataCard` and `datasetEmbed`: the ids (data-datacard-id, data-dataset-id, data-datasphere-id) MUST be real. Get them from list_data_cards / search_data_cards / create_data_card tool results. Never invent ids.
 - The placeholder inner text (e.g. `[Data Card: id]`) is fine — the editor discards it on hydration. It just needs to be non-empty.
+- **CITATIONS**: Use `<span data-type="citation">` after EVERY factual claim from web_search results. Add ONE `<div data-type="citationAppendix">` at the very end. This is the primary anti-hallucination mechanism. URL-encode data-citation-title and data-citation-excerpt.
 - Output ONE HTML string. No markdown, no ```html fences, no explanation outside the HTML.
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -315,7 +332,7 @@ When to use: Citing a source, linking to an external reference. Always include c
 |-------|------|----------|-------------|
 | `datasphereUri` | string | yes | Datasphere URI to create the page in |
 | `title` | string | yes | Page title |
-| `content` | string | no | Full page HTML. Write a comprehensive, research-grade article (aim for 800–2500+ words): use ALL research findings and data from the conversation, embed any data cards from create_data_card tool results using <div data-type="dataCard" data-datacard-id="..." data-dataset-id="..." data-datasphere-id="...">, use <h2>/<p>/<ul>/<strong>/<blockquote>. NEVER write a stub — always draft the complete, fully-developed document. |
+| `content` | string | no | Full page HTML. Write a comprehensive, research-grade article (aim for 800–2500+ words): use ALL research findings and data from the conversation, embed any data cards from create_data_card tool results using <div data-type="dataCard" data-datacard-id="..." data-dataset-id="..." data-datasphere-id="...">, cite every fact with inline <span data-type="citation"> badges + ONE <div data-type="citationAppendix"> at the end, use <h2>/<p>/<ul>/<strong>/<blockquote>. NEVER write a stub — always draft the complete, fully-developed document. |
 | `folderName` | string | no | Folder name (auto-created if missing) |
 | `status` | string | no | Page status — ALWAYS default to DRAFT unless user explicitly says publish |
 | `isPubliclyVisible` | boolean | no | If true, page is accessible on the public internet without login (SEO-indexed). Default false. |
@@ -514,6 +531,22 @@ Pattern: <div data-experience-block data-experience-spec="{json-escaped spec}"><
 Example: (advanced — ask the user before using)
 When to use: Only when the user explicitly says "make this a presentation" or "slide experience".
 
+### citation ⭐ ANTI-HALLUCINATION
+Inline source citation badge [N] — links a claim to a numbered reference in the appendix.
+Pattern: <span data-type="citation" data-citation-n="{N}" data-citation-title="{URL-encoded title}" data-citation-url="{url}" data-citation-excerpt="{URL-encoded excerpt}" class="citation-marker"><sup>[{N}]</sup></span>
+Required attrs: data-type="citation", data-citation-n, data-citation-url
+Example: <p>The global AI market reached $207B in 2023<span data-type="citation" data-citation-n="1" data-citation-title="AI%20Market%20Report%202023" data-citation-url="https://example.com/report" data-citation-excerpt="" class="citation-marker"><sup>[1]</sup></span>.</p>
+When to use: After ANY factual claim from a web_search result. Place immediately after the claim. Number sequentially from 1.
+Rules: data-citation-n must be sequential integers from 1; data-citation-title and data-citation-excerpt must be URL-encoded; Always pair with a citationAppendix block; Use real URLs from web_search results — never invent URLs
+
+### citationAppendix ⭐ ANTI-HALLUCINATION
+Auto-generated reference list block — appears at the bottom, lists all citations.
+Pattern: <div data-type="citationAppendix" class="citation-appendix-placeholder">[Citation References]</div>
+Required attrs: data-type="citationAppendix"
+Example: <div data-type="citationAppendix" class="citation-appendix-placeholder">[Citation References]</div>
+When to use: Add exactly ONE at the very end of every page that contains citation badges.
+Rules: Only ONE citationAppendix per document; Place at the very end; Required whenever you use citation badges
+
 ### mention
 @-mention of a datasphere (inline pill that links to the datasphere).
 Pattern: <span class="mention" data-type="datasphere" data-mention-id="{id}" data-mention-label="{uri}" data-display-name="{name}">@{name}</span>
@@ -540,9 +573,10 @@ When to use: Citing a source, linking to an external reference. Always include c
 
 
 ## CRITICAL REMINDERS
-- Every custom block (`dataCard`, `datasetEmbed`, `mermaid`, `embed`, `customImage`, etc.) is a <div> or <figure> with `data-type="..."`. Never omit the data-type.
+- Every custom block (`dataCard`, `datasetEmbed`, `mermaid`, `embed`, `customImage`, `citationAppendix`, etc.) is a <div> or <figure> with `data-type="..."`. Never omit the data-type.
 - For `dataCard` and `datasetEmbed`: the ids (data-datacard-id, data-dataset-id, data-datasphere-id) MUST be real. Get them from list_data_cards / search_data_cards / create_data_card tool results. Never invent ids.
 - The placeholder inner text (e.g. `[Data Card: id]`) is fine — the editor discards it on hydration. It just needs to be non-empty.
+- **CITATIONS**: Use `<span data-type="citation">` after EVERY factual claim from web_search results. Add ONE `<div data-type="citationAppendix">` at the very end. This is the primary anti-hallucination mechanism. URL-encode data-citation-title and data-citation-excerpt.
 - Output ONE HTML string. No markdown, no ```html fences, no explanation outside the HTML.
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 

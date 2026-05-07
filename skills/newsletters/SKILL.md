@@ -171,6 +171,96 @@ get_newsletter(newsletter_id="nl_abc123")
 
 `generate_issue` triggers an LLM completion. Confirm with the user before generating in bulk.
 
+---
+
+## Activity Digest (Separate System)
+
+The **Activity Digest** is a personalized email sent to individual members based on their datasphere memberships and activity — it is NOT the same as a newsletter. Newsletters are datasphere-owned publications; the digest is a per-user, platform-managed email.
+
+### Digest vs Newsletter
+
+| Feature | Newsletter | Activity Digest |
+|---|---|---|
+| Scope | Datasphere publication | Per-user, cross-datasphere |
+| Content | Manually written / AI-generated from DS context | Auto-scored from member activity |
+| Schedule | Datasphere-controlled | User-controlled (daily/weekly/biweekly) |
+| Recipients | DS subscribers | Individual member only |
+| Control | DS admin | User's notification settings |
+
+### Check digest settings
+
+```python
+get_user_notification_settings(user_id)
+# Returns: activityDigestEnabled, activityDigestFrequency, activityDigestDay,
+#          activityDigestTime, activityDigestTimezone, activityDigestLastSentAt
+```
+
+### Preview what a user's next digest would contain
+
+```python
+preview_activity_digest(user_id, data_only=True)
+# Returns: sections (by datasphere), totalItems, lookbackHours
+# Each item: type, resourceTitle, contentPreview, imageUrl, videoThumbnail, ctaUrl, upvotes
+```
+
+Or via the preview script (requires prod DB access):
+```bash
+DATABASE_URL="$PRODUCTION_DATABASE_URL" npx tsx scripts/preview-digest-prod.ts <userId> --no-ai
+# Full HTML: omit --no-ai (charges Anthropic capacity)
+```
+
+### See a user's digest history (what was sent before)
+
+```python
+get_activity_digest_history(user_id, limit=30)
+# Returns: lastSentAt, frequency, enabled, items (with title, datasphere, sentAt)
+```
+
+### Scoring algorithm (key signals)
+
+| Signal | Multiplier |
+|---|---|
+| Platform DS content (crawler noise) | 0.1× penalty |
+| OWNER/ADMIN of datasphere | 1.8× boost |
+| Active contributor (posted in last 90d) | 1.4× boost |
+| Interest match (research query keywords) | up to 1.6× boost |
+| YouTube/video content | 3× content-type boost |
+| Freshness (exponential decay, half-life = lookback/3) | varies |
+| Base floor (prevents zero-score collapse) | +0.1 × freshness |
+
+### Zero-engagement filter
+
+`WEB_SEARCH_COMPLETED` and `SEQUENCE_COMPLETED` with 0 upvotes and 0 replies are **hard-filtered** before scoring — pure machine-generated noise.
+
+### Adaptive lookback
+
+If a user's non-platform community pool has fewer than 5 items in the primary window (7d for weekly), the system automatically extends to 30 days for their community dataspheres. Prevents platform crawler content from dominating in slow community weeks.
+
+### Content quality seeding
+
+After each URL scrape, `Activity.engagementScore` is seeded with a quality baseline (0–8):
+- YouTube embed: +3
+- Has thumbnail: +1
+- LLM summary > 100 chars: +2
+- Meaningful title/description: +0.5 each
+- Authority domain (youtube.com, substack.com, etc.): +1
+
+This gives ranking signal before any user engagement accumulates.
+
+### API endpoints
+
+| Action | Endpoint |
+|---|---|
+| Preview digest | `GET /api/users/me/activity-digest/preview?dataOnly=true` |
+| Digest history | `GET /api/users/me/activity-digest/history?limit=30` |
+| Digest settings | `GET /api/users/me/notification-settings` |
+
+### Ari tools (available in-app)
+
+- `digest_preview` — "Preview my activity digest"
+- `digest_history` — "Show my digest history"
+- `digest_settings` — "Check my digest settings"
+
 ## Error Patterns
 
 | Error | Cause | Fix |

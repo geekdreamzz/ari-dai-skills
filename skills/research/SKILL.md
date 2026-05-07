@@ -67,6 +67,18 @@ list_research_conversations(limit=20)
 - **Datasphere context.** Research messages include `datasphereId` so the AI can cross-reference your datasphere's content alongside web results.
 - **SSE responses.** The send-message endpoint streams via SSE. The GET messages endpoint returns the completed content once streaming finishes.
 
+## Citation System (Anti-Hallucination)
+
+Research responses include inline citation badges `[N]` that link every factual claim back to the source URL. When the user asks ARI to research something:
+
+1. **In chat**: ARI outputs `[N]` badges inline in the response (e.g. "The market grew 40%[1]"). A `## Sources` appendix lists all numbered sources at the end. Each badge is interactive — click to see the source URL + excerpt.
+
+2. **In pages** (when `create_page` / `update_page` is called after research): ARI embeds `<span data-type="citation">` nodes inline in the HTML and appends a `<div data-type="citationAppendix">` block. The editor renders these as interactive [N] badges with hover popovers and an auto-populated reference list.
+
+**Why this matters**: Citations prevent hallucination. Every stat, claim, or finding must trace back to a real URL from the `web_search` tool results. If ARI can't cite something, it shouldn't state it as fact.
+
+**For page content**: Always use real URLs from the `webSearchResults` field in the research response. Never invent citation URLs.
+
 ## Cost Note
 
 Each `start_research` call triggers a web search + LLM completion. Web searches consume capacity tokens. Confirm with the user before running bulk research loops.
