@@ -786,18 +786,20 @@ Skipping `DEPRECATED` before removing a spec is a protocol violation. `supersede
 
 ### Per-Spec Trace View
 
-Every spec task embeds its own trace graph — the lineage for *this spec only*: what context informed it, what code implements it, what result covers it. This is different from the initiative-wide trace map in the dashboard; it's a per-card view that lives inside the task itself.
+Every spec task has a trace view showing the lineage for *this spec only*: what context informed it, what code implements it, what result covers it. Planner tasks are used for all kinds of work — this view is conditional and only appears on tasks whose content contains a `spec_id:` YAML block.
 
-**What Ari does today** — generates a Mermaid mini-graph and embeds it in the task content, updated each time a new trace is added to TRACES.yml:
+#### How it works today (Tiptap embed — workaround)
+
+Ari adds a Mermaid block inside the task's `content` field as a regular Tiptap node. It lives in the editable body, so it can be accidentally deleted and Ari must PATCH the task every time a new trace is added. This is a stopgap — it works but is fragile.
 
 ```html
 <h2>Trace View <!-- #trace --></h2>
 <div data-type="mermaid" data-source="graph LR
   CTX1[CTX-PROMPT-001\nUser Brief]
   CTX2[CTX-CODE-001\nsession_auth.py]
-  SPEC[SPEC-AUTH-001\nJWT Auth Service]
-  CODE1[src/auth/jwt.py\n::generate_jwt]
-  CODE2[src/auth/service.py\n::AuthService]
+  SPEC[SPEC-AUTH-001\nJWT Auth]
+  CODE1[jwt.py::generate_jwt]
+  CODE2[service.py::AuthService]
   RESULT[RESULT-AUTH-001\nBuild Report]
   CTX1 -->|informs| SPEC
   CTX2 -->|informs| SPEC
@@ -806,17 +808,19 @@ Every spec task embeds its own trace graph — the lineage for *this spec only*:
   RESULT -->|summarizes| SPEC"></div>
 ```
 
-Ari generates this block when the spec task is first created (from front matter `context_refs`) and PATCHes it each time a new `implements`, `satisfies`, or `summarizes` trace is added for this spec.
+#### Platform request — conditional panel in the task modal
 
-**Platform native version (requested)** — instead of a static Mermaid block, the platform renders the YAML front matter block as a live `SpecTraceCard` component when it detects `spec_id:` in a code block. The card shows:
+The correct implementation is a **read-only panel rendered outside the Tiptap editor** in the task detail modal. Not part of the editable content. Condition: task `content` contains a YAML block with a `spec_id:` key.
 
-- Metadata strip: `spec_id` · `spec_type` badge · `status` badge · `version` · `column`
-- Mini trace graph: CTX nodes → this SPEC → CODE nodes → RESULT nodes, each clickable (navigates to the spec page or file)
-- Live data: reads the initiative's Traces dataset filtered on `from_ref = spec_id OR to_ref = spec_id`
+When the condition is true, the task modal renders a collapsible "Spec Trace" section (above or below the content editor) showing:
 
-This means opening a spec task shows the full traceability without leaving the planner. No separate page, no dashboard detour.
+- **Metadata strip:** `spec_id` pill · `spec_type` badge · `status` badge (DRAFT / ACTIVE / DEPRECATED) · `version` · `column`
+- **Mini trace graph:** CTX nodes → this SPEC → CODE nodes → RESULT nodes. Each node is clickable — CTX/RESULT nodes navigate to the spec page, CODE nodes copy the file path or open in the linked repo.
+- **Live data source:** reads the initiative's Traces dataset (created in step 11), filtered on `from_ref = spec_id OR to_ref = spec_id`. Auto-refreshes on modal open.
 
-**Implementation path for platform:** detect `<pre><code class="language-yaml">` containing `spec_id:` → swap rendering to `SpecTraceCard`. The Traces dataset already exists (step 11); the card just needs a filtered read of it. The Mermaid fallback renders immediately with no platform changes.
+This panel is **invisible on non-SDD tasks** — the condition is only true when `spec_id:` is present. No impact on normal planner use. No editable content to accidentally delete. The trace view stays current without Ari having to PATCH the task.
+
+**The key distinction:** the Tiptap content is the spec. The trace panel is metadata *about* the spec. They should live in separate layers of the modal, not mixed in the same editable body.
 
 ---
 
@@ -1814,48 +1818,61 @@ create_data_card(dataset_id="<spec-health-id>", name="Drift Signals",
 
 Capture the three card IDs for substitution into the dashboard template.
 
-### Mermaid Trace Graph (Visualization Appendix)
+### Initiative-Wide Trace Map (Dashboard)
 
-Ari generates a Mermaid DAG from TRACES.yml and embeds it in the dashboard page as a `data-type="mermaid"` block. This works today with zero platform changes — the Mermaid renderer already handles `graph TD`. Ari PATCHes this block whenever TRACES.yml is updated.
-
-Generated graph format:
+The initiative-wide view uses a **left-to-right swimlane** format — four named subgraphs (Context / Specs / Code / Results) with edges crossing lanes. This makes the CTX→SPEC→CODE→RESULT flow read naturally left to right and stays legible up to ~40 nodes. Ari generates it from TRACES.yml and PATCHes the dashboard page whenever the trace graph changes.
 
 ```
-graph TD
-  CTX_PROMPT_001["CTX-PROMPT-001\nUser Brief: auth system"]
-  CTX_CODE_001["CTX-CODE-001\nsrc/auth/session_auth.py"]
-  SPEC_AUTH_001["SPEC-AUTH-001\nJWT Auth Service\n(api-contract)"]
-  CODE_jwt["CODE\nsrc/auth/jwt.py\n::generate_jwt"]
-  CODE_svc["CODE\nsrc/auth/service.py\n::AuthService"]
-  RESULT_AUTH_001["RESULT-AUTH-001\nAuth Build Report"]
+graph LR
+  subgraph CTX ["Context"]
+    CTX_P1["CTX-PROMPT-001\nUser Brief"]
+    CTX_C1["CTX-CODE-001\nsession_auth.py"]
+    CTX_S1["CTX-SEARCH-001\nOAuth Research"]
+  end
 
-  CTX_PROMPT_001 -->|informs| SPEC_AUTH_001
-  CTX_CODE_001 -->|informs| SPEC_AUTH_001
-  SPEC_AUTH_001 -->|implements| CODE_jwt
-  SPEC_AUTH_001 -->|implements| CODE_svc
-  CODE_jwt -->|informed_by| CTX_CODE_001
-  RESULT_AUTH_001 -->|summarizes| SPEC_AUTH_001
-  RESULT_AUTH_001 -->|includes_artifact| CODE_jwt
-  RESULT_AUTH_001 -->|includes_artifact| CODE_svc
+  subgraph SPECS ["Execution Specs"]
+    SPEC1["SPEC-AUTH-001\nJWT Auth\n(api-contract)"]
+    SPEC2["SPEC-AUTH-DS-001\nTokens Schema\n(data-schema)"]
+  end
+
+  subgraph CODE ["Code & Artifacts"]
+    C1["jwt.py\n::generate_jwt"]
+    C2["service.py\n::AuthService"]
+    C3["migrations/0042"]
+  end
+
+  subgraph RESULTS ["Results"]
+    R1["RESULT-AUTH-001\nAuth Build Report"]
+  end
+
+  CTX_P1 --> SPEC1
+  CTX_C1 --> SPEC1
+  CTX_S1 --> SPEC2
+  SPEC1 --> C1
+  SPEC1 --> C2
+  SPEC2 --> C3
+  R1 --> SPEC1
+  R1 --> SPEC2
 ```
 
-The graph lives in the dashboard page under a "Trace Map" heading. Ari regenerates and PATCHes it each time a new trace is added to TRACES.yml.
+The swimlane makes the coverage gaps visible immediately: a Spec column node with no incoming CTX edges means the spec has no context citation. A Spec node with no outgoing CODE edges is unimplemented.
+
+The graph lives in the dashboard page under "Trace Map". Ari regenerates and PATCHes it on each TRACES.yml update. For the **platform `trace-map` widget**, this swimlane layout (four fixed lanes, edges between) is the right format to implement — not force-directed, which loses the tier structure above ~20 nodes.
 
 ### Platform Requests
 
 **What works today (no platform changes):**
-- Mermaid trace graph embedded in dashboard page — fully functional, Ari-generated and maintained
-- Dataset table embeds (Trace Appendix, Spec Health Index) — live queryable tables in the dashboard
-- Data cards for coverage/drift metrics
+- Per-spec Mermaid block inside task Tiptap content (PATCHed by Ari — fragile stopgap)
+- Initiative-wide swimlane Mermaid graph in dashboard page (PATCHed by Ari)
+- Dataset table embeds for the full trace appendix and Spec Health Index
+- Data cards for coverage and drift metrics
 
 **Requested platform enhancements:**
 
-| Priority | Feature | What it does | Notes |
+| Priority | Feature | What it does | Implementation note |
 |---|---|---|---|
-| **1** | `SpecTraceCard` — spec front matter renderer | When a task content contains a YAML block with `spec_id:`, render it as a live trace card: metadata strip (spec_id, spec_type badge, status badge, version, column) + mini trace graph (CTX→SPEC→CODE→RESULT) with clickable nodes | Reads initiative's Traces dataset filtered on this spec_id. Today: Ari embeds a static Mermaid fallback. Native card closes the "full lineage in one glance" loop without leaving the task. |
-| **2** | `data-widget-type="trace-map"` | Interactive force-directed graph in the dashboard reading the full Traces dataset; nodes navigate to spec pages or files on click | Replaces Ari-generated static Mermaid with a live interactive graph. Biggest initiative-level visualization win. |
-| **3** | `data-widget-type="trace-health"` | Ring gauge of active/orphaned/needs-review trace counts, zero config | Replaces manual data card setup; consistent across all SDD dashboards |
-| **4** | `data-widget-type="drift-alerts"` | Card list of specs with orphaned or needs-review traces, inline fix links | Makes drift visible at a glance |
-| **5** | Planner: `SPEC-*` / `CTX-*` / `RESULT-*` tag deep links | Tags matching those prefixes navigate to the spec page instead of filtering | Low effort, high discoverability value |
-
-**Fallbacks that work today with zero platform changes:** Mermaid per-spec trace block in task content (PATCHed by Ari), Mermaid initiative graph in dashboard page, dataset embeds for the full trace appendix, data cards for coverage metrics.
+| **1** | `SpecTraceCard` — conditional panel in task modal | When a task's `content` has a YAML block with `spec_id:`, render a read-only collapsible panel *outside* the Tiptap editor in the task modal. Shows: metadata strip (spec_id, spec_type, status, version, column) + mini trace graph. Invisible on non-SDD tasks. | Reads Traces dataset filtered on this spec_id. Lives outside the editable body — not a Tiptap node. The per-spec Mermaid block inside content is the stopgap until this ships. |
+| **2** | `data-widget-type="trace-map"` | Four-lane swimlane (CTX / Specs / Code / Results) in the dashboard, reading the full Traces dataset. Nodes are clickable — CTX/RESULT nodes open spec pages, CODE nodes copy file path. | Swimlane layout, not force-directed. Four fixed columns, edges between. Replaces Ari-generated static Mermaid. |
+| **3** | `data-widget-type="trace-health"` | Ring gauge of active/orphaned/needs-review trace counts, zero config per initiative | Additive widget type, existing infrastructure |
+| **4** | `data-widget-type="drift-alerts"` | Card list of specs with orphaned or needs-review traces, inline fix links | Additive widget type |
+| **5** | Planner: `SPEC-*` / `CTX-*` / `RESULT-*` tag deep links | Tags matching those prefixes navigate to the spec page instead of filtering | Minor tag rendering change |
