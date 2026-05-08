@@ -215,7 +215,7 @@ Create three data cards from these datasets: Trace Health (donut by status), Spe
 ### Step 12 of 14 — Publish dashboard page
 → *Detail: line 74 (Dashboard Page Template)*
 
-Use the exact template from line 74. Widgets: `progress-ring`, `column-breakdown`, `active-tasks`, `task-activity-feed`. **No other `data-widget-type` values are valid** — any other value crashes the renderer.
+Use the exact template from line 74. Task-based widgets: `progress-ring`, `column-breakdown`, `active-tasks`, `task-activity-feed`. Spec dataset widgets (require `data-dataset-id`): `trace-health`, `drift-alerts`, `trace-map`. See the "Valid data-widget-type values" section for the full reference.
 
 The planner link in the dashboard content MUST use `?mode=<planModeId>` — not `?planMode=`. No emojis in page content (they render as `??` in the platform renderer).
 
@@ -345,17 +345,47 @@ Output the following, then stop:
 
 The `data-datasphere-uri` attribute enables deep links from the activity feed — each comment card links to its task in the planner at `/app/<uri>/planner?mode=<planModeId>&taskId=<taskId>`.
 
+**Tag chip deep links (built-in):** Any tag on a task card whose name matches `SPEC-*`, `CTX-*`, or `RESULT-*` is automatically clickable in the Kanban/List views — clicking navigates to `/app/<uri>/docs/<tag-name-lowercase>`. This means tagging a task with `SPEC-AUTH-001` creates a one-click link from the task card to the corresponding spec page. No extra setup required.
+
 ### Valid `data-widget-type` values
+
+**Task-based widgets** — fetch from the planner tasks API. Require `data-datasphere-id` + optional `data-plan-mode-id`.
 
 | Value | Renders |
 |---|---|
-| `progress-ring` | % complete gauge |
-| `column-breakdown` | Count per column |
+| `progress-ring` | % complete gauge (donut ring) |
+| `column-breakdown` | Count per column with progress bars |
 | `active-tasks` | Tasks in Execution / IN_PROGRESS |
-| `blocked-tasks` | Blocked tasks with reasons |
-| `task-activity-feed` | Recent comments + screenshots |
+| `blocked-tasks` | Blocked tasks |
+| `task-activity-feed` | Recent comments + screenshots gallery |
 
-**Any other value crashes the renderer** (`Cannot read properties of undefined (reading 'icon')`). Only use values from this table.
+**Spec dataset widgets** — fetch from a dataset. Require `data-datasphere-id` + `data-dataset-id` pointing to a spec tracker dataset where rows have `spec_type`, `status`, and optionally `spec_id`, `title`, `drift`, `drift_reason`.
+
+| Value | Renders | Required columns |
+|---|---|---|
+| `trace-health` | Matrix: spec_type × status counts | `spec_type`, `status` |
+| `drift-alerts` | List of drifted/stale spec items | `status` or `drift` |
+| `trace-map` | Tiered SVG (CTX→SPEC→CODE→RESULT), clickable nodes | `spec_type`, `spec_id` |
+
+**Example for spec dataset widgets:**
+```html
+<div data-type="plannerWidget"
+     data-widget-type="trace-health"
+     data-datasphere-id="<dsId>"
+     data-datasphere-uri="<dsUri>"
+     data-dataset-id="<spec-tracker-dataset-id>"></div>
+```
+
+**Spec front matter cards** — no widget needed. Any YAML fenced code block in a TipTap page that contains a `spec_id:` key is automatically rendered as a SpecFrontMatterCard (status badge, spec type chip, lineage links). Example:
+```yaml
+spec_id: SPEC-AUTH-001
+spec_type: SPEC
+status: IN_PROGRESS
+title: "Auth token generation"
+domain: auth
+parent_spec: CTX-AUTH-001
+linked_tasks: T-042, T-043
+```
 
 ---
 
@@ -753,6 +783,42 @@ Skipping `DEPRECATED` before removing a spec is a protocol violation. `supersede
 **`spec_type` values:** `data-schema` | `api-contract` | `algorithm` | `data-flow` | `user-journey` | `architecture` | `component` | `integration` | `acceptance-criteria` | `test-plan`
 
 **`context_refs` types:** `decision` | `constraint` | `external_standard` | `research` | `legacy_code`
+
+### Per-Spec Trace View
+
+Every spec task embeds its own trace graph — the lineage for *this spec only*: what context informed it, what code implements it, what result covers it. This is different from the initiative-wide trace map in the dashboard; it's a per-card view that lives inside the task itself.
+
+**What Ari does today** — generates a Mermaid mini-graph and embeds it in the task content, updated each time a new trace is added to TRACES.yml:
+
+```html
+<h2>Trace View <!-- #trace --></h2>
+<div data-type="mermaid" data-source="graph LR
+  CTX1[CTX-PROMPT-001\nUser Brief]
+  CTX2[CTX-CODE-001\nsession_auth.py]
+  SPEC[SPEC-AUTH-001\nJWT Auth Service]
+  CODE1[src/auth/jwt.py\n::generate_jwt]
+  CODE2[src/auth/service.py\n::AuthService]
+  RESULT[RESULT-AUTH-001\nBuild Report]
+  CTX1 -->|informs| SPEC
+  CTX2 -->|informs| SPEC
+  SPEC -->|implements| CODE1
+  SPEC -->|implements| CODE2
+  RESULT -->|summarizes| SPEC"></div>
+```
+
+Ari generates this block when the spec task is first created (from front matter `context_refs`) and PATCHes it each time a new `implements`, `satisfies`, or `summarizes` trace is added for this spec.
+
+**Platform native version (requested)** — instead of a static Mermaid block, the platform renders the YAML front matter block as a live `SpecTraceCard` component when it detects `spec_id:` in a code block. The card shows:
+
+- Metadata strip: `spec_id` · `spec_type` badge · `status` badge · `version` · `column`
+- Mini trace graph: CTX nodes → this SPEC → CODE nodes → RESULT nodes, each clickable (navigates to the spec page or file)
+- Live data: reads the initiative's Traces dataset filtered on `from_ref = spec_id OR to_ref = spec_id`
+
+This means opening a spec task shows the full traceability without leaving the planner. No separate page, no dashboard detour.
+
+**Implementation path for platform:** detect `<pre><code class="language-yaml">` containing `spec_id:` → swap rendering to `SpecTraceCard`. The Traces dataset already exists (step 11); the card just needs a filtered read of it. The Mermaid fallback renders immediately with no platform changes.
+
+---
 
 ### Section-Level Anchors
 
@@ -1784,12 +1850,12 @@ The graph lives in the dashboard page under a "Trace Map" heading. Ari regenerat
 
 **Requested platform enhancements:**
 
-| Feature | What it does | Why it matters |
-|---|---|---|
-| `data-widget-type="trace-health"` | Native ring gauge reading Traces dataset — zero chart config per initiative | Replaces manual data card setup; consistent across all SDD dashboards |
-| `data-widget-type="drift-alerts"` | Card list of orphaned/needs-review traces with inline fix links | Makes drift visible at a glance without reading the appendix table |
-| `data-widget-type="trace-map"` | Interactive force-directed graph reading Traces dataset; nodes are clickable (navigate to spec page or file) | Replaces Ari-generated static Mermaid with a live, interactive graph. The biggest visualization win. |
-| Planner: `SPEC-*` tag deep link | Clicking a `SPEC-AUTH-001` tag on a task card navigates to the spec page | Closes the planner → spec navigation gap; low effort, high discoverability value |
-| Spec front matter renderer | YAML block with `spec_id:` key renders as a structured card: status badge, spec_type, lineage links | Replaces raw code block with a native spec card; makes specs feel first-class in the UI |
+| Priority | Feature | What it does | Notes |
+|---|---|---|---|
+| **1** | `SpecTraceCard` — spec front matter renderer | When a task content contains a YAML block with `spec_id:`, render it as a live trace card: metadata strip (spec_id, spec_type badge, status badge, version, column) + mini trace graph (CTX→SPEC→CODE→RESULT) with clickable nodes | Reads initiative's Traces dataset filtered on this spec_id. Today: Ari embeds a static Mermaid fallback. Native card closes the "full lineage in one glance" loop without leaving the task. |
+| **2** | `data-widget-type="trace-map"` | Interactive force-directed graph in the dashboard reading the full Traces dataset; nodes navigate to spec pages or files on click | Replaces Ari-generated static Mermaid with a live interactive graph. Biggest initiative-level visualization win. |
+| **3** | `data-widget-type="trace-health"` | Ring gauge of active/orphaned/needs-review trace counts, zero config | Replaces manual data card setup; consistent across all SDD dashboards |
+| **4** | `data-widget-type="drift-alerts"` | Card list of specs with orphaned or needs-review traces, inline fix links | Makes drift visible at a glance |
+| **5** | Planner: `SPEC-*` / `CTX-*` / `RESULT-*` tag deep links | Tags matching those prefixes navigate to the spec page instead of filtering | Low effort, high discoverability value |
 
-The `trace-map` interactive widget is the highest-value ask — the static Mermaid graph works but a clickable, live graph of the full CTX→SPEC→CODE→RESULT lineage would make the appendix genuinely useful during execution, not just as an audit artifact.
+**Fallbacks that work today with zero platform changes:** Mermaid per-spec trace block in task content (PATCHed by Ari), Mermaid initiative graph in dashboard page, dataset embeds for the full trace appendix, data cards for coverage metrics.
