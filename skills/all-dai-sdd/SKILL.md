@@ -1867,12 +1867,12 @@ The graph lives in the dashboard page under "Trace Map". Ari regenerates and PAT
 - Dataset table embeds for the full trace appendix and Spec Health Index
 - Data cards for coverage and drift metrics
 
-**Requested platform enhancements:**
+**Platform enhancements — all shipped ✅:**
 
-| Priority | Feature | What it does | Implementation note |
+| Priority | Feature | Status | Notes |
 |---|---|---|---|
-| **1** | `SpecTraceCard` — conditional panel in task modal | When a task's `content` has a YAML block with `spec_id:`, render a read-only collapsible panel *outside* the Tiptap editor in the task modal. Shows: metadata strip (spec_id, spec_type, status, version, column) + mini trace graph. Invisible on non-SDD tasks. | Reads Traces dataset filtered on this spec_id. Lives outside the editable body — not a Tiptap node. The per-spec Mermaid block inside content is the stopgap until this ships. |
-| **2** | `data-widget-type="trace-map"` | Four-lane swimlane (CTX / Specs / Code / Results) in the dashboard, reading the full Traces dataset. Nodes are clickable — CTX/RESULT nodes open spec pages, CODE nodes copy file path. | Swimlane layout, not force-directed. Four fixed columns, edges between. Replaces Ari-generated static Mermaid. |
-| **3** | `data-widget-type="trace-health"` | Ring gauge of active/orphaned/needs-review trace counts, zero config per initiative | Additive widget type, existing infrastructure |
-| **4** | `data-widget-type="drift-alerts"` | Card list of specs with orphaned or needs-review traces, inline fix links | Additive widget type |
-| **5** | Planner: `SPEC-*` / `CTX-*` / `RESULT-*` tag deep links | Tags matching those prefixes navigate to the spec page instead of filtering | Minor tag rendering change |
+| **1** | `SpecTraceCard` — conditional panel in task modal | ✅ Shipped | `src/client/components/planner/SpecTraceCard.tsx` — auto-triggers when task content has YAML with `spec_id:`. Collapsible panel outside TipTap. Discovers Traces dataset by name, filters on `from_ref`/`to_ref = spec_id`. |
+| **2** | `data-widget-type="trace-map"` | ✅ Shipped | Tiered column SVG (CTX → SPEC → CODE → RESULT) in `PlannerWidgetRenderer`. Clickable nodes — spec nodes navigate, code nodes copy path. Requires `data-dataset-id`. |
+| **3** | `data-widget-type="trace-health"` | ✅ Shipped | Matrix table of spec_type × status counts. Requires `data-dataset-id`. |
+| **4** | `data-widget-type="drift-alerts"` | ✅ Shipped | Card list of rows with drift/stale/orphan status. Requires `data-dataset-id`. |
+| **5** | Planner: `SPEC-*` / `CTX-*` / `RESULT-*` tag deep links | ✅ Shipped | `TaskCard.tsx` — tags matching `/^(SPEC\|CTX\|RESULT)-/i` render as clickable links to `/app/:uri/docs/:tag`. |
