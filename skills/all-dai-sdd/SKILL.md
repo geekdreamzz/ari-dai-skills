@@ -128,6 +128,17 @@ curl -X POST "$DATASPHERES_BASE_URL/api/v1/dataspheres/<uri>/pages" \   # v1 use
 
 GET existing plan modes first. If none match `tagFilter: ["<initiative>"]`, POST a new one.
 
+**Preferred approach** — pass `columns` in the POST to prevent default columns from being created at all (avoids having to delete `To Do` / `In Progress` / `In Review` in step 8):
+
+```bash
+curl -X POST "$DATASPHERES_BASE_URL/api/v2/dataspheres/<dsId>/tasks/plan-modes" \
+  -H "Authorization: Bearer $DATASPHERES_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"<Initiative Name>","tagFilter":["<initiative-slug>"],"columns":[{"name":"North Stars","color":"#7c3aed","isDoneState":false},{"name":"Epics","color":"#0891b2","isDoneState":false},{"name":"Execution","color":"#3b82f6","isDoneState":false},{"name":"Validation","color":"#f59e0b","isDoneState":false},{"name":"Done","color":"#22c55e","isDoneState":true}]}'
+```
+
+If the API does not accept `columns` on POST (older server version), omit it and clean up defaults in step 8:
+
 ```bash
 curl -X POST "$DATASPHERES_BASE_URL/api/v2/dataspheres/<dsId>/tasks/plan-modes" \
   -H "Authorization: Bearer $DATASPHERES_API_KEY" \
@@ -141,10 +152,21 @@ Capture `planModeId`. The planner URL is `?mode=<planModeId>` — NOT `?planMode
 
 ---
 
-### Step 8 of 14 — Create 5 scoped status groups + delete defaults
+### Step 8 of 14 — Verify 5 scoped status groups (delete defaults if needed)
 → *Detail: line 122 (Column Architecture)*
 
-**CRITICAL — do NOT reuse existing status groups from other plan modes or the datasphere defaults.** Creating the plan mode auto-creates 3 default columns (`To Do`, `In Progress`, `In Review`) AND a `Done` group. You must DELETE the 3 defaults and POST the 4 SDD groups — the auto-created `Done` is kept.
+**CRITICAL — do NOT reuse existing status groups from other plan modes or the datasphere defaults.**
+
+**If `columns` was passed in step 7**, no default columns will exist — this step only needs to verify the 5 groups and correct any `sortOrder` values if needed:
+
+```bash
+# Verify all 5 groups exist with correct names
+curl "$DATASPHERES_BASE_URL/api/v2/dataspheres/<dsId>/tasks/status-groups?planModeId=<planModeId>" \
+  -H "Authorization: Bearer $DATASPHERES_API_KEY"
+# Expected: North Stars, Epics, Execution, Validation, Done — no other groups
+```
+
+**If `columns` was NOT passed in step 7**, the plan mode auto-creates 3 default columns (`To Do`, `In Progress`, `In Review`) AND a `Done` group. You must DELETE the 3 defaults and POST the 4 SDD groups — the auto-created `Done` is kept.
 
 ```bash
 # 1. GET all groups scoped to this plan mode — find and DELETE the 3 defaults
@@ -165,12 +187,35 @@ curl -X POST "$DATASPHERES_BASE_URL/api/v2/dataspheres/<dsId>/tasks/status-group
 # 3. GET again — confirm exactly 5 remain: North Stars, Epics, Execution, Validation, Done
 ```
 
-**Gate evidence required:** `5 groups confirmed (3 defaults deleted): NS=<id> EP=<id> EX=<id> VA=<id> DONE=<id>`
+**Gate evidence required:** `5 groups confirmed: NS=<id> EP=<id> EX=<id> VA=<id> DONE=<id>`
 
 ---
 
 ### Step 9 of 14 — Publish tasks (bulk)
 → *Detail: line 154 (Task Status vs statusGroupId)*
+→ *Detail: North Star Artifact Requirements (enforced here)*
+
+**Pre-publish North Star validation (mandatory before any POST):**
+
+For every `type: north-star` task in tasks.yaml, verify its `content` field contains ALL six required section headings:
+
+```
+<h3>Origin Prompts</h3>
+<h3>Codebase Context</h3>
+<h3>Architecture Constraints</h3>
+<h3>Vision</h3>
+<h3>North Star Checklist</h3>
+<h3>Success Criteria</h3>
+```
+
+If any heading is missing:
+```
+🚫 GATE [9/14] BLOCKED — NS-XXX missing required sections: [list missing]
+Required before continuing: Add the missing sections to tasks.yaml content field.
+See "North Star Artifact Requirements" section for what each section must contain.
+```
+
+Do NOT proceed until all North Stars pass this check.
 
 POST all tasks via bulk endpoint. Each task payload must include:
 - `statusGroupId` — one of the 5 IDs captured in step 8 (never a foreign group ID)
@@ -186,7 +231,7 @@ curl -X POST "$DATASPHERES_BASE_URL/api/v2/dataspheres/<dsId>/tasks/bulk" \
 
 If bulk returns 500, fall back to individual POSTs — but verify every task's `statusGroupId` is from step 8 before posting.
 
-**Gate evidence required:** `<N> tasks created (NS:<n> EP:<n> EX:<n>), all tagged <initiative>`
+**Gate evidence required:** `<N> tasks created (NS:<n> EP:<n> EX:<n>), all tagged <initiative>, all NS sections verified`
 
 ---
 
@@ -237,7 +282,7 @@ Two calls, both required:
 curl -X PATCH "$DATASPHERES_BASE_URL/api/v2/dataspheres/<dsId>/tasks/plan-modes/<planModeId>" \
   -H "Authorization: Bearer $DATASPHERES_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"trackerUrl":"$DATASPHERES_PUBLIC_URL/app/<uri>/docs/<dashboard-slug>"}'
+  -d '{"trackerUrl":"$DATASPHERES_PUBLIC_URL/pages/<uri>/<dashboard-slug>"}'
 ```
 
 **B. Confirm dashboard content includes the planner link** (from step 12). If not present, PUT an updated version now.
@@ -260,8 +305,8 @@ Output the following, then stop:
   Plan mode:   <planModeId>
 
   Planner:     <PUBLIC_URL>/app/<uri>/planner?mode=<planModeId>
-  Dashboard:   <PUBLIC_URL>/app/<uri>/docs/<dashboard-slug>
-  Vision:      <PUBLIC_URL>/app/<uri>/docs/<vision-slug>
+  Dashboard:   <PUBLIC_URL>/pages/<uri>/<dashboard-slug>
+  Vision:      <PUBLIC_URL>/pages/<uri>/<vision-slug>
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ```
 
@@ -339,13 +384,13 @@ Output the following, then stop:
 
 <h2>Quick Links</h2>
 <ul>
-  <li><p><a href="$DATASPHERES_PUBLIC_URL/app/<uri>/docs/<vision-slug>">Vision and Architecture</a></p></li>
+  <li><p><a href="$DATASPHERES_PUBLIC_URL/pages/<uri>/<vision-slug>">Vision and Architecture</a></p></li>
 </ul>
 ```
 
 The `data-datasphere-uri` attribute enables deep links from the activity feed — each comment card links to its task in the planner at `/app/<uri>/planner?mode=<planModeId>&taskId=<taskId>`.
 
-**Tag chip deep links (built-in):** Any tag on a task card whose name matches `SPEC-*`, `CTX-*`, or `RESULT-*` is automatically clickable in the Kanban/List views — clicking navigates to `/app/<uri>/docs/<tag-name-lowercase>`. This means tagging a task with `SPEC-AUTH-001` creates a one-click link from the task card to the corresponding spec page. No extra setup required.
+**Tag chip deep links (built-in):** Any tag on a task card whose name matches `SPEC-*`, `CTX-*`, or `RESULT-*` is automatically clickable in the Kanban/List views — clicking navigates to `/pages/<uri>/<tag-name-lowercase>`. This means tagging a task with `SPEC-AUTH-001` creates a one-click link from the task card to the corresponding spec page. No extra setup required.
 
 ### Valid `data-widget-type` values
 
@@ -613,6 +658,26 @@ Always set BOTH `statusGroupId` and `status` — setting only `statusGroupId` mo
 
 ---
 
+## Encoding Safety — Use HTML Entities in curl Payloads
+
+**CRITICAL:** On Windows and in some terminal environments, raw Unicode characters (em dashes, curly quotes, bullet characters) passed inside `curl -d '...'` or `-d "..."` are encoded as Windows-1252 bytes, which corrupt the database. **Always use HTML entities** for any special character in API payloads.
+
+| Character | Wrong (raw) | Right (entity) |
+|---|---|---|
+| Em dash | `—` | `&mdash;` |
+| Middle dot / bullet | `·` | `&middot;` |
+| Left double quote | `"` | `&ldquo;` |
+| Right double quote | `"` | `&rdquo;` |
+| Checkmark | `✓` | `&#10003;` |
+| Arrow | `→` | `&#8594;` |
+| Superscript external link | `↗` | `&#8599;` |
+| Star / asterisk glyph | `✦` | `&#10022;` |
+| Gear / settings glyph | `⚙` | `&#9881;` |
+
+This applies everywhere a string passes through a terminal or shell before reaching the API: `curl -d`, `node -e "..."`, here-doc interpolation, etc. In `.mjs` scripts read by Node directly, raw Unicode is safe because Node uses UTF-8.
+
+---
+
 ## Credential Setup
 → *Referenced by: Step 1*
 
@@ -654,6 +719,38 @@ tasks:
     priority: HIGH
     tags: [north-star, my-feature]
     children: [E-001, E-002]
+    content: |
+      <h3>Origin Prompts</h3>
+      <p>Verbatim user requests that defined this feature, with dates. Copy them exactly — paraphrase destroys traceability.</p>
+      <blockquote>
+      <p><strong>YYYY-MM-DD</strong> &mdash; &ldquo;exact user message 1&rdquo;</p>
+      <p><strong>YYYY-MM-DD</strong> &mdash; &ldquo;exact user message 2&rdquo;</p>
+      </blockquote>
+      <h3>Codebase Context</h3>
+      <p>Schema fields, service signatures, and file:line anchors that constrain the implementation. Paste the actual code.</p>
+      <pre><code>
+      // path/to/file.ts:LINE — ModelName
+      fieldName  FieldType  @attribute
+      // path/to/service.ts:LINE — function signature
+      async functionName(params): ReturnType
+      </code></pre>
+      <h3>Architecture Constraints</h3>
+      <ul>
+      <li><p>List things that MUST NOT break (existing features, data contracts).</p></li>
+      <li><p>List existing patterns to follow (billing, email, routing).</p></li>
+      </ul>
+      <h3>Vision</h3>
+      <p>One paragraph — the aspirational outcome from the user&apos;s perspective.</p>
+      <h3>North Star Checklist</h3>
+      <ul data-type="taskList">
+        <li data-type="taskItem" data-checked="false"><p>E-001 &middot; Phase 1 name - Epic complete</p></li>
+        <li data-type="taskItem" data-checked="false"><p>E-002 &middot; Phase 2 name - Epic complete</p></li>
+      </ul>
+      <h3>Success Criteria</h3>
+      <ul>
+      <li><p>Observable outcome 1 (verifiable without access to the DB).</p></li>
+      <li><p>Observable outcome 2.</p></li>
+      </ul>
 
   - id: E-001
     type: epic
@@ -710,6 +807,59 @@ tasks:
 
 ---
 
+## North Star Artifact Requirements
+→ *Referenced by: Step 9 (gate), tasks.yaml Shape, Sub-Checklist Propagation*
+
+Every North Star task MUST contain four sections **before it is considered publishable**. These are not optional — they are the mechanism that makes all-dai-sdd traceable from user prompt → spec → code.
+
+### Required sections (enforced at Step 9 gate)
+
+| Section | What goes here | Why |
+|---|---|---|
+| **Origin Prompts** | Verbatim user messages, with ISO dates. Copy-paste — no paraphrase. | Paraphrase breaks the chain. The exact words reveal intent that summaries discard. |
+| **Codebase Context** | Schema field names + types, service method signatures, file:line refs. Paste actual code. | The implementation is constrained by what already exists. Every assumption about existing code must be verifiable here. |
+| **Architecture Constraints** | What must NOT break. Which existing patterns to follow (billing, email, routing, etc.). | Guards against silent rewrites of working systems. |
+| **Vision** | One paragraph outcome from the user's perspective. | The "why" that all child work traces back to. |
+| **Success Criteria** | Observable pass/fail outcomes (no DB access needed to verify). | Needed by Validation gate to approve Epic completion. |
+| **North Star Checklist** | One `<ul data-type="taskList">` item per Epic. | Drives the auto-tick propagation when Epics complete. |
+
+### Enforcement rule
+
+Step 9 (publish tasks) must scan every `type: north-star` task and verify the presence of all six section headings (`<h3>Origin Prompts</h3>`, `<h3>Codebase Context</h3>`, `<h3>Architecture Constraints</h3>`, `<h3>Vision</h3>`, `<h3>North Star Checklist</h3>`, `<h3>Success Criteria</h3>`) before posting. If any heading is missing, output:
+
+```
+🚫 GATE [9/14] BLOCKED — NS-001 missing required sections: [Origin Prompts, Codebase Context]
+Required before continuing: Add the missing sections to the North Star content in tasks.yaml
+```
+
+### Enforcement rule — during Execution
+
+When an Execution task reveals new codebase context (a schema field that didn't exist in the spec, an architecture constraint that wasn't captured), the developer MUST:
+
+1. PATCH the parent Epic content to add the new context
+2. PATCH the North Star's Codebase Context or Architecture Constraints section
+
+This is the self-healing contract. Discovering new facts and silently coding around them is the primary failure mode that destroys traceability.
+
+### What "Codebase Context" includes
+
+- **Schema fields**: `prisma/schema.prisma:LINE — ModelName` with the actual field definitions
+- **Service signatures**: `src/server/services/foo.service.ts:LINE — async methodName(params): ReturnType`
+- **Billing patterns**: exact `chargeCapacityWithWaterfall` call shape, including which `userId` and `datasphereId` to pass
+- **Routing patterns**: endpoint paths, webhook formats, auth header patterns
+- **Email patterns**: address format (e.g. `reply+{token}@reply.domain`), SendGrid webhook shape
+- **What must NOT break**: existing models or endpoints that share the same DB tables
+
+### Artifact attachments (images, files, search results)
+
+The Dataspheres AI task API supports file attachments and image uploads on comments, not on task content directly. To attach research artifacts (screenshots, search results, design mockups):
+
+1. Upload via `POST /api/media/upload` with `Authorization: Bearer $KEY`
+2. Post a comment on the North Star with `screenshots: [<url1>, <url2>]`
+3. Reference the comment in the Codebase Context section: `<!-- see attached screenshots in comments -->`
+
+---
+
 ## CLAUDE.md Integration
 → *Referenced by: Step 14*
 
@@ -721,8 +871,91 @@ Template addition for project CLAUDE.md:
 
 Tracked in Dataspheres AI via all-dai-sdd skill.
 Five-column lifecycle: North Stars → Epics → Execution → Validation → Done.
-Dashboard: $DATASPHERES_PUBLIC_URL/app/<uri>/docs/<dashboard-slug>
+Dashboard: $DATASPHERES_PUBLIC_URL/pages/<uri>/<dashboard-slug>
 Planner: $DATASPHERES_PUBLIC_URL/app/<uri>/planner?mode=<planModeId>
+```
+
+---
+
+## Next Steps Page Template
+
+When all tasks for an initiative are Done (100% completion), generate a close-out "Next Steps & UAT" page on the datasphere. This is published via `POST /api/v1/dataspheres/<uri>/pages` and uses the full platform feature set.
+
+**Structural blocks (in order):**
+
+1. **Hero banner** — dark gradient with gold CTAs linking to planner + tracker
+2. **plannerWidget progress-summary** — live progress ring so the page is always current
+3. **Epic cards** — one styled card per Epic, Done chip + monospace ID + planner deep-link
+4. **UAT sections** — colored callout boxes per subsystem (green/blue/purple/pink)
+5. **Loose ends** — amber left-border warning callouts for any known gaps
+6. **CTA cards** — side-by-side action cards using `class="not-prose"` to opt out of Tailwind prose
+7. **Attribution block** — links to `ari-dai-skills` repo + dataspheres.ai platform
+8. **`<div data-type="doc-footer">`** — platform animated multilingual footer (always last)
+
+**Key rules:**
+- Use HTML entities — no raw Unicode in JS template literals (see Encoding Safety section)
+- `class="not-prose"` opts a div out of Tailwind typography overrides
+- `data-type="plannerWidget"` requires `data-datasphere-id` (DB ID, not URI) and `data-plan-mode-id`
+- `data-type="doc-footer"` renders the platform footer — always include last
+- Page reader URL: `$DATASPHERES_PUBLIC_URL/pages/<uri>/<slug>` — NEVER `/app/<uri>/docs/<slug>`
+
+**Attribution block HTML** (always include at the bottom of every initiative page):
+
+```html
+<div class="not-prose" style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;padding:20px 24px;text-align:center;margin-bottom:24px;">
+  <p style="margin:0 0 6px;font-size:10px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:.12em;">Powered by</p>
+  <div style="display:flex;align-items:center;justify-content:center;gap:20px;flex-wrap:wrap;margin-bottom:8px;">
+    <a href="https://github.com/geekdreamzz/ari-dai-skills" style="font-size:13px;font-weight:600;color:#0f172a;text-decoration:none;">&#9881; ari-dai-skills</a>
+    <span style="color:#cbd5e1;">&#183;</span>
+    <a href="https://dataspheres.ai" style="font-size:13px;font-weight:600;color:#a67c00;text-decoration:none;">&#10022; dataspheres.ai</a>
+  </div>
+  <p style="margin:0;font-size:11px;color:#94a3b8;">Spec-driven development tracked end-to-end in Dataspheres AI</p>
+</div>
+```
+
+**Planner widget (progress summary):**
+
+```html
+<div data-type="plannerWidget"
+     data-widget-type="progress-summary"
+     data-datasphere-id="<dsId>"
+     data-plan-mode-id="<planModeId>"
+     data-refresh-interval="60"></div>
+```
+
+**Epic card template:**
+
+```html
+<div style="border:1px solid #e2e8f0;border-radius:10px;padding:20px 24px;margin-bottom:14px;background:#f8fafc;">
+  <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">
+    <span style="background:#dcfce7;color:#16a34a;font-size:10px;font-weight:700;padding:2px 9px;border-radius:20px;text-transform:uppercase;letter-spacing:.05em;">&#10003; Done</span>
+    <span style="font-size:12px;font-family:monospace;color:#94a3b8;">E-001</span>
+    <a href="$DATASPHERES_PUBLIC_URL/app/<uri>/planner?mode=<planModeId>" style="margin-left:auto;font-size:11px;color:#64748b;text-decoration:none;" title="Open in planner">&#8599;</a>
+  </div>
+  <h3 style="margin:0 0 8px;font-size:16px;font-weight:700;color:#0f172a;">Epic Title</h3>
+  <p style="margin:0;color:#475569;font-size:13px;line-height:1.65;">Epic summary.</p>
+</div>
+```
+
+**UAT section template:**
+
+```html
+<div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:10px;padding:20px 24px;margin-bottom:16px;">
+  <h3 style="margin:0 0 14px;font-size:14px;font-weight:700;color:#1e293b;">&#9989;&nbsp; Subsystem UAT</h3>
+  <ul style="margin:0;padding-left:18px;color:#374151;font-size:13px;line-height:1.8;">
+    <li>Criterion 1</li>
+    <li>Criterion 2</li>
+  </ul>
+</div>
+```
+
+**Loose ends (amber warning) template:**
+
+```html
+<div style="border-left:4px solid #f59e0b;background:#fffbeb;border-radius:0 8px 8px 0;padding:14px 18px;margin-bottom:12px;">
+  <strong style="font-size:13px;color:#92400e;">Known gap: title</strong>
+  <p style="margin:6px 0 0;font-size:13px;color:#78350f;">Description of the gap and where to track it.</p>
+</div>
 ```
 
 ---
@@ -1587,6 +1820,29 @@ def generate_jwt(user_id: str, expires_in: int = 900) -> str:
     ...
 ```
 
+### Per-symbol annotations — trace graph enrichment
+
+The planner trace graph reads files via the `/api/v2/code-trace` endpoint, which extracts the file-level JSDoc header AND per-function annotations. To make a specific exported function or class traceable to a requirement, add a `@satisfies` comment immediately before it:
+
+**Inline comment style:**
+```typescript
+// @satisfies R-001 — free-tier gate
+export async function checkFreeGate(...): Promise<...> {
+```
+
+**JSDoc block style:**
+```typescript
+/**
+ * @satisfies R-002
+ * @sdd_req R-002
+ */
+export function chargeCapacity(...) {
+```
+
+The trace graph displays `@satisfies R-XXX` as clickable requirement tags on each function row, with expandable code previews and line-range links. `lineStart`, `lineEnd`, and `snippet` are extracted automatically — you don't write them.
+
+**Rule:** every exported function that satisfies a requirement listed in the parent Epic's acceptance checklist SHOULD have at least a `// @satisfies R-XXX` comment. This creates the full chain: North Star → Epic → Execution task → implementation file → specific function.
+
 ---
 
 ## Trace Taxonomy
@@ -1876,3 +2132,93 @@ The graph lives in the dashboard page under "Trace Map". Ari regenerates and PAT
 | **3** | `data-widget-type="trace-health"` | ✅ Shipped | Matrix table of spec_type × status counts. Requires `data-dataset-id`. |
 | **4** | `data-widget-type="drift-alerts"` | ✅ Shipped | Card list of rows with drift/stale/orphan status. Requires `data-dataset-id`. |
 | **5** | Planner: `SPEC-*` / `CTX-*` / `RESULT-*` tag deep links | ✅ Shipped | `TaskCard.tsx` — tags matching `/^(SPEC\|CTX\|RESULT)-/i` render as clickable links to `/app/:uri/docs/:tag`. |
+
+---
+
+## Enforcement Hook Hardening
+
+The SDD enforcement hook (`.claude/hooks/sdd-enforce.js`) blocks code edits when SDD mode is active but no task is in-progress. The naive implementation only checked `state.active && !state.activeTaskId`, which left a bypass hole: setting `active: false` directly in `sdd-active.json` via Bash silently disables enforcement without any planner visibility.
+
+### Two Transparent Bypass Paths
+
+Only these two paths are accepted — both leave a visible trail:
+
+1. **Task-in-progress bypass** — mark a genuine task as in-progress with `sdd_task_start`. The planner shows the task as active and the activity feed records the start comment.
+
+2. **`/sdd hotfix <reason>` escape hatch** — for urgent fixes that have no corresponding SDD task. This writes `hotfixReason` into `sdd-active.json` AND posts a comment to the active plan mode so the bypass is visible to stakeholders.
+
+### `/sdd hotfix <reason>` Command
+
+**To enter hotfix mode:**
+
+```bash
+# 1. Write hotfix state to sdd-active.json
+node -e "
+const fs = require('fs');
+const state = JSON.parse(fs.readFileSync('.claude/sdd-active.json', 'utf8'));
+fs.writeFileSync('.claude/sdd-active.json', JSON.stringify({
+  ...state,
+  active: false,
+  hotfixReason: '<reason>'
+}, null, 2));
+console.log('Hotfix mode enabled:', '<reason>');
+"
+
+# 2. Post a comment on the active plan mode so the bypass is visible
+curl -X POST "$DATASPHERES_BASE_URL/api/v2/dataspheres/<dsId>/tasks/plan-modes/<planModeId>/comments" \
+  -H "Authorization: Bearer $DATASPHERES_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"content":"[all-dai-sdd-system-message] ⚠️ HOTFIX BYPASS — <reason>. Files modified outside SDD lifecycle."}'
+```
+
+**To exit hotfix mode (`/sdd hotfix done`):**
+
+```bash
+node -e "
+const fs = require('fs');
+const state = JSON.parse(fs.readFileSync('.claude/sdd-active.json', 'utf8'));
+const { hotfixReason, ...rest } = state;
+fs.writeFileSync('.claude/sdd-active.json', JSON.stringify({
+  ...rest,
+  active: true,
+  hotfixReason: null
+}, null, 2));
+console.log('Hotfix mode cleared — SDD enforcement re-enabled');
+"
+```
+
+### Hardened Hook Pattern
+
+The hardened hook treats `active: false` without `hotfixReason` as a corrupt/bypassed state and blocks it — same as if `active: true` with no task. Only the two transparent paths above are allowed through.
+
+```js
+// .claude/hooks/sdd-enforce.js — hardened pattern
+const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+
+// Normal inactive state — enforcement off
+if (!state.active && !state.hotfixReason) return { block: false };
+
+// Hotfix in progress — allow but warn so the developer sees it
+if (!state.active && state.hotfixReason) {
+  process.stderr.write('\u26a0\ufe0f SDD HOTFIX MODE: ' + state.hotfixReason + '\n');
+  return { block: false };
+}
+
+// active:true but no task claimed — block
+if (state.active && !state.activeTaskId) {
+  return {
+    block: true,
+    reason: 'SDD enforcement: active initiative \'' + state.initiative + '\' has no task in-progress. \n' +
+            'Run sdd_task_start(<taskId>, ...) to claim a task, or /sdd hotfix <reason> for urgent fixes.'
+  };
+}
+
+// Task in progress — allow
+return { block: false };
+```
+
+**Key rules:**
+- `active: false` alone (no `hotfixReason`) = corrupt/bypassed state → **block**
+- `active: false` + `hotfixReason` = legitimate hotfix → **allow + stderr warning**
+- `active: true` + `activeTaskId` = task in-progress → **allow**
+- `active: true` + no `activeTaskId` = SDD active but no task claimed → **block**

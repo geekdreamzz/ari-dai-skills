@@ -105,3 +105,58 @@ def send_issue(issue_id: str) -> dict:
     """Send a newsletter issue to subscribers."""
     client = DaiClient.from_state()
     return client.post(f"/api/newsletter-issues/{issue_id}/send", json={})
+
+
+# ── Subscriber profile / continuous journal (questions-rebrand) ─────────────
+# Wraps src/server/routes/subscriber-profile.routes.ts. Auth model: caller's
+# JWT (admin/owner subscriber) OR magic_token (subscriber.unsubscribeToken)
+# for anonymous subscribers reaching the endpoint via a magic-link email.
+
+@mcp.tool()
+def get_subscriber_profile(subscriber_id: str, magic_token: Optional[str] = None) -> dict:
+    """Get a subscriber's personalization profile — questions linked to their
+    newsletter, their existing answers, and the metadataField paths each
+    answer projects into subscriber.metadata for personalized generation."""
+    client = DaiClient.from_state()
+    params = {"mt": magic_token} if magic_token else None
+    return client.get(f"/api/newsletter-subscribers/{subscriber_id}/profile", params=params)
+
+
+@mcp.tool()
+def submit_subscriber_answers(subscriber_id: str, answers: list[dict],
+                              magic_token: Optional[str] = None) -> dict:
+    """Save subscriber answers + project them into subscriber.metadata via
+    NewsletterSurveyMapping. Idempotent — replaying overwrites the prior
+    answer for each {question, email} pair.
+
+    answers: [{questionId, answerFormat: 'TEXT'|'LONG_TEXT'|'MULTIPLE_CHOICE'|'AUDIO'|'VIDEO',
+               textAnswer?, selectedChoices?: [str], audioFileUrl?, videoFileUrl?}]"""
+    client = DaiClient.from_state()
+    body: dict = {"answers": answers}
+    if magic_token:
+        body["mt"] = magic_token
+    return client.post(f"/api/newsletter-subscribers/{subscriber_id}/answers", json=body)
+
+
+@mcp.tool()
+def get_subscriber_journal(subscriber_id: str, limit: int = 20, offset: int = 0,
+                           magic_token: Optional[str] = None) -> dict:
+    """Return a subscriber's continuous-journal — every answer they've ever
+    submitted to questions linked to their newsletter, newest-first.
+    Response: {entries: [...], total, limit, offset}."""
+    client = DaiClient.from_state()
+    params: dict = {"limit": limit, "offset": offset}
+    if magic_token:
+        params["mt"] = magic_token
+    return client.get(f"/api/newsletter-subscribers/{subscriber_id}/journal", params=params)
+
+
+@mcp.tool()
+def send_profile_magic_link(subscriber_id: str) -> dict:
+    """Email the subscriber a tokenized link to their profile editor at
+    /newsletters/{slug}/profile. Useful when admin wants to nudge a
+    subscriber who skipped the inline wizard, or after adding a new question
+    to the set. Token is the subscriber's unsubscribeToken — stays valid
+    until they unsubscribe."""
+    client = DaiClient.from_state()
+    return client.post(f"/api/newsletter-subscribers/{subscriber_id}/profile-magic-link", json={})

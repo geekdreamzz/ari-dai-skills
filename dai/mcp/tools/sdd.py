@@ -49,11 +49,33 @@ def sdd_task_start(task_id: str, plan_mode_id: str, execution_group_id: str) -> 
 
 
 @mcp.tool()
-def sdd_task_done(task_id: str, done_group_id: str, summary: str,
-                   verified_criteria: Optional[list[str]] = None, screenshot_urls: Optional[list[str]] = None) -> dict:
-    """Mark an SDD Execution task as Done. Posts completion comment and moves to Done column."""
+def sdd_check_deps(task_ids: list[str], done_group_name: str = "Done") -> dict:
+    """Check all listed task IDs are in the Done column. Returns {ready: bool, blocking: list[str]}."""
     client = DaiClient.from_state()
     ds = resolve_ds_id()
+    blocking = []
+    for tid in task_ids:
+        resp = client.get(f"/api/v1/dataspheres/{ds}/tasks/{tid}")
+        task = resp.get("task", {}) if isinstance(resp, dict) else {}
+        col_name = task.get("statusGroup", {}).get("name", "")
+        if col_name != done_group_name:
+            blocking.append(f"{tid} (in {col_name!r})")
+    return {"ready": len(blocking) == 0, "blocking": blocking}
+
+
+@mcp.tool()
+def sdd_task_done(task_id: str, done_group_id: str, summary: str,
+                   verified_criteria: Optional[list[str]] = None,
+                   screenshot_urls: Optional[list[str]] = None,
+                   updated_content: Optional[str] = None) -> dict:
+    """Mark an SDD Execution task as Done. Posts completion comment and moves to Done column.
+    Pass updated_content with data-checked="false" -> data-checked="true" substitutions already applied
+    for acceptance checklist ticking."""
+    client = DaiClient.from_state()
+    ds = resolve_ds_id()
+    # Tick checklist in content if provided
+    if updated_content:
+        client.patch(f"/api/v2/dataspheres/{ds}/tasks/{task_id}", json={"content": updated_content})
     criteria_list = "\n".join(f"- {c} ✅" for c in (verified_criteria or []))
     comment = f"[all-dai-sdd-system-message]\n\n**Completion summary:** {summary}"
     if criteria_list:
