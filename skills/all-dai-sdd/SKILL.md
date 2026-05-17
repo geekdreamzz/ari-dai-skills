@@ -645,6 +645,78 @@ curl -X POST "$DATASPHERES_BASE_URL/api/v2/dataspheres/<dsId>/tasks/<taskId>/com
 
 The `screenshots` array (CDN URLs) shows up as clickable thumbnail gallery in the activity feed widget. The `[all-dai-sdd-system-message]` prefix adds a purple SDD badge on the comment card.
 
+### Step 3b: Code annotation gate — REQUIRED before Step 4
+
+Every file touched by this task MUST have:
+```typescript
+/**
+ * @file src/path/to/file.ts
+ * @purpose One sentence.
+ * @sdd_task T-XXX
+ * @sdd_epic E-XXX
+ * @sdd_req R-XXX
+ * @sdd_planner <trackerUrl>
+ * @aria_strategy ...
+ * @tools_meta ...
+ */
+```
+Every exported function/class/model satisfying a requirement MUST have:
+```typescript
+// @satisfies R-001 — description
+export async function myFunction(...) {
+```
+Do NOT proceed to Step 4 until all touched files have headers and `@satisfies` annotations.
+
+### Step 3c: Create Validation artifact task in Validation column
+
+Title: `V-<T-XXX> &middot; <short title>`  
+Tags: `validation-artifact`, `<initiative-slug>`
+
+Content must include these sections:
+```html
+<h2>Validation Artifact &mdash; T-XXX: <task title></h2>
+
+<h3>Code Evidence</h3>
+<p>Files with @sdd_task + @satisfies annotations:</p>
+<ul data-type="taskList">
+  <li data-type="taskItem" data-checked="true"><p><code>src/path/to/file.ts</code> &mdash; what it does</p></li>
+</ul>
+<pre><code class="language-typescript">
+// @satisfies R-001 &mdash; description
+export async function keyFunction(...) {
+  // key implementation lines
+}
+</code></pre>
+
+<h3>Schema / Data Model Changes</h3>
+<pre><code class="language-prisma">
+// relevant Prisma model additions, or "None"
+</code></pre>
+
+<h3>Test Results</h3>
+<pre><code>
+npx tsc --noEmit: OK
+npx vitest run: X passed, 0 failed
+[last 20 lines of test output]
+</code></pre>
+
+<h3>Implementation Files</h3>
+<ul>
+  <li><p>src/path/to/file.ts</p></li>
+</ul>
+```
+
+The `Implementation Files` section is REQUIRED — the trace graph parses it to draw `execution &rarr; validation &rarr; code` edges.
+
+```bash
+curl -X POST "$DATASPHERES_BASE_URL/api/v2/dataspheres/<dsId>/tasks" \
+  -H "Authorization: Bearer $DATASPHERES_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"title":"V-T-XXX &middot; short title","statusGroupId":"<validationGroupId>","planModeId":"<planModeId>","priority":"MEDIUM","tags":["validation-artifact","<initiative>"],"content":"<h2>...</h2>..."}'
+```
+
+Save the returned `task.id` as `validationTaskId` — include it in the completion comment.
+
 ### Step 4: PATCH task to Done
 
 ```bash
@@ -655,6 +727,25 @@ curl -X PATCH "$DATASPHERES_BASE_URL/api/v2/dataspheres/<dsId>/tasks/<taskId>" \
 ```
 
 Always set BOTH `statusGroupId` and `status` — setting only `statusGroupId` moves the card visually but leaves `status=TODO` in the DB.
+
+---
+
+## Trace Graph — 5-Tier Layout
+
+The planner trace graph renders: **North Stars &rarr; Epics &rarr; Execution &rarr; Validation &rarr; Code Files**.
+
+| Tier | Detected by | Content |
+|---|---|---|
+| North Stars | `NS-` prefix or North Stars statusGroup | Vision + success criteria |
+| Epics | `E-` prefix or Epics statusGroup | Phase spec + execution checklist |
+| Execution | `T-` prefix or Execution statusGroup | User story + acceptance criteria |
+| Validation | `V-T-` prefix, `validation-artifact` tag, or Validation statusGroup | Code snippets, test results, schema diffs |
+| Code Files | Parsed from `Implementation Files` section | Live file trace via `/api/v2/code-trace` |
+
+**Edges:**
+- Execution &rarr; Validation: `V-T-001` naming links to `T-001`
+- Validation &rarr; Code: `Implementation Files` section in artifact content
+- Clicking a Validation node opens the full artifact (code evidence + test output + schema changes)
 
 ---
 
