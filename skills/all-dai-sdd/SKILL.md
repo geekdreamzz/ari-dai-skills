@@ -311,23 +311,18 @@ Create three data cards from these datasets: Trace Health (donut by status), Spe
 
 ### Step 12 of 14 — Publish dashboard page
 
-**MANDATORY — use the full template from the "Dashboard Page Template" section below. A minimal scaffold (just widgets, no hero) is a gate failure.** Task-based widgets: `progress-ring`, `column-breakdown`, `active-tasks`, `blocked-tasks`, `task-activity-feed`. Spec dataset widgets (require `data-dataset-id`): `trace-health`, `drift-alerts`, `trace-map`. See the "Valid data-widget-type values" section for the full reference.
+**MANDATORY — use the exact template from the "Dashboard Page Template" section below.** No custom CSS hero banners, no inline style grids — those belong on the close-out Next Steps page only. The step-12 dashboard uses native platform widgets. A page that substitutes custom HTML for platform widgets is a gate failure.
 
-The planner link MUST use `?mode=<planModeId>` — not `?planMode=`. No emojis or raw Unicode in page content (render as `??`). Use HTML entities only.
+No emojis or raw Unicode in page content (render as `??`). Use HTML entities only.
 
 Required sections (all mandatory, skip none):
-1. **Hero banner** — dark gradient, gold CTAs linking to planner + benchmark report + vision page
-2. **Progress ring** — `data-widget-type="progress-ring"` with `data-refresh-interval="60"`
-3. **Column breakdown** — `data-widget-type="column-breakdown"`
-4. **Tier/subsystem status cards** — colored left-border cards (green=operational, red=blocked) in a CSS grid, one card per major component or tier. Must include resolution path for any BLOCKED card.
-5. **Benchmark results** — gold-bordered score cards in a CSS grid. Any numeric result must appear here. If no benchmark has run yet, include a "Pending" card with the target threshold.
-6. **Active execution** — `data-widget-type="active-tasks"`
-7. **Blocked tasks** — `data-widget-type="blocked-tasks"`
-8. **Activity feed** — `data-widget-type="task-activity-feed"`
-9. **Attribution block** — links to platform + owner + planner board
-10. **`<div data-type="doc-footer"></div>`** — always last, no exceptions
+1. **Title + subtitle** — plain `<h1>` and `<p>`, no inline styles
+2. **Initiative Summary** — `data-widget-type="progress-summary"` with `data-refresh-interval="60"` — renders the full summary card (donut ring, Done/In Progress/Blocked/Pending counts, Next Steps link, Open in Planner link)
+3. **Trace Graph** — `data-widget-type="trace-graph"` — renders the 5-tier swimlane (North Stars &rarr; Epics &rarr; Execution &rarr; Validation &rarr; Artifacts) with expandable task cards
+4. **Activity feed** — `data-widget-type="task-activity-feed"` — recent comments and screenshots
+5. **`<div data-type="doc-footer"></div>`** — always last, no exceptions
 
-**Gate evidence required:** `slug=<dashboard-slug> HTTP 200/201` AND all 10 sections present in published content
+**Gate evidence required:** `slug=<dashboard-slug> HTTP 200/201` AND all 5 sections present
 
 ---
 
@@ -374,118 +369,51 @@ Output the following, then stop:
 ---
 
 ## Dashboard Page Template
-→ *Referenced by: Step 12 — MANDATORY. Deviating from this template is a gate failure.*
+→ *Referenced by: Step 12 — MANDATORY. No substitutions.*
 
-**CRITICAL — no emojis or raw Unicode anywhere in this page.** Use HTML entities only (`&mdash;`, `&bull;`, `&amp;`). The platform renderer displays raw Unicode as `??`.
+**CRITICAL — no emojis or raw Unicode anywhere in this page.** Use HTML entities only. No custom CSS `style=` attributes — the step-12 dashboard uses ONLY native platform widgets. Custom inline styles belong on the close-out Next Steps page, not here.
 
-All 10 sections are required. Replace `<dsId>`, `<uri>`, `<planModeId>`, `<initiative>`, `<Project>` with real values. For BLOCKED subsystems, include resolution path. For benchmarks, show real scores or "Pending &mdash; target: X".
+All 5 sections are required. Replace `<dsId>`, `<uri>`, `<planModeId>`, `<Project>`, `<one-line description>` with real values.
 
 ```html
-<!-- SECTION 1: Hero banner -->
-<div style="background:linear-gradient(135deg,#0a0a1a 0%,#0d1f3c 60%,#1a0a2e 100%);border-radius:12px;padding:2.5rem 2rem;margin-bottom:2rem">
-  <h1 style="color:#f0c040;margin:0 0 0.5rem 0;font-size:1.8rem"><Project></h1>
-  <p style="color:#b0c4de;margin:0 0 1.5rem 0;font-size:1rem"><one-line description></p>
-  <div style="display:flex;gap:1rem;flex-wrap:wrap">
-    <a href="$DATASPHERES_PUBLIC_URL/app/<uri>/planner?mode=<planModeId>"
-       style="background:#f0c040;color:#0a0a1a;padding:0.6rem 1.4rem;border-radius:6px;font-weight:700;text-decoration:none;font-size:0.9rem">
-      [Planner] Open Board</a>
-    <a href="$DATASPHERES_PUBLIC_URL/pages/<uri>/<report-slug>"
-       style="border:1.5px solid #f0c040;color:#f0c040;padding:0.6rem 1.4rem;border-radius:6px;font-weight:700;text-decoration:none;font-size:0.9rem">
-      [Report] Benchmark Results</a>
-    <a href="$DATASPHERES_PUBLIC_URL/pages/<uri>/<vision-slug>"
-       style="border:1.5px solid #b0c4de;color:#b0c4de;padding:0.6rem 1.4rem;border-radius:6px;text-decoration:none;font-size:0.9rem">
-      [Docs] Vision &amp; Architecture</a>
-  </div>
-</div>
+<!-- SECTION 1: Title + subtitle — plain text, no inline styles -->
+<h1><Project> &mdash; Initiative Dashboard</h1>
+<p><one-line description of the initiative></p>
 
-<!-- SECTION 2: Progress ring -->
+<!-- SECTION 2: Initiative Summary widget -->
+<h2>Initiative Summary</h2>
 <div data-type="plannerWidget"
-     data-widget-type="progress-ring"
+     data-widget-type="progress-summary"
      data-datasphere-id="<dsId>"
      data-datasphere-uri="<uri>"
      data-plan-mode-id="<planModeId>"
      data-refresh-interval="60"></div>
 
-<!-- SECTION 3: Column breakdown -->
-<h2>Initiative Progress</h2>
+<!-- SECTION 3: Trace Graph widget — 5-tier swimlane (NS > EP > EX > VA > Artifacts) -->
+<h2>Trace Graph</h2>
 <div data-type="plannerWidget"
-     data-widget-type="column-breakdown"
+     data-widget-type="trace-graph"
      data-datasphere-id="<dsId>"
      data-datasphere-uri="<uri>"
      data-plan-mode-id="<planModeId>"></div>
 
-<!-- SECTION 4: Tier/subsystem status cards — one per major component -->
-<h2>Subsystem Status</h2>
-<div class="not-prose" style="display:grid;grid-template-columns:repeat(3,1fr);gap:1rem;margin:1rem 0">
-  <!-- Green card: OPERATIONAL -->
-  <div style="background:#0a1a0a;border-left:4px solid #22c55e;padding:1rem;border-radius:8px">
-    <p style="color:#22c55e;font-weight:700;margin:0 0 0.5rem 0">SUBSYSTEM A &mdash; OPERATIONAL</p>
-    <p style="color:#d1d5db;font-size:0.85rem;margin:0">Description of what works.</p>
-  </div>
-  <!-- Red card: BLOCKED — resolution path required -->
-  <div style="background:#1a0a0a;border-left:4px solid #ef4444;padding:1rem;border-radius:8px">
-    <p style="color:#ef4444;font-weight:700;margin:0 0 0.5rem 0">SUBSYSTEM B &mdash; BLOCKED</p>
-    <p style="color:#d1d5db;font-size:0.85rem;margin:0">What is blocked and why. Resolution: install command or license link.</p>
-  </div>
-  <!-- Amber card: IN PROGRESS -->
-  <div style="background:#1a1200;border-left:4px solid #f59e0b;padding:1rem;border-radius:8px">
-    <p style="color:#f59e0b;font-weight:700;margin:0 0 0.5rem 0">SUBSYSTEM C &mdash; IN PROGRESS</p>
-    <p style="color:#d1d5db;font-size:0.85rem;margin:0">What is partially complete.</p>
-  </div>
-</div>
-
-<!-- SECTION 5: Benchmark results — real scores or "Pending" -->
-<h2>Benchmark Results</h2>
-<div class="not-prose" style="display:grid;grid-template-columns:repeat(3,1fr);gap:1rem;margin:1rem 0">
-  <div style="background:#0f172a;border:1px solid #f0c040;padding:1rem;border-radius:8px;text-align:center">
-    <p style="color:#f0c040;font-size:1.8rem;font-weight:700;margin:0">XX%</p>
-    <p style="color:#94a3b8;font-size:0.8rem;margin:0.4rem 0 0">Benchmark name<br>Metric = value</p>
-  </div>
-  <!-- Pending card example: -->
-  <div style="background:#0f172a;border:1px solid #475569;padding:1rem;border-radius:8px;text-align:center">
-    <p style="color:#94a3b8;font-size:1.2rem;font-weight:700;margin:0">Pending</p>
-    <p style="color:#64748b;font-size:0.8rem;margin:0.4rem 0 0">Benchmark name<br>Target: threshold</p>
-  </div>
-</div>
-
-<!-- SECTION 6: Active execution -->
-<h2>Active Execution</h2>
-<div data-type="plannerWidget"
-     data-widget-type="active-tasks"
-     data-datasphere-id="<dsId>"
-     data-datasphere-uri="<uri>"
-     data-plan-mode-id="<planModeId>"></div>
-
-<!-- SECTION 7: Blocked tasks -->
-<h2>Blocked Tasks</h2>
-<div data-type="plannerWidget"
-     data-widget-type="blocked-tasks"
-     data-datasphere-id="<dsId>"
-     data-datasphere-uri="<uri>"
-     data-plan-mode-id="<planModeId>"></div>
-
-<!-- SECTION 8: Activity feed -->
-<h2>Live Activity Feed</h2>
+<!-- SECTION 4: Activity feed -->
+<h2>Live Activity</h2>
 <div data-type="plannerWidget"
      data-widget-type="task-activity-feed"
      data-datasphere-id="<dsId>"
      data-datasphere-uri="<uri>"
      data-plan-mode-id="<planModeId>"></div>
 
-<!-- SECTION 9: Attribution block -->
-<div style="margin-top:2rem;padding:1.5rem;background:#0f172a;border-radius:8px;border:1px solid #1e293b">
-  <p style="color:#64748b;font-size:0.8rem;margin:0">
-    Built with <a href="https://dataspheres.ai" style="color:#f0c040">Dataspheres AI</a>
-    &mdash; <a href="$OWNER_GITHUB" style="color:#f0c040">$OWNER_GITHUB</a>
-    &mdash; <a href="$DATASPHERES_PUBLIC_URL/app/<uri>/planner?mode=<planModeId>" style="color:#f0c040">SDD Planner Board</a>
-  </p>
-</div>
-
-<!-- SECTION 10: doc-footer — ALWAYS LAST -->
+<!-- SECTION 5: doc-footer — ALWAYS LAST -->
 <div data-type="doc-footer"></div>
 ```
 
 The `data-datasphere-uri` attribute enables deep links from the activity feed — each comment card links to its task in the planner at `/app/<uri>/planner?mode=<planModeId>&taskId=<taskId>`.
+
+The `progress-summary` widget renders: donut ring (% complete) + Done / In Progress / Blocked / Pending counts + "Next Steps" link + "Open in Planner" link. It is the authoritative at-a-glance view; do not replace it with a custom ring or custom count grid.
+
+The `trace-graph` widget renders the 5-tier swimlane automatically from the task structure: North Stars &rarr; Epics &rarr; Execution &rarr; Validation &rarr; Artifacts (code files parsed from `Implementation Files` sections). It is expandable and shows task cards per column. Do not replace it with a static Mermaid diagram or custom HTML grid.
 
 **Tag chip deep links (built-in):** Any tag on a task card whose name matches `SPEC-*`, `CTX-*`, or `RESULT-*` is automatically clickable in the Kanban/List views — clicking navigates to `/pages/<uri>/<tag-name-lowercase>`. This means tagging a task with `SPEC-AUTH-001` creates a one-click link from the task card to the corresponding spec page. No extra setup required.
 
