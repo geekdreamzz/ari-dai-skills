@@ -27,6 +27,58 @@ export $(grep -v '^#' ~/.dataspheres.env | xargs)
 
 ---
 
+## No Mocks Rule — Hardened Enforcement
+
+**Mocks are bugs. They are never acceptable at any layer of an SDD project.**
+
+A mock is defined as any of the following:
+- A stub function that returns hardcoded or synthetic output instead of calling the real tool
+- A synthetic data file that substitutes for a real golden dataset
+- A `generate_mock_data.py` or equivalent that injects fake inputs to avoid downloading real reference files
+- A `unittest.mock`, `MagicMock`, `patch`, or any Python mock/patch mechanism on pipeline functions
+- A conditional `if not tool_available: return fake_result` fallback
+- Any comment saying "we'll replace this with the real thing later"
+
+**When a dependency is missing, the task is BLOCKED — not worked around.**
+
+### BLOCKED task protocol
+
+1. Mark the task status `BLOCKED` immediately on discovery
+2. Post a comment on the task with this exact format:
+   ```
+   [BLOCKED] <dependency name> not available.
+   Required: <exact install steps or acquisition steps>
+   Blocks: <list of downstream task IDs>
+   Resolution: <what must happen before this task can move to Execution>
+   ```
+3. Every downstream task that depends on the blocked task is also marked `BLOCKED` with a note referencing the upstream blocker
+4. No code in any downstream file may call, import, or reference the blocked tool — not even with a try/except guard
+5. The BLOCKED status cascades in the SDD board: no task in Execution or Validation can be marked Done while an upstream blocker is unresolved
+6. A task leaves BLOCKED only when the dependency is installed, verified working with `which <tool>` or equivalent, and the verification output is pasted into the task comment
+
+### What this rule means in practice
+
+- GATK4 not installed → `variant_caller.py` exists as a documented interface only; task = BLOCKED
+- BWA-meth not on PATH → `methylation.py` = BLOCKED; all Tier 1 Validation tasks = BLOCKED
+- FoldX/PyRosetta no license → `energy_calc.py` = BLOCKED; Tier 3 Validation = BLOCKED
+- hap.py not installed → `validate_tier1.py` = BLOCKED
+- Golden dataset not downloaded → Validation task that uses it = BLOCKED until download verified
+
+### Enforcement in gate checks
+
+At every Execution → Validation gate: scan all task contents for any of:
+`mock`, `stub`, `fake`, `patch`, `MagicMock`, `generate_mock`, `synthetic`, `placeholder`, `TODO: replace`
+
+If found → gate fails with:
+```
+🚫 GATE [N/14] BLOCKED — Mock/stub detected in <file>:<line>
+Required: Remove mock, install real dependency, and re-run.
+```
+
+This check is mandatory before any task may move to the Validation column.
+
+---
+
 ## `/sdd publish <project-dir>` — Gated Publish Protocol
 
 **Every step is mandatory. No step may be skipped, reordered, or batched with another.**
@@ -258,17 +310,24 @@ Create three data cards from these datasets: Trace Health (donut by status), Spe
 ---
 
 ### Step 12 of 14 — Publish dashboard page
-→ *Detail: line 74 (Dashboard Page Template)*
 
-Use the exact template from line 74. Task-based widgets: `progress-ring`, `column-breakdown`, `active-tasks`, `task-activity-feed`. Spec dataset widgets (require `data-dataset-id`): `trace-health`, `drift-alerts`, `trace-map`. See the "Valid data-widget-type values" section for the full reference.
+**MANDATORY — use the full template from the "Dashboard Page Template" section below. A minimal scaffold (just widgets, no hero) is a gate failure.** Task-based widgets: `progress-ring`, `column-breakdown`, `active-tasks`, `blocked-tasks`, `task-activity-feed`. Spec dataset widgets (require `data-dataset-id`): `trace-health`, `drift-alerts`, `trace-map`. See the "Valid data-widget-type values" section for the full reference.
 
-The planner link in the dashboard content MUST use `?mode=<planModeId>` — not `?planMode=`. No emojis in page content (they render as `??` in the platform renderer).
+The planner link MUST use `?mode=<planModeId>` — not `?planMode=`. No emojis or raw Unicode in page content (render as `??`). Use HTML entities only.
 
-```html
-<p><a href="$DATASPHERES_PUBLIC_URL/app/<uri>/planner?mode=<planModeId>">[Planner] <initiative> plan mode</a></p>
-```
+Required sections (all mandatory, skip none):
+1. **Hero banner** — dark gradient, gold CTAs linking to planner + benchmark report + vision page
+2. **Progress ring** — `data-widget-type="progress-ring"` with `data-refresh-interval="60"`
+3. **Column breakdown** — `data-widget-type="column-breakdown"`
+4. **Tier/subsystem status cards** — colored left-border cards (green=operational, red=blocked) in a CSS grid, one card per major component or tier. Must include resolution path for any BLOCKED card.
+5. **Benchmark results** — gold-bordered score cards in a CSS grid. Any numeric result must appear here. If no benchmark has run yet, include a "Pending" card with the target threshold.
+6. **Active execution** — `data-widget-type="active-tasks"`
+7. **Blocked tasks** — `data-widget-type="blocked-tasks"`
+8. **Activity feed** — `data-widget-type="task-activity-feed"`
+9. **Attribution block** — links to platform + owner + planner board
+10. **`<div data-type="doc-footer"></div>`** — always last, no exceptions
 
-**Gate evidence required:** `slug=<dashboard-slug> HTTP 200/201`
+**Gate evidence required:** `slug=<dashboard-slug> HTTP 200/201` AND all 10 sections present in published content
 
 ---
 
@@ -315,29 +374,81 @@ Output the following, then stop:
 ---
 
 ## Dashboard Page Template
-→ *Referenced by: Step 12*
+→ *Referenced by: Step 12 — MANDATORY. Deviating from this template is a gate failure.*
 
-**CRITICAL — no emojis or special Unicode anywhere in this page.** The platform's page renderer displays emojis as `??` or diamond question marks. Use plain ASCII only in all titles, headings, link text, and widget labels.
+**CRITICAL — no emojis or raw Unicode anywhere in this page.** Use HTML entities only (`&mdash;`, `&bull;`, `&amp;`). The platform renderer displays raw Unicode as `??`.
+
+All 10 sections are required. Replace `<dsId>`, `<uri>`, `<planModeId>`, `<initiative>`, `<Project>` with real values. For BLOCKED subsystems, include resolution path. For benchmarks, show real scores or "Pending &mdash; target: X".
 
 ```html
-<p><a href="$DATASPHERES_PUBLIC_URL/app/<uri>/planner?mode=<planModeId>">[Planner] <initiative> plan mode</a></p>
-<h1><Project> - Initiative Dashboard</h1>
-<p>Live progress tracker. All widgets query the planner in real time.</p>
+<!-- SECTION 1: Hero banner -->
+<div style="background:linear-gradient(135deg,#0a0a1a 0%,#0d1f3c 60%,#1a0a2e 100%);border-radius:12px;padding:2.5rem 2rem;margin-bottom:2rem">
+  <h1 style="color:#f0c040;margin:0 0 0.5rem 0;font-size:1.8rem"><Project></h1>
+  <p style="color:#b0c4de;margin:0 0 1.5rem 0;font-size:1rem"><one-line description></p>
+  <div style="display:flex;gap:1rem;flex-wrap:wrap">
+    <a href="$DATASPHERES_PUBLIC_URL/app/<uri>/planner?mode=<planModeId>"
+       style="background:#f0c040;color:#0a0a1a;padding:0.6rem 1.4rem;border-radius:6px;font-weight:700;text-decoration:none;font-size:0.9rem">
+      [Planner] Open Board</a>
+    <a href="$DATASPHERES_PUBLIC_URL/pages/<uri>/<report-slug>"
+       style="border:1.5px solid #f0c040;color:#f0c040;padding:0.6rem 1.4rem;border-radius:6px;font-weight:700;text-decoration:none;font-size:0.9rem">
+      [Report] Benchmark Results</a>
+    <a href="$DATASPHERES_PUBLIC_URL/pages/<uri>/<vision-slug>"
+       style="border:1.5px solid #b0c4de;color:#b0c4de;padding:0.6rem 1.4rem;border-radius:6px;text-decoration:none;font-size:0.9rem">
+      [Docs] Vision &amp; Architecture</a>
+  </div>
+</div>
 
-<h2>At a Glance</h2>
+<!-- SECTION 2: Progress ring -->
 <div data-type="plannerWidget"
      data-widget-type="progress-ring"
      data-datasphere-id="<dsId>"
      data-datasphere-uri="<uri>"
-     data-plan-mode-id="<planModeId>"></div>
+     data-plan-mode-id="<planModeId>"
+     data-refresh-interval="60"></div>
 
-<h2>Work Distribution</h2>
+<!-- SECTION 3: Column breakdown -->
+<h2>Initiative Progress</h2>
 <div data-type="plannerWidget"
      data-widget-type="column-breakdown"
      data-datasphere-id="<dsId>"
      data-datasphere-uri="<uri>"
      data-plan-mode-id="<planModeId>"></div>
 
+<!-- SECTION 4: Tier/subsystem status cards — one per major component -->
+<h2>Subsystem Status</h2>
+<div class="not-prose" style="display:grid;grid-template-columns:repeat(3,1fr);gap:1rem;margin:1rem 0">
+  <!-- Green card: OPERATIONAL -->
+  <div style="background:#0a1a0a;border-left:4px solid #22c55e;padding:1rem;border-radius:8px">
+    <p style="color:#22c55e;font-weight:700;margin:0 0 0.5rem 0">SUBSYSTEM A &mdash; OPERATIONAL</p>
+    <p style="color:#d1d5db;font-size:0.85rem;margin:0">Description of what works.</p>
+  </div>
+  <!-- Red card: BLOCKED — resolution path required -->
+  <div style="background:#1a0a0a;border-left:4px solid #ef4444;padding:1rem;border-radius:8px">
+    <p style="color:#ef4444;font-weight:700;margin:0 0 0.5rem 0">SUBSYSTEM B &mdash; BLOCKED</p>
+    <p style="color:#d1d5db;font-size:0.85rem;margin:0">What is blocked and why. Resolution: install command or license link.</p>
+  </div>
+  <!-- Amber card: IN PROGRESS -->
+  <div style="background:#1a1200;border-left:4px solid #f59e0b;padding:1rem;border-radius:8px">
+    <p style="color:#f59e0b;font-weight:700;margin:0 0 0.5rem 0">SUBSYSTEM C &mdash; IN PROGRESS</p>
+    <p style="color:#d1d5db;font-size:0.85rem;margin:0">What is partially complete.</p>
+  </div>
+</div>
+
+<!-- SECTION 5: Benchmark results — real scores or "Pending" -->
+<h2>Benchmark Results</h2>
+<div class="not-prose" style="display:grid;grid-template-columns:repeat(3,1fr);gap:1rem;margin:1rem 0">
+  <div style="background:#0f172a;border:1px solid #f0c040;padding:1rem;border-radius:8px;text-align:center">
+    <p style="color:#f0c040;font-size:1.8rem;font-weight:700;margin:0">XX%</p>
+    <p style="color:#94a3b8;font-size:0.8rem;margin:0.4rem 0 0">Benchmark name<br>Metric = value</p>
+  </div>
+  <!-- Pending card example: -->
+  <div style="background:#0f172a;border:1px solid #475569;padding:1rem;border-radius:8px;text-align:center">
+    <p style="color:#94a3b8;font-size:1.2rem;font-weight:700;margin:0">Pending</p>
+    <p style="color:#64748b;font-size:0.8rem;margin:0.4rem 0 0">Benchmark name<br>Target: threshold</p>
+  </div>
+</div>
+
+<!-- SECTION 6: Active execution -->
 <h2>Active Execution</h2>
 <div data-type="plannerWidget"
      data-widget-type="active-tasks"
@@ -345,6 +456,15 @@ Output the following, then stop:
      data-datasphere-uri="<uri>"
      data-plan-mode-id="<planModeId>"></div>
 
+<!-- SECTION 7: Blocked tasks -->
+<h2>Blocked Tasks</h2>
+<div data-type="plannerWidget"
+     data-widget-type="blocked-tasks"
+     data-datasphere-id="<dsId>"
+     data-datasphere-uri="<uri>"
+     data-plan-mode-id="<planModeId>"></div>
+
+<!-- SECTION 8: Activity feed -->
 <h2>Live Activity Feed</h2>
 <div data-type="plannerWidget"
      data-widget-type="task-activity-feed"
@@ -352,40 +472,17 @@ Output the following, then stop:
      data-datasphere-uri="<uri>"
      data-plan-mode-id="<planModeId>"></div>
 
-<h2>Trace Health</h2>
-<p>Bidirectional coverage between specs and code. Orphan count should be 0 at any Validation gate.</p>
+<!-- SECTION 9: Attribution block -->
+<div style="margin-top:2rem;padding:1.5rem;background:#0f172a;border-radius:8px;border:1px solid #1e293b">
+  <p style="color:#64748b;font-size:0.8rem;margin:0">
+    Built with <a href="https://dataspheres.ai" style="color:#f0c040">Dataspheres AI</a>
+    &mdash; <a href="$OWNER_GITHUB" style="color:#f0c040">$OWNER_GITHUB</a>
+    &mdash; <a href="$DATASPHERES_PUBLIC_URL/app/<uri>/planner?mode=<planModeId>" style="color:#f0c040">SDD Planner Board</a>
+  </p>
+</div>
 
-<div data-type="dataCard"
-     data-datacard-id="<trace-health-card-id>"
-     data-dataset-id="<traces-dataset-id>"
-     data-datasphere-id="<dsId>">[Data Card: Trace Health]</div>
-
-<div data-type="dataCard"
-     data-datacard-id="<coverage-card-id>"
-     data-dataset-id="<spec-health-dataset-id>"
-     data-datasphere-id="<dsId>">[Data Card: Spec Coverage by Column]</div>
-
-<div data-type="dataCard"
-     data-datacard-id="<drift-card-id>"
-     data-dataset-id="<spec-health-dataset-id>"
-     data-datasphere-id="<dsId>">[Data Card: Drift Signals]</div>
-
-<h2>Trace Appendix</h2>
-<p>Full trace index -- updated by Ari as specs and code are linked.</p>
-
-<div data-type="datasetEmbed"
-     data-dataset-id="<traces-dataset-id>"
-     data-datasphere-id="<dsId>">[Dataset: Traces]</div>
-
-<h2>Spec Health Index</h2>
-<div data-type="datasetEmbed"
-     data-dataset-id="<spec-health-dataset-id>"
-     data-datasphere-id="<dsId>">[Dataset: Spec Health]</div>
-
-<h2>Quick Links</h2>
-<ul>
-  <li><p><a href="$DATASPHERES_PUBLIC_URL/pages/<uri>/<vision-slug>">Vision and Architecture</a></p></li>
-</ul>
+<!-- SECTION 10: doc-footer — ALWAYS LAST -->
+<div data-type="doc-footer"></div>
 ```
 
 The `data-datasphere-uri` attribute enables deep links from the activity feed — each comment card links to its task in the planner at `/app/<uri>/planner?mode=<planModeId>&taskId=<taskId>`.
