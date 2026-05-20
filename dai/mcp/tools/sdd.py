@@ -76,6 +76,8 @@ def sdd_status(plan_mode_id: str) -> dict:
         tasks = tasks.get("tasks", [])
     # Get status groups to build name map
     groups = client.get(f"/api/v2/dataspheres/{ds}/tasks/status-groups", params={"planModeId": plan_mode_id})
+    if isinstance(groups, dict):
+        groups = groups.get("statusGroups", [])
     name_map = {g["id"]: g["name"] for g in groups} if isinstance(groups, list) else {}
     counts: dict[str, int] = {}
     for t in tasks:
