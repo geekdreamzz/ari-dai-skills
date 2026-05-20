@@ -9,8 +9,9 @@ build/
 # Local state DB
 *.db
 
-# User workspace
+# User workspaces (personal project repos inside the harness)
 workspace/
+workspaces/
 
 # IDE
 .vscode/

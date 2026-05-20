@@ -622,5 +622,130 @@ def mcp_start():
     mcp_main()
 
 
+# ── Workspace subcommand group ────────────────────────────────────────────────
+
+workspace_app = typer.Typer(help="Manage project workspaces inside the dai-skills harness")
+app.add_typer(workspace_app, name="workspace")
+
+_WORKSPACE_CLAUDE_MD = """\
+# {name}
+
+<!-- dai-skills workspace — Ari inherits full context from the parent CLAUDE.md -->
+
+## Project
+<!-- What is this? What are you building? -->
+
+## Active Datasphere
+<!-- Set once with: dai use <uri> -->
+
+## Stack
+<!-- Language, framework, key dependencies -->
+
+## Notes
+<!-- Anything Ari should know about this codebase -->
+"""
+
+
+def _workspaces_dir() -> Path:
+    """Return the workspaces/ dir relative to the dai-skills repo root."""
+    return Path(__file__).parent.parent.parent / "workspaces"
+
+
+@workspace_app.command("add")
+def workspace_add(
+    name: str = typer.Argument(..., help="Workspace name (becomes the directory name)"),
+    clone: Optional[str] = typer.Option(None, "--clone", "-c", help="Git URL to clone into the workspace"),
+):
+    """Create a new project workspace inside the dai-skills harness."""
+    ws_dir = _workspaces_dir()
+    ws_dir.mkdir(exist_ok=True)
+
+    target = ws_dir / name
+    if target.exists():
+        console.print(f"[red]x[/red] Workspace '{name}' already exists at {target}")
+        raise typer.Exit(1)
+
+    if clone:
+        console.print(f"Cloning [bold]{clone}[/bold] into workspaces/{name} ...")
+        result = subprocess.run(["git", "clone", clone, str(target)], capture_output=True, text=True)
+        if result.returncode != 0:
+            console.print(f"[red]x[/red] Clone failed:\n{result.stderr.strip()}")
+            raise typer.Exit(1)
+        console.print(f"  [green]v[/green] Cloned")
+    else:
+        target.mkdir()
+        subprocess.run(["git", "init", str(target)], capture_output=True)
+        console.print(f"  [green]v[/green] Initialized new git repo at workspaces/{name}/")
+
+    claude_md = target / "CLAUDE.md"
+    if not claude_md.exists():
+        claude_md.write_text(_WORKSPACE_CLAUDE_MD.format(name=name), encoding="utf-8")
+        console.print(f"  [green]v[/green] Created CLAUDE.md")
+
+    console.print(f"\n[bold green]Workspace '{name}' ready.[/bold green]")
+    console.print(f"  Path:   {target}")
+    console.print(f"  Open this folder in VS Code — Ari will be available automatically.")
+    console.print(f"  Set your datasphere: [bold]dai use <uri>[/bold]")
+
+
+@workspace_app.command("list")
+def workspace_list():
+    """List all workspaces in the dai-skills harness."""
+    ws_dir = _workspaces_dir()
+    if not ws_dir.exists():
+        console.print("[dim]No workspaces yet. Run: dai workspace add <name>[/dim]")
+        return
+
+    workspaces = sorted(d for d in ws_dir.iterdir() if d.is_dir() and not d.name.startswith("."))
+    if not workspaces:
+        console.print("[dim]No workspaces yet. Run: dai workspace add <name>[/dim]")
+        return
+
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("Name")
+    table.add_column("Git")
+    table.add_column("Branch")
+    table.add_column("Remote")
+
+    for ws in workspaces:
+        is_git = (ws / ".git").exists()
+        if is_git:
+            branch = subprocess.run(
+                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                cwd=ws, capture_output=True, text=True,
+            ).stdout.strip() or "?"
+            remote = subprocess.run(
+                ["git", "remote", "get-url", "origin"],
+                cwd=ws, capture_output=True, text=True,
+            ).stdout.strip() or "—"
+        else:
+            branch, remote = "—", "—"
+
+        table.add_row(ws.name, "yes" if is_git else "no", branch, remote)
+
+    console.print(table)
+
+
+@workspace_app.command("remove")
+def workspace_remove(
+    name: str = typer.Argument(..., help="Workspace name to remove"),
+    force: bool = typer.Option(False, "--force", "-f", help="Skip confirmation prompt"),
+):
+    """Remove a workspace and all its contents from the harness."""
+    target = _workspaces_dir() / name
+    if not target.exists():
+        console.print(f"[red]x[/red] Workspace '{name}' not found")
+        raise typer.Exit(1)
+
+    if not force:
+        confirmed = typer.confirm(f"Remove workspaces/{name}/ and all its contents?")
+        if not confirmed:
+            console.print("Cancelled.")
+            raise typer.Exit(0)
+
+    shutil.rmtree(target)
+    console.print(f"[green]v[/green] Removed workspaces/{name}/")
+
+
 if __name__ == "__main__":
     app()
