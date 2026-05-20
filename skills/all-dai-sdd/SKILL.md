@@ -269,10 +269,61 @@ See "North Star Artifact Requirements" section for what each section must contai
 
 Do NOT proceed until all North Stars pass this check.
 
-POST all tasks via bulk endpoint. Each task payload must include:
+POST all tasks via bulk endpoint. Each task payload **must** include:
 - `statusGroupId` — one of the 5 IDs captured in step 8 (never a foreign group ID)
 - `tags` — include the initiative slug so the plan mode filter picks them up
-- `content` — full HTML with acceptance checklist and implementation scope
+- `content` — full HTML structured as: **spec front matter block → Implementation Files section (EX tasks only) → body sections with heading anchors**
+
+**MANDATORY: Spec front matter block** — every task content MUST begin with this YAML block. A task created without it is a gate failure for step 9:
+
+```html
+<pre><code class="language-yaml">
+spec_id: SPEC-{DOMAIN}-{PREFIX}
+title: {task title}
+spec_type: {architecture|user-journey|algorithm|test-plan}
+version: 1.0.0
+status: ACTIVE
+column: {north-stars|epics|execution|validation}
+epic_ref: {EP-NNN or null for NS tasks}
+north_star_ref: {NS-NNN or null for NS tasks}
+tags: [{initiative-slug}, sdd, {ns|epic|execution|validation}]
+</code></pre>
+```
+
+- `spec_type` by column: NS → `architecture`, EP → `user-journey`, EX → `algorithm`, VA → `test-plan`
+- `epic_ref`: EX-T1-xxx → `EP-001`, EX-T2-xxx → `EP-002`, EX-T3-xxx → `EP-003`, EX-VH-xxx + VA-xxx → `EP-004`, EX-OR-xxx → `EP-005`, EP-xxx → their parent NS
+- `north_star_ref`: all non-NS tasks → `NS-001` (or the relevant NS if multiple exist)
+
+**MANDATORY: Implementation Files section** — every EX task content MUST include this section immediately after the front matter block:
+
+```html
+<h3>Implementation Files <!-- #impl --></h3>
+<ul>
+  <li><code>src/path/to/file.py</code></li>
+</ul>
+```
+
+List the actual source file(s) this task implements. For BLOCKED tasks, list the intended target file path — it may not exist yet. This section is parsed by the `trace-graph` widget to build the Artifacts tier of the swimlane.
+
+**MANDATORY: Section heading anchors** — every H2 and H3 must carry an anchor comment:
+
+```html
+<h2>Acceptance Criteria <!-- #ac --></h2>
+<h2>Technical Design <!-- #td --></h2>
+<h3>Implementation Files <!-- #impl --></h3>
+<h3>Blocked <!-- #blocked --></h3>
+```
+
+The anchor format is `<!-- #slug -->` appended to the heading tag content. These are the stable citation targets for code annotations (`// @implements SPEC-AUTH-001#td`).
+
+**Gate check — run before marking step 9 PASS:**
+```python
+for task in created_tasks:
+    assert "spec_id: SPEC-" in task["content"], f"{task['title']} missing front matter"
+    if task["title"].startswith("EX-"):
+        assert "Implementation Files" in task["content"], f"{task['title']} missing impl files"
+    assert "<!-- #" in task["content"], f"{task['title']} missing heading anchors"
+```
 
 ```bash
 curl -X POST "$DATASPHERES_BASE_URL/api/v2/dataspheres/<dsId>/tasks/bulk" \
@@ -283,7 +334,7 @@ curl -X POST "$DATASPHERES_BASE_URL/api/v2/dataspheres/<dsId>/tasks/bulk" \
 
 If bulk returns 500, fall back to individual POSTs — but verify every task's `statusGroupId` is from step 8 before posting.
 
-**Gate evidence required:** `<N> tasks created (NS:<n> EP:<n> EX:<n>), all tagged <initiative>, all NS sections verified`
+**Gate evidence required:** `<N> tasks created (NS:<n> EP:<n> EX:<n>), all tagged <initiative>, all NS sections verified, all tasks have spec front matter + impl files (EX) + heading anchors`
 
 ---
 
@@ -1080,6 +1131,58 @@ When all tasks for an initiative are Done (100% completion), generate a close-ou
 → *Referenced by: Steps 9, 11, Drift Prevention Gate Checks*
 
 Every spec task carries a front matter block and section anchors. Together they form the contract that enables bidirectional tracing between specs, code, and context.
+
+**This is not optional.** A spec task without a front matter block cannot be traced. A task in the Execution column without an Implementation Files section cannot appear in the `trace-graph` Artifacts tier. Both are gate failures — a task that reaches Validation without front matter and impl files MUST be patched before the Validation gate can pass.
+
+### Enforcement — Automated Gate Check
+
+Run this check after step 9 and before every Validation gate transition:
+
+```python
+import re
+
+def check_spec_tracing(task: dict) -> list[str]:
+    """Return list of violation strings. Empty list = pass."""
+    violations = []
+    content = task.get("content", "") or ""
+    title = task.get("title", "")
+    prefix = title.split(":")[0].strip()
+
+    if "spec_id: SPEC-" not in content:
+        violations.append(f"MISSING front matter (spec_id: SPEC-...)")
+
+    if prefix.startswith("EX-") and "Implementation Files" not in content:
+        violations.append("MISSING Implementation Files section")
+
+    if "<!-- #" not in content:
+        violations.append("MISSING heading anchors (<!-- #slug -->)")
+
+    if prefix.startswith("EX-") or prefix.startswith("VA-"):
+        if "epic_ref:" not in content:
+            violations.append("MISSING epic_ref in front matter")
+        if "north_star_ref:" not in content:
+            violations.append("MISSING north_star_ref in front matter")
+
+    return violations
+
+# Block Validation transition if any violations
+for task in execution_tasks:
+    v = check_spec_tracing(task)
+    if v:
+        raise GateError(f"[GATE BLOCKED] {task['title']} — tracing violations: {v}")
+```
+
+**Repair command** — if a task is missing front matter (e.g., created before this rule was enforced), PATCH it:
+
+```python
+# Prepend front matter to existing content
+front_matter = build_front_matter(task)   # uses _fm() helper from sdd_publish.py
+impl_section  = build_impl_files(task)    # uses _impl() helper
+task_content  = front_matter + impl_section + existing_content
+client.patch(f"/api/v2/dataspheres/{ds_id}/tasks/{task_id}", json={"content": task_content})
+```
+
+The `patch_task_tracing.py` script in `workspaces/<initiative>/specs/` is the reference implementation for retroactively adding front matter to all tasks.
 
 ### Spec ID Format
 
