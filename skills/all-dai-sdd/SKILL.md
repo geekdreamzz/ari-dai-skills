@@ -124,17 +124,89 @@ Research (RS)  →  North Stars (NS)  →  Epics (EP)  →  Execution (EX)  → 
 
 ---
 
+## Entry Points — all-dai-sdd Runs Anytime
+
+`/all-dai-sdd` can be invoked at any stage of a project. On every invocation, the first step is always: **assess current state, then determine mode**.
+
+### Step 0 — State Assessment (always runs first)
+
+Before taking any action, answer these four questions:
+
+1. **Is there an active datasphere?** → call `get_context()` or check for `targetDatasphere` in tasks.yaml
+2. **Does a plan mode already exist for this initiative?** → `list_plan_modes(dsId)`
+3. **Are there existing tasks on the board?** → `list_tasks(dsId, planModeId)`
+4. **Is there a local tasks.yaml?** → check `<project-dir>/tasks.yaml`
+
+The answers determine the mode:
+
+| Board exists? | tasks.yaml exists? | Mode |
+|---|---|---|
+| No | No | **NEW** — full 14-step publish from scratch |
+| No | Yes | **PUBLISH** — board doesn't exist yet, publish from local spec |
+| Yes | No | **AUDIT** — board exists, generate tasks.yaml from live state, then assess |
+| Yes | Yes | **SYNC** — compare board vs tasks.yaml, determine delta, apply |
+
+### Mode: NEW (full publish)
+→ Proceed to Step 1 of the 14-step publish protocol below.
+
+### Mode: PUBLISH (board doesn't exist, tasks.yaml does)
+→ Skip directly to Step 4 (resolve dsId), then continue from there.
+
+### Mode: AUDIT (board exists, no local spec)
+1. Pull all tasks from the live board via API
+2. Generate a `tasks.yaml` representing current board state
+3. Run Z3 verifier (`verify_gates.py`) against it — report violations
+4. Assess what's missing: Research tasks without sources? NS without research_ref? EX tasks without epic_ref? Epics without EX tasks?
+5. Generate the delta: new tasks to add, existing tasks to update, violations to fix
+6. Confirm with user, then apply
+
+### Mode: SYNC (both exist)
+1. Load tasks.yaml
+2. Pull live board state from API
+3. Diff: tasks in yaml not on board → CREATE; tasks on board not in yaml → flag as ORPHANED; tasks in both → check for content drift
+4. Run Z3 on the merged state
+5. Apply delta — create missing, update drifted, report orphans
+6. Always run Z3 after sync to confirm UNSAT
+
+### Mode: REFACTOR
+Triggered when user says "refactor", "restructure", or "reorganize":
+1. Pull live board state
+2. Run Z3 — report all violations as baseline
+3. Propose restructured task set (new epics, reassigned tasks, updated refs)
+4. Show diff: what moves, what gets added, what gets removed
+5. Confirm, then apply via bulk update
+
+### Mode: VERIFY
+Triggered when user says "verify", "check gates", or "run Z3":
+1. Pull live board or use local tasks.yaml
+2. Run `verify_gates.py`
+3. Report UNSAT (all good) or SAT with exact violation counterexamples
+4. If violations found: propose minimal fixes (which tasks need which field changes)
+5. Apply fixes on user confirmation
+
+### Mode: APPEND
+Triggered when user describes new work to add to an existing initiative:
+1. Pull current epics
+2. Draft new tasks (Research first if new approach, otherwise EX tasks under existing Epic)
+3. Run Z3 on combined set
+4. Confirm, then bulk create
+
+---
+
 ## Quickstart
 
 ```bash
-# Load credentials
-export $(grep -v '^#' ~/.dataspheres.env | xargs)
+# Run on any project — all-dai-sdd detects the right mode automatically
+/all-dai-sdd <project-dir-or-initiative-name>
 
-# Publish a spec
-/all-dai-sdd publish specs/my-feature
+# Examples:
+/all-dai-sdd specs/dai-desktop        # auto-detects: SYNC or NEW
+/all-dai-sdd --verify dai-desktop     # force VERIFY mode — just run Z3
+/all-dai-sdd --refactor dai-desktop   # force REFACTOR mode
+/all-dai-sdd --append dai-desktop     # force APPEND mode (add new tasks)
+/all-dai-sdd --audit dai-desktop      # force AUDIT mode (pull board → generate yaml)
 
-# Verify gate rules (SMT — run after any task state change)
-python3 skills/all-dai-sdd/verify_gates.py --tasks specs/my-feature/tasks.yaml
+# Always safe to run — assessment is read-only until you confirm the delta
 ```
 
 ---
@@ -193,7 +265,9 @@ This check is mandatory before any task may move to the Validation column.
 
 ---
 
-## `/sdd publish <project-dir>` — Gated Publish Protocol
+## Mode: NEW/PUBLISH — Gated Publish Protocol (14 Steps)
+
+This protocol runs when starting a new initiative (Mode: NEW) or publishing a local spec to a new board (Mode: PUBLISH). For existing initiatives, see Entry Points above — the right mode is auto-detected.
 
 **Every step is mandatory. No step may be skipped, reordered, or batched with another.**
 
@@ -724,6 +798,38 @@ curl -X POST "$DATASPHERES_BASE_URL/api/v2/dataspheres/<dsId>/tasks/status-group
 | Any | Done (direct) | BLOCKED — skipping Validation is never permitted |
 
 Then assign tasks to the correct groups using `statusGroupId` in the bulk create payload. **Never use a statusGroupId from a different plan mode or from the datasphere defaults** — FK constraint violation if the group belongs to another datasphere, and wrong columns if it belongs to another plan mode in the same datasphere.
+
+---
+
+## Spec Generation Rules — Applies to All Modes
+
+When all-dai-sdd creates or updates any task spec (in any mode), these rules are non-negotiable:
+
+### Research tasks (RS-NNN) — always first
+- Every new initiative requires RS-001 before NS-001 can be created
+- Every new technical approach (new tool, new algorithm, new architecture decision) requires a Research task before Execution tasks are written
+- Research tasks must have: ≥2 source citations, verbatim Origin Prompts in blockquote, feasibility evidence
+
+### North Star tasks (NS-NNN)
+- Must have `research_ref` pointing to a Done RS task before advancing past NorthStars column
+- Origin Prompts section must contain verbatim user quotes, not paraphrase
+
+### Epic tasks (EP-NNN / E-NNN)
+- Must have `north_star_ref`
+- Must have an Execution Checklist listing all child EX tasks
+- Cannot move to Done until all child EX tasks are Done
+
+### Execution tasks (T-NNN / EX-NNN)
+- Must have `epic_ref` and `north_star_ref`
+- Must have `Implementation Files` section listing actual source files
+- Code annotations in those files should reference the spec: `// @implements SPEC-DAI-T001`
+
+### Z3 gate check — mandatory after any batch of creates/updates
+After creating or updating 3+ tasks in any mode, always run:
+```bash
+python3 skills/all-dai-sdd/verify_gates.py --tasks <tasks.yaml>
+```
+UNSAT required before reporting completion.
 
 ---
 
