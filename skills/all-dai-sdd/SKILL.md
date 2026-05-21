@@ -570,6 +570,27 @@ Setting only `statusGroupId` moves the card visually but leaves `status=TODO` in
 
 ---
 
+## Trace Graph Linking — Hard Requirements
+
+The trace graph widget builds edges by parsing task titles and content HTML. **Two rules are non-negotiable** — violating either produces a spaghetti graph (all-to-all fallback edges instead of surgical parent→child links).
+
+### Rule 1 — Task titles MUST start with the SDD ID prefix
+
+| Task type | Title format | Example |
+|---|---|---|
+| North Star | `NS-001 · <title>` | `NS-001 · Subscriber journey vision` |
+| Epic | `E-001 · <title>` | `E-001 · Engagement data layer` |
+| Execution | `T-001 · <title>` | `T-001 · Engagement scoring service` |
+| Validation | `V-T-001 · <title>` | `V-T-001 · Engagement scoring service` |
+
+The graph's `extractSddId()` **only** recognises `NS-`, `E-`, `T-`, `V-T-` prefixes. Using a requirement ID (`R-001 · ...`) as the title prefix means the node gets no SDD ID — every edge falls back to "connect all nodes in this tier." Requirement IDs belong in task **content** (in the `### Requirement` blockquote), not in task **titles**.
+
+### Rule 2 — Checklists MUST use `data-type="taskList"` format
+
+The graph's `findChecklistRefs()` parser reads `<li data-type="taskItem">` elements to discover Epic→Execution and NS→Epic edges. HTML entities like `&#9744;` (☐) inside plain `<ul><li>` are **not** parsed — the entity stays as a raw string in stored HTML and matches neither the TipTap parser nor the `☐` regex fallback. Always use the format shown in [§ Checklist Format](#checklist-format--tiptap-tasklist) below.
+
+---
+
 ## Checklist Format — TipTap TaskList
 
 All checklists in task content (Acceptance Checklist, Execution Checklist, North Star Checklist) MUST use the TipTap `taskList` format. Do NOT use `☐`/`☑` Unicode characters — they are not interactive and do not render as real checkboxes.
