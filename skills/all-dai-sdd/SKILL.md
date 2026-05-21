@@ -15,6 +15,8 @@ Every SDD project uses exactly these six columns, in this order. When you create
 
 **The Research column is the origin gate.** Nothing enters North Stars without a corresponding Research task that has passed Validation. This is not optional and cannot be waived.
 
+**Gate rules are SMT-verified.** After task publish (Step 9), Z3 formally checks all 8 gate invariants. UNSAT = proven correct. SAT = counterexample with exact task ID and rule violated. No task advances on a SAT result.
+
 ---
 
 ## Research Column — Hard Rules
@@ -130,6 +132,9 @@ export $(grep -v '^#' ~/.dataspheres.env | xargs)
 
 # Publish a spec
 /all-dai-sdd publish specs/my-feature
+
+# Verify gate rules (SMT — run after any task state change)
+python3 skills/all-dai-sdd/verify_gates.py --tasks specs/my-feature/tasks.yaml
 ```
 
 ---
@@ -137,6 +142,8 @@ export $(grep -v '^#' ~/.dataspheres.env | xargs)
 ## No Mocks Rule — Hardened Enforcement
 
 **Mocks are bugs. They are never acceptable at any layer of an SDD project.**
+
+**Gate rules are formally verified by Z3 (SMT solver) at Step 9.5 — not just asserted.** UNSAT means no task in the initiative can violate the gate invariants. SAT with a counterexample means something is provably wrong.
 
 A mock is defined as any of the following:
 - A stub function that returns hardcoded or synthetic output instead of calling the real tool
@@ -466,6 +473,54 @@ curl -X POST "$DATASPHERES_BASE_URL/api/v2/dataspheres/<dsId>/tasks/bulk" \
 If bulk returns 500, fall back to individual POSTs — but verify every task's `statusGroupId` is from step 8 before posting.
 
 **Gate evidence required:** `<N> tasks created (NS:<n> EP:<n> EX:<n>), all tagged <initiative>, all NS sections verified, all tasks have spec front matter + impl files (EX) + heading anchors`
+
+---
+
+### Step 9.5 of 14 — Z3 gate verification
+
+Run the SMT constraint checker against the published tasks BEFORE applying CodeApplications.
+This formally verifies all 8 gate rules are satisfied for every task in the initiative.
+
+**Install z3-solver if needed:**
+```bash
+pip install z3-solver   # or: uv add z3-solver
+```
+
+**Run the verifier:**
+```bash
+# From tasks.yaml (before publish):
+python3 skills/all-dai-sdd/verify_gates.py --tasks <project-dir>/tasks.yaml
+
+# Or against live API state (pass tasks as JSON from the bulk GET):
+python3 skills/all-dai-sdd/verify_gates.py --json '<tasks-json>'
+```
+
+**Rules checked (8 total):**
+
+| Rule | Description | Z3 encoding |
+|---|---|---|
+| RULE-1 | Done-gate: Done tasks must have validationResult=pass | `Done(t) → result(t) = pass` |
+| RULE-2 | No-skip-validation: Done tasks were through Validation | `Done(t) → result(t) ≠ none` |
+| RULE-3 | Research-gate: NS can't advance if research_ref isn't Done | `col(ns) > NS → col(rs) = Done` |
+| RULE-4 | NS-forward-gate: Epic can't advance past Epics if NS not in NorthStars | `col(ep) ≥ EP → col(ns) ≥ NS` |
+| RULE-5 | Epic-forward-gate: EX task can't advance if Epic not in Epics | `col(ex) ≥ EX → col(ep) ≥ EP` |
+| RULE-6 | Trace-complete: Done tasks have unbroken Research→NS→EP chain | reachability check |
+| RULE-7 | Research-ref-valid: NS tasks have non-null research_ref that exists | `ns.research_ref ∈ task_set` |
+| RULE-8 | Source-count: RS tasks have ≥2 source citations in content | `count_sources(rs) ≥ 2` |
+
+**If UNSAT (all rules hold):**
+```
+✅ GATE [9.5/14] z3-verify | <ISO-timestamp> | 8 rules UNSAT, 0 violations, N tasks
+```
+
+**If SAT (violation found) → STOP:**
+```
+🚫 GATE [9.5/14] BLOCKED — Z3 found violations:
+  - <rule>: <task-id> <description>
+Required: Fix all violations, re-run verify_gates.py, confirm UNSAT before Step 10.
+```
+
+**Gate evidence required:** Output line starting with `✅ GATE [Z3]` (copy verbatim)
 
 ---
 
