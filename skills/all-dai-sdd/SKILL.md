@@ -1,17 +1,124 @@
 <!-- dai-sync: skip -->
 # all-dai-sdd — Spec-Driven Development
 
-Drive feature implementation from a living spec hosted on Dataspheres AI. Five-column lifecycle with sub-checklist propagation, dependency enforcement, and a live stakeholder dashboard.
+Drive feature implementation from a living spec hosted on Dataspheres AI. Six-column lifecycle with pre-flight research gating, sub-checklist propagation, dependency enforcement, and a live stakeholder dashboard.
 
 ---
 
-## Five-Column Lifecycle
+## Six-Column Lifecycle
 
 ```
-North Stars  →  Epics  →  Execution  →  Validation  →  Done
+Research  →  North Stars  →  Epics  →  Execution  →  Validation  →  Done
 ```
 
-Every SDD project uses exactly these five columns, in this order. When you create a plan mode for an initiative, you must create five status groups with these exact names — do NOT use the planner's default columns (To Do / In Progress / Done).
+Every SDD project uses exactly these six columns, in this order. When you create a plan mode for an initiative, you must create six status groups with these exact names — do NOT use the planner's default columns (To Do / In Progress / Done).
+
+**The Research column is the origin gate.** Nothing enters North Stars without a corresponding Research task that has passed Validation. This is not optional and cannot be waived.
+
+---
+
+## Research Column — Hard Rules
+
+The Research column exists to prevent the most expensive category of SDD failure: **running Execution against an unvalidated approach**. A 153-minute HaplotypeCaller run producing F1=0.005 because the tool was wrong for the data type is the canonical example of what Research gates prevent.
+
+### What a Research task must contain
+
+Every Research task (`RS-NNN · <title>`) must contain ALL of the following sections:
+
+```html
+<h3>Origin Prompts <!-- #origin --></h3>
+<h3>Problem Statement <!-- #problem --></h3>
+<h3>Approach Under Evaluation <!-- #approach --></h3>
+<h3>Sources <!-- #sources --></h3>
+<h3>Feasibility Evidence <!-- #feasibility --></h3>
+<h3>Recommendation <!-- #rec --></h3>
+<h3>Validation Criteria <!-- #vc --></h3>
+```
+
+#### Origin Prompts — verbatim requirement (hardened)
+
+The `Origin Prompts` section must contain the **verbatim, quoted text** of every user prompt or brief that triggered this work. Not a summary. Not a paraphrase. The exact words.
+
+**Correct:**
+```html
+<h3>Origin Prompts <!-- #origin --></h3>
+<blockquote>
+  <p>"build me a WGBS variant calling pipeline for NA12878 chr22 — gate on SNP F1 ≥ 0.95 vs GIAB NISTv4.2.1"</p>
+  <p><em>— facelessaicoder, 2026-05-20</em></p>
+</blockquote>
+```
+
+**Wrong (gate fails):**
+```html
+<h3>Origin Prompts <!-- #origin --></h3>
+<p>The user wants a variant calling pipeline.</p>
+```
+
+A paraphrase is not an origin prompt. The verbatim text is the audit trail. Gate check at Step 9 scans for `<blockquote>` inside the Origin Prompts section — its absence is a gate failure.
+
+#### Sources — citation requirement (hardened)
+
+Every Research task must cite **at least two sources** with URL or DOI. Sources must be relevant to the approach under evaluation — not generic documentation links.
+
+```html
+<h3>Sources <!-- #sources --></h3>
+<ul>
+  <li><a href="https://doi.org/10.1093/bioinformatics/btu395">BisSNP: Fast DNA methylation and SNP calling (Liu et al.)</a> — bisulfite-aware SNP calling, validated on WGBS data</li>
+  <li><a href="https://gatk.broadinstitute.org/hc/en-us/articles/360035531672">GATK HaplotypeCaller docs</a> — explicitly states not designed for bisulfite-converted reads</li>
+</ul>
+```
+
+Inline citations without URLs are accepted only when citing internal documents, where the document path replaces the URL.
+
+#### Feasibility Evidence — dry-run requirement for compute-heavy work
+
+For any Execution task that involves >10 minutes of compute, the Research task must include a dry-run gate:
+
+```html
+<h3>Feasibility Evidence <!-- #feasibility --></h3>
+<p><strong>Dry-run:</strong> Ran <code>[tool] on [1M-read / 100kbp subset]</code> — runtime: Xm, output: [file or metric], confirms approach viable.</p>
+```
+
+If the dry-run fails or is skipped: task is BLOCKED. The full run may not start.
+
+### Research → North Star gate
+
+**A North Star may not enter the Epics column until its Research task is in the Done column.**
+
+The blocking is enforced via the `research_ref` field in the North Star front matter. At every NS → Epics transition, the system checks:
+
+```python
+research_task = get_task(ns.research_ref)
+assert research_task.column == 'done', f"NS {ns.id} blocked — Research task {ns.research_ref} not Done"
+```
+
+If the Research task is in any column other than Done, the NS is marked BLOCKED with:
+```
+[BLOCKED] NS-XXX cannot enter Epics — Research task RS-XXX is in [column], not Done.
+Required: Complete RS-XXX validation and move it to Done before this NS can proceed.
+```
+
+### Research task ID format
+
+```
+RS-001 · <concise description of what is being researched>
+```
+
+Research tasks use `RS-` prefix. The trace graph adds a Research tier above North Stars:
+
+```
+Research (RS)  →  North Stars (NS)  →  Epics (EP)  →  Execution (EX)  →  Validation (VA)  →  Artifacts
+```
+
+### What the Research column prevents (by example)
+
+| What skipping Research caused | What a Research task would have forced |
+|---|---|
+| HaplotypeCaller on WGBS → F1=0.005, 153 min wasted | RS: "Verify HaplotypeCaller supports bisulfite reads" → BLOCKED, BisSNP sourced first |
+| `--region` + `--bed-regions` conflict in vcfeval | RS: "Validate rtg vcfeval flags for region-restricted calling" → flag conflict caught in dry-run |
+| Stale mocks passing unit tests, prod migration fails | RS: "Verify integration test approach against real DB" → mock-free approach validated |
+
+---
 
 ---
 
@@ -186,7 +293,7 @@ GET existing plan modes first. If none match `tagFilter: ["<initiative>"]`, POST
 curl -X POST "$DATASPHERES_BASE_URL/api/v2/dataspheres/<dsId>/tasks/plan-modes" \
   -H "Authorization: Bearer $DATASPHERES_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"name":"<Initiative Name>","tagFilter":["<initiative-slug>"],"columns":[{"name":"North Stars","color":"#7c3aed","isDoneState":false},{"name":"Epics","color":"#0891b2","isDoneState":false},{"name":"Execution","color":"#3b82f6","isDoneState":false},{"name":"Validation","color":"#f59e0b","isDoneState":false},{"name":"Done","color":"#22c55e","isDoneState":true}]}'
+  -d '{"name":"<Initiative Name>","tagFilter":["<initiative-slug>"],"columns":[{"name":"Research","color":"#6366f1","isDoneState":false},{"name":"North Stars","color":"#7c3aed","isDoneState":false},{"name":"Epics","color":"#0891b2","isDoneState":false},{"name":"Execution","color":"#3b82f6","isDoneState":false},{"name":"Validation","color":"#f59e0b","isDoneState":false},{"name":"Done","color":"#22c55e","isDoneState":true}]}'
 ```
 
 If the API does not accept `columns` on POST (older server version), omit it and clean up defaults in step 8:
@@ -204,21 +311,21 @@ Capture `planModeId`. The planner URL is `?mode=<planModeId>` — NOT `?planMode
 
 ---
 
-### Step 8 of 14 — Verify 5 scoped status groups (delete defaults if needed)
-→ *Detail: line 122 (Column Architecture)*
+### Step 8 of 14 — Verify 6 scoped status groups (delete defaults if needed)
+→ *Detail: Column Architecture section*
 
 **CRITICAL — do NOT reuse existing status groups from other plan modes or the datasphere defaults.**
 
-**If `columns` was passed in step 7**, no default columns will exist — this step only needs to verify the 5 groups and correct any `sortOrder` values if needed:
+**If `columns` was passed in step 7**, no default columns will exist — this step only needs to verify the 6 groups and correct any `sortOrder` values if needed:
 
 ```bash
-# Verify all 5 groups exist with correct names
+# Verify all 6 groups exist with correct names
 curl "$DATASPHERES_BASE_URL/api/v2/dataspheres/<dsId>/tasks/status-groups?planModeId=<planModeId>" \
   -H "Authorization: Bearer $DATASPHERES_API_KEY"
-# Expected: North Stars, Epics, Execution, Validation, Done — no other groups
+# Expected: Research, North Stars, Epics, Execution, Validation, Done — no other groups
 ```
 
-**If `columns` was NOT passed in step 7**, the plan mode auto-creates 3 default columns (`To Do`, `In Progress`, `In Review`) AND a `Done` group. You must DELETE the 3 defaults and POST the 4 SDD groups — the auto-created `Done` is kept.
+**If `columns` was NOT passed in step 7**, the plan mode auto-creates 3 default columns (`To Do`, `In Progress`, `In Review`) AND a `Done` group. You must DELETE the 3 defaults and POST the 5 SDD groups — the auto-created `Done` is kept.
 
 ```bash
 # 1. GET all groups scoped to this plan mode — find and DELETE the 3 defaults
@@ -229,17 +336,18 @@ curl -X DELETE "$DATASPHERES_BASE_URL/api/v2/dataspheres/<dsId>/tasks/status-gro
   -H "Authorization: Bearer $DATASPHERES_API_KEY"
 # Repeat for In Progress and In Review
 
-# 2. POST the 4 SDD groups (North Stars, Epics, Execution, Validation)
+# 2. POST the 5 SDD groups (Research, North Stars, Epics, Execution, Validation)
 curl -X POST "$DATASPHERES_BASE_URL/api/v2/dataspheres/<dsId>/tasks/status-groups" \
   -H "Authorization: Bearer $DATASPHERES_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"name":"North Stars","order":0,"planModeId":"<planModeId>"}'
-# Repeat for Epics (order:1), Execution (order:2), Validation (order:3)
+  -d '{"name":"Research","order":0,"planModeId":"<planModeId>"}'
+# Repeat for North Stars (order:1), Epics (order:2), Execution (order:3), Validation (order:4)
+# Then GET to find the auto-created Done group
 
-# 3. GET again — confirm exactly 5 remain: North Stars, Epics, Execution, Validation, Done
+# 3. GET again — confirm exactly 6 remain: Research, North Stars, Epics, Execution, Validation, Done
 ```
 
-**Gate evidence required:** `5 groups confirmed: NS=<id> EP=<id> EX=<id> VA=<id> DONE=<id>`
+**Gate evidence required:** `6 groups confirmed: RS=<id> NS=<id> EP=<id> EX=<id> VA=<id> DONE=<id>`
 
 ---
 
@@ -247,12 +355,26 @@ curl -X POST "$DATASPHERES_BASE_URL/api/v2/dataspheres/<dsId>/tasks/status-group
 → *Detail: line 154 (Task Status vs statusGroupId)*
 → *Detail: North Star Artifact Requirements (enforced here)*
 
+**Pre-publish Research task validation (mandatory, runs before North Star check):**
+
+For every `type: research` task in tasks.yaml, verify:
+1. Content contains ALL seven required section headings: `Origin Prompts`, `Problem Statement`, `Approach Under Evaluation`, `Sources`, `Feasibility Evidence`, `Recommendation`, `Validation Criteria`
+2. `Origin Prompts` section contains a `<blockquote>` with verbatim user text
+3. `Sources` section contains at least two `<a href=` links
+4. Front matter `spec_type: research`
+
+If any check fails:
+```
+🚫 GATE [9/14] BLOCKED — RS-XXX missing required content: [list failures]
+Required: Origin Prompts must contain verbatim blockquote. Sources must have ≥2 URLs.
+```
+
 **Pre-publish North Star validation (mandatory before any POST):**
 
-For every `type: north-star` task in tasks.yaml, verify its `content` field contains ALL six required section headings:
+For every `type: north-star` task in tasks.yaml, verify its `content` field contains ALL six required section headings AND the front matter `research_ref` field:
 
 ```
-<h3>Origin Prompts</h3>
+<h3>Origin Prompts</h3>       ← must contain <blockquote> with verbatim prompt text
 <h3>Codebase Context</h3>
 <h3>Architecture Constraints</h3>
 <h3>Vision</h3>
@@ -260,11 +382,18 @@ For every `type: north-star` task in tasks.yaml, verify its `content` field cont
 <h3>Success Criteria</h3>
 ```
 
-If any heading is missing:
+**Plus front matter check:**
+```python
+assert "research_ref:" in task["content"], f"{task['title']} missing research_ref in front matter"
+assert 'research_ref: null' not in task["content"], f"{task['title']} research_ref must not be null — point to RS-NNN"
+assert "<blockquote>" in origin_prompts_section, f"{task['title']} Origin Prompts must contain verbatim quoted text in <blockquote>"
 ```
-🚫 GATE [9/14] BLOCKED — NS-XXX missing required sections: [list missing]
-Required before continuing: Add the missing sections to tasks.yaml content field.
-See "North Star Artifact Requirements" section for what each section must contain.
+
+If any check fails:
+```
+🚫 GATE [9/14] BLOCKED — NS-XXX missing required sections or front matter: [list missing]
+Required before continuing: Add missing sections, set research_ref to RS-NNN, and add verbatim
+prompt text in <blockquote> inside Origin Prompts.
 ```
 
 Do NOT proceed until all North Stars pass this check.
@@ -280,19 +409,21 @@ POST all tasks via bulk endpoint. Each task payload **must** include:
 <pre><code class="language-yaml">
 spec_id: SPEC-{DOMAIN}-{PREFIX}
 title: {task title}
-spec_type: {architecture|user-journey|algorithm|test-plan}
+spec_type: {research|architecture|user-journey|algorithm|test-plan}
 version: 1.0.0
 status: ACTIVE
-column: {north-stars|epics|execution|validation}
-epic_ref: {EP-NNN or null for NS tasks}
-north_star_ref: {NS-NNN or null for NS tasks}
-tags: [{initiative-slug}, sdd, {ns|epic|execution|validation}]
+column: {research|north-stars|epics|execution|validation}
+research_ref: {RS-NNN — REQUIRED for all NS tasks; null only for RS tasks themselves}
+epic_ref: {EP-NNN or null for NS/RS tasks}
+north_star_ref: {NS-NNN or null for NS/RS tasks}
+tags: [{initiative-slug}, sdd, {rs|ns|epic|execution|validation}]
 </code></pre>
 ```
 
-- `spec_type` by column: NS → `architecture`, EP → `user-journey`, EX → `algorithm`, VA → `test-plan`
+- `spec_type` by column: RS → `research`, NS → `architecture`, EP → `user-journey`, EX → `algorithm`, VA → `test-plan`
+- `research_ref`: every NS task **must** have this field pointing to its RS task. Omitting it or setting it to `null` on a non-RS task is a gate failure at Step 9.
 - `epic_ref`: EX-T1-xxx → `EP-001`, EX-T2-xxx → `EP-002`, EX-T3-xxx → `EP-003`, EX-VH-xxx + VA-xxx → `EP-004`, EX-OR-xxx → `EP-005`, EP-xxx → their parent NS
-- `north_star_ref`: all non-NS tasks → `NS-001` (or the relevant NS if multiple exist)
+- `north_star_ref`: all non-NS, non-RS tasks → `NS-001` (or the relevant NS if multiple exist)
 
 **MANDATORY: Implementation Files section** — every EX task content MUST include this section immediately after the front matter block:
 
@@ -440,7 +571,7 @@ All 5 sections are required. Replace `<dsId>`, `<uri>`, `<planModeId>`, `<Projec
      data-plan-mode-id="<planModeId>"
      data-refresh-interval="60"></div>
 
-<!-- SECTION 3: Trace Graph widget — 5-tier swimlane (NS > EP > EX > VA > Artifacts) -->
+<!-- SECTION 3: Trace Graph widget — 6-tier swimlane (Research > NS > EP > EX > VA > Artifacts) -->
 <h2>Trace Graph</h2>
 <div data-type="plannerWidget"
      data-widget-type="trace-graph"
@@ -464,7 +595,7 @@ The `data-datasphere-uri` attribute enables deep links from the activity feed �
 
 The `progress-summary` widget renders: donut ring (% complete) + Done / In Progress / Blocked / Pending counts + "Next Steps" link + "Open in Planner" link. It is the authoritative at-a-glance view; do not replace it with a custom ring or custom count grid.
 
-The `trace-graph` widget renders the 5-tier swimlane automatically from the task structure: North Stars &rarr; Epics &rarr; Execution &rarr; Validation &rarr; Artifacts (code files parsed from `Implementation Files` sections). It is expandable and shows task cards per column. Do not replace it with a static Mermaid diagram or custom HTML grid.
+The `trace-graph` widget renders the 6-tier swimlane automatically from the task structure: Research &rarr; North Stars &rarr; Epics &rarr; Execution &rarr; Validation &rarr; Artifacts (code files parsed from `Implementation Files` sections). It is expandable and shows task cards per column. Research nodes show their source count and verbatim prompt excerpt. Do not replace it with a static Mermaid diagram or custom HTML grid.
 
 **Tag chip deep links (built-in):** Any tag on a task card whose name matches `SPEC-*`, `CTX-*`, or `RESULT-*` is automatically clickable in the Kanban/List views — clicking navigates to `/pages/<uri>/<tag-name-lowercase>`. This means tagging a task with `SPEC-AUTH-001` creates a one-click link from the task card to the corresponding spec page. No extra setup required.
 
@@ -515,16 +646,27 @@ linked_tasks: T-042, T-043
 
 Status groups are scoped to the plan mode. When `createPlanMode` is called with no template, the planner creates its own default columns (To Do / In Progress / Done). These are NOT the SDD columns.
 
-**You must always create 5 new status groups explicitly**, each with `planModeId` set to the new mode's ID. The plan mode auto-creates a `Done` group — GET it rather than POSTing a duplicate (POSTing a second `Done` returns 400).
+**You must always create 6 new status groups explicitly**, each with `planModeId` set to the new mode's ID. The plan mode auto-creates a `Done` group — GET it rather than POSTing a duplicate (POSTing a second `Done` returns 400).
 
 ```bash
 curl -X POST "$DATASPHERES_BASE_URL/api/v2/dataspheres/<dsId>/tasks/status-groups" \
   -H "Authorization: Bearer $DATASPHERES_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"name":"North Stars","order":0,"planModeId":"<planModeId>"}'
-# Repeat for Epics (order:1), Execution (order:2), Validation (order:3)
+  -d '{"name":"Research","order":0,"planModeId":"<planModeId>"}'
+# Repeat for North Stars (order:1), Epics (order:2), Execution (order:3), Validation (order:4)
 # Then GET status-groups filtered by planModeId to find the auto-created Done group
 ```
+
+**Column gate rules (enforced at every column transition):**
+
+| From | To | Gate |
+|---|---|---|
+| Research | North Stars | Research task must be in Done; RS task has ≥2 sources and verbatim blockquote |
+| North Stars | Epics | `research_ref` resolves to a Done RS task |
+| Epics | Execution | No BLOCKED upstream tasks |
+| Execution | Validation | No mocks/stubs in any implementation file (mock scan required) |
+| Validation | Done | Validation criteria explicitly passed with evidence |
+| Any | Done (direct) | BLOCKED — skipping Validation is never permitted |
 
 Then assign tasks to the correct groups using `statusGroupId` in the bulk create payload. **Never use a statusGroupId from a different plan mode or from the datasphere defaults** — FK constraint violation if the group belongs to another datasphere, and wrong columns if it belongs to another plan mode in the same datasphere.
 
@@ -578,12 +720,13 @@ The trace graph widget builds edges by parsing task titles and content HTML. **T
 
 | Task type | Title format | Example |
 |---|---|---|
+| Research | `RS-001 · <title>` | `RS-001 · Validate variant caller for WGBS data` |
 | North Star | `NS-001 · <title>` | `NS-001 · Subscriber journey vision` |
 | Epic | `E-001 · <title>` | `E-001 · Engagement data layer` |
 | Execution | `T-001 · <title>` | `T-001 · Engagement scoring service` |
 | Validation | `V-T-001 · <title>` | `V-T-001 · Engagement scoring service` |
 
-The graph's `extractSddId()` **only** recognises `NS-`, `E-`, `T-`, `V-T-` prefixes. Using a requirement ID (`R-001 · ...`) as the title prefix means the node gets no SDD ID — every edge falls back to "connect all nodes in this tier." Requirement IDs belong in task **content** (in the `### Requirement` blockquote), not in task **titles**.
+The graph's `extractSddId()` recognises `RS-`, `NS-`, `E-`, `T-`, `V-T-` prefixes. Using a requirement ID (`R-001 · ...`) as the title prefix means the node gets no SDD ID — every edge falls back to "connect all nodes in this tier." Requirement IDs belong in task **content** (in the `### Requirement` blockquote), not in task **titles**.
 
 ### Rule 2 — Checklists MUST use `data-type="taskList"` format
 
