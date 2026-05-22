@@ -112,6 +112,58 @@ Research tasks use `RS-` prefix. The trace graph adds a Research tier above Nort
 Research (RS)  →  North Stars (NS)  →  Epics (EP)  →  Execution (EX)  →  Validation (VA)  →  Artifacts
 ```
 
+### Live Research Invocation — `start_research` integration
+
+**Ari does not scaffold empty RS tasks.** When all-dai-sdd creates a Research task, it runs the research live and populates the task with real findings before moving on.
+
+#### When to invoke `start_research`
+
+Invoke research whenever any of these conditions are true — in **any mode**:
+
+| Trigger | Action |
+|---|---|
+| Creating a new RS task (any mode) | Run `start_research` → populate Sources, Feasibility Evidence, Recommendation |
+| APPEND mode hits an unresolved approach question | Research first, then draft EX tasks from findings |
+| AUDIT finds RS task with < 2 sources | Re-run research to fill the gap |
+| User asks "which tool / approach / library should we use?" | Research before answering |
+| Any EX task requires a non-obvious technical decision | Create RS task + invoke research inline |
+
+#### How to invoke
+
+```python
+# 1. Start research — returns immediately, populates async
+result = start_research(
+    query="<precise question about the approach under evaluation>",
+    title="RS-NNN · <title>",
+)
+conv_id = result["conversationId"]
+
+# 2. Wait ~4s, then poll
+import time; time.sleep(4)
+messages = get_research_messages(conversation_id=conv_id)
+findings = messages[-1]["content"]  # AI synthesis with web citations
+
+# 3. Follow up if needed
+continue_research(conversation_id=conv_id, follow_up="Compare the top 3 options in a table")
+
+# 4. Populate the RS task — Sources come from webSearchResults, not invented
+sources = messages[-1].get("webSearchResults", [])
+```
+
+The research **query must match the Approach Under Evaluation** section exactly — it should be phrased as the specific technical question being resolved, not a generic topic.
+
+#### Citation rule
+
+Every URL in the RS task `## Sources` section must come from `webSearchResults` returned by `start_research` or `continue_research`. Invented URLs or generic doc links fail the Research gate.
+
+#### Lightweight lookups: `web_search`
+
+For quick single-question lookups (not full RS tasks), use `web_search` directly:
+```python
+results = web_search(query="rtg vcfeval --region --bed-regions mutual exclusion")
+```
+Use this for: flag compatibility checks, version lookups, error messages. For full approach validation (new tool choice, architectural decision), use `start_research` and create an RS task.
+
 ### What the Research column prevents (by example)
 
 | What skipping Research caused | What a Research task would have forced |
@@ -187,9 +239,19 @@ Triggered when user says "verify", "check gates", or "run Z3":
 ### Mode: APPEND
 Triggered when user describes new work to add to an existing initiative:
 1. Pull current epics
-2. Draft new tasks (Research first if new approach, otherwise EX tasks under existing Epic)
-3. Run Z3 on combined set
-4. Confirm, then bulk create
+2. **If approach is unresolved** → invoke `start_research` before drafting any tasks
+3. Draft new tasks (Research first if new approach, otherwise EX tasks under existing Epic)
+4. Run Z3 on combined set
+5. Confirm, then bulk create
+
+### Mode: RESEARCH
+Triggered when user asks "research X", "look up Y", "which approach should we use for Z", or "is X the right tool for Y":
+1. Invoke `start_research(query=<precise question>)` — do not ask the user to do this manually
+2. Poll `get_research_messages` (~4s wait)
+3. Follow up via `continue_research` if answer is incomplete or needs comparison table
+4. If the question is an architectural decision: create a full RS task populated with findings
+5. If it's a quick lookup (flag compatibility, version, error meaning): answer directly from search results, no RS task needed
+6. Always cite URLs from `webSearchResults` — never invent sources
 
 ---
 
@@ -805,10 +867,12 @@ Then assign tasks to the correct groups using `statusGroupId` in the bulk create
 
 When all-dai-sdd creates or updates any task spec (in any mode), these rules are non-negotiable:
 
-### Research tasks (RS-NNN) — always first
+### Research tasks (RS-NNN) — always first, always live
 - Every new initiative requires RS-001 before NS-001 can be created
 - Every new technical approach (new tool, new algorithm, new architecture decision) requires a Research task before Execution tasks are written
-- Research tasks must have: ≥2 source citations, verbatim Origin Prompts in blockquote, feasibility evidence
+- **When creating an RS task, invoke `start_research` immediately** — populate Sources and Feasibility Evidence from real `webSearchResults`, not from prior knowledge
+- Research tasks must have: ≥2 source citations (from `webSearchResults`), verbatim Origin Prompts in blockquote, feasibility evidence
+- If `start_research` is unavailable (offline/API error): mark RS task as `status: blocked`, note the failure, do not proceed to NS
 
 ### North Star tasks (NS-NNN)
 - Must have `research_ref` pointing to a Done RS task before advancing past NorthStars column
