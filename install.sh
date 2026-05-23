@@ -125,6 +125,13 @@ install_skill() {
       [[ -e "$target" || -L "$target" ]] && rm -rf "$target"
       link_or_copy "$source_dir" "$target"
       echo "✓ $skill_name → $target"
+
+      # Run post-install.sh if present (e.g. all-dai-sdd wires sdd-conductor hooks)
+      local post_install="$source_dir/post-install.sh"
+      if [[ -f "$post_install" ]]; then
+        chmod +x "$post_install"
+        "$post_install" "$PROJECT_DIR" || true
+      fi
       ;;
     cursor)
       # Cursor reads .mdc files from .cursor/rules/ — write SKILL.md as <skill>.mdc
