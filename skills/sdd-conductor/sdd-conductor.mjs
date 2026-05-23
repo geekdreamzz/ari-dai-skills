@@ -37,6 +37,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { execSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
 const VERSION = '1.1.0';
 const STATE_FILE = '.sdd-state.json';
@@ -296,8 +297,12 @@ async function cmdInit() {
   }
 
   const yaml = fs.readFileSync(yamlPath, 'utf-8');
-  const uriMatch = yaml.match(/targetDatasphere:\s*(\S+)/);
-  const initiativeMatch = yaml.match(/initiative:\s*(\S+)/);
+  // Multi-word values matter (e.g. `initiative: QA Test Board`). The previous
+  // `(\S+)` only captured the first word, so the plan-mode lookup matched
+  // nothing. Use multiline + trailing-trim, optionally quoted.
+  const yamlField = (name) => yaml.match(new RegExp(`^\\s*${name}:\\s*["']?(.+?)["']?\\s*$`, 'm'));
+  const uriMatch = yamlField('targetDatasphere');
+  const initiativeMatch = yamlField('initiative');
   if (!uriMatch) die('tasks.yaml missing targetDatasphere field');
 
   const dsUri = uriMatch[1];
@@ -1293,7 +1298,11 @@ async function cmdInstall(projectDir) {
   const target = projectDir ? path.resolve(projectDir) : findGitRoot();
   const settingsDir = path.join(target, '.claude');
   const settingsPath = path.join(settingsDir, 'settings.json');
-  const conductorPath = path.resolve(import.meta.url.replace('file:///', '').replace('file://', ''));
+  // Use fileURLToPath — the manual replace('file:///') leaves no leading slash
+  // on macOS/Linux, causing path.resolve() to prefix the cwd to the conductor
+  // path. Result: hooks pointed at <project>/Users/.../sdd-conductor.mjs which
+  // doesn't exist, silently breaking the file-guard / progress / session hooks.
+  const conductorPath = fileURLToPath(import.meta.url);
 
   if (!fs.existsSync(settingsDir)) fs.mkdirSync(settingsDir, { recursive: true });
 
