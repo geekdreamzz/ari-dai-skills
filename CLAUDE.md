@@ -246,7 +246,7 @@ For engineering teams: a full 5-column lifecycle hosted in the planner.
 North Stars → Epics → Execution → Validation → Done
 ```
 
-Never stub. Never mark Done without passing Validation. Specs self-heal — revise during execution when you learn the spec is wrong.
+Never stub. Never mark Done without passing Validation. Specs self-heal — revise during execution when you learn the spec is wrong. **Never stall at a failed validation** — a VA task that fails its gate immediately triggers the Ralph loop: diagnose root cause → apply best known fix → re-run → check gate → repeat. No user input between iterations. Gate pass closes the task and the loop continues toward the North Star. Only a hard blocker (fundamental data constraint, architectural mismatch, max iterations) stops the loop. Full protocol: `skills/all-dai-sdd/SKILL.md` → Ralph Loop Protocol section.
 
 **Detail:** `skills/all-dai-sdd/SKILL.md`
 
