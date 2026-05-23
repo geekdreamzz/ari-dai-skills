@@ -274,6 +274,39 @@ Triggered when user asks "research X", "look up Y", "which approach should we us
 
 ---
 
+## sdd-conductor — Enforcement Layer
+
+**all-dai-sdd depends on `sdd-conductor` for hard lifecycle enforcement.** Markdown instructions are advisory; conductor commands are machine-checkable. A non-zero exit is a hard gate — Claude Code surfaces the error and the LLM cannot proceed.
+
+### One-time setup (run in the project being tracked)
+
+```bash
+# 1. Install Claude hooks into the project's .claude/settings.json
+node /path/to/dai-skills/skills/sdd-conductor/sdd-conductor.mjs install
+
+# 2. Bootstrap .sdd-state.json (resolves dsId, planModeId, statusGroupIds from the live API)
+node /path/to/dai-skills/skills/sdd-conductor/sdd-conductor.mjs init
+```
+
+After setup, `.sdd-state.json` in the project root is the single source of truth. Claude hooks fire automatically on every file write and session start — no extra steps required.
+
+### What the conductor enforces
+
+| Command | Gate | Exits 1 if |
+|---|---|---|
+| `start <taskId>` | Deps-done | Any `depends_on` task not in Done column |
+| `complete <taskId>` | Checklist | Any `data-checked="false"` item remains |
+| `complete <taskId>` | Comment | No `[all-dai-sdd-system-message]` completion comment |
+| `complete <taskId>` | No-mocks | Mock/stub pattern found in impl files |
+| `gate deps-done <id>` | Deps | Same as start |
+| `gate checklist <id>` | Checklist | Same as complete |
+| `gate no-mocks <file>` | Mocks | Same as complete |
+| `gate research-done <id>` | Research | RS task not in Done |
+| `check-file-hook` (auto) | File guard | File written not in active task's `Implementation Files` (warning, not block) |
+| `session-start` (auto) | Drift | Active task out of sync with live API |
+
+---
+
 ## Quickstart
 
 ```bash
@@ -1040,22 +1073,27 @@ When an Epic moves to Done:
 
 ## Task In-Progress Workflow — Dashboard Visibility
 
-**REQUIRED before starting any task.** Mark the task `IN_PROGRESS` so it appears in the "Active Execution" dashboard widget. Without this, the dashboard shows no in-flight work.
+**REQUIRED before starting any task.** Run `sdd-conductor start` — this verifies dependencies, marks the task IN_PROGRESS, posts the start comment, and writes the active task to `.sdd-state.json` in one shot. The hooks then guard every file write against the active task's impl files list.
+
+```bash
+# MANDATORY — run this before writing a single line of code
+node /path/to/dai-skills/skills/sdd-conductor/sdd-conductor.mjs start <taskId>
+```
+
+**Exit codes:** 0 = ready to code | 1 = deps not Done (shows which) | 2 = task not found
+
+If `sdd-conductor` is not available, fall back to manual curl (but fix the conductor first):
 
 ```bash
 curl -X PATCH "$DATASPHERES_BASE_URL/api/v2/dataspheres/<dsId>/tasks/<taskId>" \
   -H "Authorization: Bearer $DATASPHERES_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"status":"IN_PROGRESS"}'
-```
 
-Post a start comment so the activity feed shows movement:
-
-```bash
 curl -X POST "$DATASPHERES_BASE_URL/api/v2/dataspheres/<dsId>/tasks/<taskId>/comments" \
   -H "Authorization: Bearer $DATASPHERES_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"content":"[all-dai-sdd-system-message]\n\n🔵 **IN PROGRESS** — Starting <T-XXX>. Depends-on cleared."}'
+  -d '{"content":"[all-dai-sdd-system-message]\n\n**IN PROGRESS** — Starting <T-XXX>. Depends-on cleared."}'
 ```
 
 ---
@@ -1205,7 +1243,23 @@ curl -X POST "$DATASPHERES_BASE_URL/api/v2/dataspheres/<dsId>/tasks" \
 
 Save the returned `task.id` as `validationTaskId` — include it in the completion comment.
 
-### Step 4: PATCH task to Done
+### Step 4: Run sdd-conductor complete (enforced gate)
+
+After steps 1–3c are done, run the conductor complete command. It verifies the checklist, confirms the completion comment exists, scans impl files for mocks, patches to Done, and propagates the epic checklist — all in one call.
+
+```bash
+# MANDATORY — this is the only way to mark a task Done
+node /path/to/dai-skills/skills/sdd-conductor/sdd-conductor.mjs complete <taskId>
+```
+
+**Exit 1 scenarios (conductor blocks completion):**
+- Any `data-checked="false"` item remains in the acceptance checklist
+- No completion comment with `[all-dai-sdd-system-message]` and "Verified criteria" found
+- Mock/stub pattern detected in any implementation file
+
+If conductor exits 1, fix the reported issue and re-run. Do NOT manually curl to Done to bypass it.
+
+If `sdd-conductor` is unavailable, fall back to manual curl — but note this skips the checklist and mock gates:
 
 ```bash
 curl -X PATCH "$DATASPHERES_BASE_URL/api/v2/dataspheres/<dsId>/tasks/<taskId>" \
