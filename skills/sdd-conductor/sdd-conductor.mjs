@@ -7,14 +7,23 @@
  * Non-zero exit is the enforcement mechanism — bash calls fail, Claude sees the error.
  *
  * Usage:
- *   node sdd-conductor.mjs init                     Bootstrap .sdd-state.json for this project
+ *   node sdd-conductor.mjs init                     Bootstrap .sdd-state.json for this project/initiative
+ *   node sdd-conductor.mjs switch <slug>             Switch current initiative
+ *   node sdd-conductor.mjs workspace                 Cross-project view of all registered initiatives
+ *   node sdd-conductor.mjs drive                     Ordered mission brief — what to do next end-to-end
+ *   node sdd-conductor.mjs sync                      Mid-plan reconcile: diff tasks.yaml vs live board
  *   node sdd-conductor.mjs start <taskId>            Mark task IN_PROGRESS. Exits 1 if deps not Done.
  *   node sdd-conductor.mjs complete <taskId>         Verify checklist → comment → PATCH Done → propagate.
- *   node sdd-conductor.mjs status                    Show current state + live task status.
+ *   node sdd-conductor.mjs progress <message>        Post progress milestone to active task.
+ *   node sdd-conductor.mjs validate <vaTaskId>       Ralph loop gate (exit 0=pass / exit 1=next iter).
+ *   node sdd-conductor.mjs status                    Show all initiatives + active task status.
  *   node sdd-conductor.mjs gate <name> [args...]     Verify named gate. Exits 1 if not met.
+ *   node sdd-conductor.mjs dashboard-check <dsUri> <slug>  Verify 5 required dashboard sections.
  *   node sdd-conductor.mjs check-file-hook           Read stdin (Claude PostToolUse JSON), warn on mismatch.
  *   node sdd-conductor.mjs session-start             Read .sdd-state.json, reconcile with live API.
  *   node sdd-conductor.mjs install [project-dir]     Inject hooks into project's .claude/settings.json.
+ *
+ * All commands accept --initiative <slug> to target a specific initiative.
  *
  * Gate names:
  *   deps-done <taskId>     All depends_on tasks are in Done
@@ -29,8 +38,25 @@ import path from 'node:path';
 import os from 'node:os';
 import { execSync } from 'node:child_process';
 
-const VERSION = '1.0.0';
+const VERSION = '1.1.0';
 const STATE_FILE = '.sdd-state.json';
+const WORKSPACE_FILE = path.join(os.homedir(), '.sdd-workspace.json');
+
+// ---------------------------------------------------------------------------
+// Global --initiative override (parsed before command dispatch)
+// ---------------------------------------------------------------------------
+
+let globalInitiativeOverride = null;
+const _filteredArgv = [];
+for (let i = 2; i < process.argv.length; i++) {
+  if (process.argv[i] === '--initiative' && process.argv[i + 1]) {
+    globalInitiativeOverride = process.argv[i + 1];
+    i++;
+  } else {
+    _filteredArgv.push(process.argv[i]);
+  }
+}
+const [command, ...args] = _filteredArgv;
 
 // ---------------------------------------------------------------------------
 // Credential + state loading
@@ -67,11 +93,28 @@ function statePath() {
   return path.join(findGitRoot(), STATE_FILE);
 }
 
+// Migrate v1.0 flat state → v1.1 multi-initiative shape
+function migrateState(raw) {
+  if (!raw) return null;
+  if (raw.initiatives) return raw; // already new shape
+  // Old flat shape: dsId, dsUri, planModeId, initiative, ... at top level
+  if (raw.dsId && raw.initiative) {
+    const { version, ...iState } = raw;
+    return {
+      version: VERSION,
+      currentInitiative: raw.initiative,
+      initiatives: { [raw.initiative]: iState },
+    };
+  }
+  return raw;
+}
+
 function loadState() {
   const p = statePath();
   if (!fs.existsSync(p)) return null;
   try {
-    return JSON.parse(fs.readFileSync(p, 'utf-8'));
+    const raw = JSON.parse(fs.readFileSync(p, 'utf-8'));
+    return migrateState(raw);
   } catch {
     return null;
   }
@@ -87,6 +130,43 @@ function requireState() {
     die('No .sdd-state.json found. Run: node sdd-conductor.mjs init');
   }
   return s;
+}
+
+// Returns { state, slug, iState } for the current (or overridden) initiative.
+// All commands that are initiative-scoped use this instead of requireState().
+function requireInitiativeState() {
+  const state = requireState();
+  const slug = globalInitiativeOverride || state.currentInitiative;
+  if (!slug) die('No current initiative. Run: node sdd-conductor.mjs init');
+  const iState = state.initiatives?.[slug];
+  if (!iState) {
+    const available = Object.keys(state.initiatives || {}).join(', ') || '(none)';
+    die(`Initiative "${slug}" not found in .sdd-state.json.\nAvailable: ${available}\nRun: node sdd-conductor.mjs init`);
+  }
+  return { state, slug, iState };
+}
+
+// Save iState back into the root state and persist.
+function saveInitiative(state, slug, iState) {
+  state.initiatives[slug] = iState;
+  saveState(state);
+}
+
+// ---------------------------------------------------------------------------
+// Workspace registry (~/.sdd-workspace.json)
+// ---------------------------------------------------------------------------
+
+function registerWorkspace(projectPath) {
+  let projects = [];
+  if (fs.existsSync(WORKSPACE_FILE)) {
+    try { projects = JSON.parse(fs.readFileSync(WORKSPACE_FILE, 'utf-8')); } catch {}
+  }
+  if (!Array.isArray(projects)) projects = [];
+  if (!projects.includes(projectPath)) {
+    projects.push(projectPath);
+    fs.writeFileSync(WORKSPACE_FILE, JSON.stringify(projects, null, 2), 'utf-8');
+    info(`Registered in workspace: ${WORKSPACE_FILE}`);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -118,6 +198,7 @@ function makeClient() {
     get: (p) => req('GET', p),
     patch: (p, b) => req('PATCH', p, b),
     post: (p, b) => req('POST', p, b),
+    delete: (p) => req('DELETE', p),
   };
 }
 
@@ -265,8 +346,8 @@ async function cmdInit() {
 
   if (!doneGroup) die('No "Done" status group found in plan mode');
 
-  const state = {
-    version: VERSION,
+  // Build initiative state
+  const iState = {
     dsId,
     dsUri,
     planModeId: pm.id,
@@ -276,35 +357,130 @@ async function cmdInit() {
     validationGroupId: validGroup?.id || null,
     statusGroups: Object.fromEntries(groups.map(g => [g.name.toLowerCase(), g.id])),
     activeTask: null,
+    lastCompleted: null,
     initializedAt: new Date().toISOString(),
   };
 
-  saveState(state);
-  ok(`Initialized .sdd-state.json — ready for SDD lifecycle enforcement`);
+  // Load existing root state (if any) or create new multi-initiative root
+  let rootState = loadState() || { version: VERSION, currentInitiative: null, initiatives: {} };
+  if (!rootState.initiatives) rootState.initiatives = {};
+
+  const isNew = !rootState.initiatives[initiative];
+  rootState.initiatives[initiative] = iState;
+  rootState.currentInitiative = initiative;
+  rootState.version = VERSION;
+
+  saveState(rootState);
+
+  // Register this project in the global workspace
+  registerWorkspace(root);
+
+  ok(`${isNew ? 'Initialized' : 'Re-initialized'} initiative "${initiative}" in .sdd-state.json`);
   info(`Done group ID: ${doneGroup.id}`);
   info(`Execution group ID: ${execGroup?.id || 'not found'}`);
+
+  const allInitiatives = Object.keys(rootState.initiatives);
+  if (allInitiatives.length > 1) {
+    info(`\nAll initiatives in this project: ${allInitiatives.join(', ')}`);
+    info(`Current: ${initiative}  (switch with: node sdd-conductor.mjs switch <slug>)`);
+  }
+}
+
+async function cmdSwitch(slug) {
+  if (!slug) die('Usage: switch <initiative-slug>');
+  const state = requireState();
+  const available = Object.keys(state.initiatives || {});
+  if (!state.initiatives?.[slug]) {
+    die(`Initiative "${slug}" not found.\nAvailable: ${available.join(', ') || '(none)'}`);
+  }
+  state.currentInitiative = slug;
+  saveState(state);
+  const iState = state.initiatives[slug];
+  ok(`Switched to initiative: ${slug}`);
+  info(`Datasphere: ${iState.dsUri} (${iState.dsId})`);
+  info(`Plan mode: ${iState.planModeId}`);
+  if (iState.activeTask) {
+    info(`Active task: ${iState.activeTask.specId} — ${iState.activeTask.title}`);
+  } else {
+    info(`Active task: (none)`);
+  }
+}
+
+async function cmdWorkspace() {
+  if (!fs.existsSync(WORKSPACE_FILE)) {
+    console.log('\n📦 No workspace configured yet.\n   Run: node sdd-conductor.mjs init  in each project to register it.\n');
+    return;
+  }
+
+  let projects = [];
+  try { projects = JSON.parse(fs.readFileSync(WORKSPACE_FILE, 'utf-8')); } catch {
+    die(`Could not read workspace file: ${WORKSPACE_FILE}`);
+  }
+  if (!Array.isArray(projects) || projects.length === 0) {
+    console.log('\n📦 Workspace is empty.\n');
+    return;
+  }
+
+  console.log(`\n📦 WORKSPACE — ${projects.length} project(s)\n`);
+
+  let totalActive = 0;
+  for (const projectPath of projects) {
+    const sp = path.join(projectPath, STATE_FILE);
+    if (!fs.existsSync(sp)) {
+      info(`${path.basename(projectPath).padEnd(25)} (no .sdd-state.json — may need re-init)`);
+      continue;
+    }
+
+    let rootState;
+    try { rootState = migrateState(JSON.parse(fs.readFileSync(sp, 'utf-8'))); } catch { continue; }
+    if (!rootState?.initiatives) continue;
+
+    const projectName = path.basename(projectPath);
+    const initiatives = Object.entries(rootState.initiatives);
+
+    for (const [slug, iState] of initiatives) {
+      const isCurrent = slug === rootState.currentInitiative;
+      const hasActive = !!iState.activeTask;
+      if (hasActive) totalActive++;
+
+      const marker = hasActive ? '●' : '○';
+      const currentMark = isCurrent ? '▶' : ' ';
+      const activeInfo = hasActive
+        ? `${iState.activeTask.specId} — ${iState.activeTask.title}`
+        : iState.lastCompleted
+          ? `last: ${iState.lastCompleted.specId}`
+          : '(idle)';
+
+      console.log(`  ${currentMark} ${marker} ${projectName.padEnd(22)} ${slug.padEnd(28)} ${activeInfo}`);
+    }
+  }
+
+  console.log(`\n   ● = active task   ○ = idle   ▶ = current initiative\n`);
+  if (totalActive > 0) {
+    console.log(`   ${totalActive} initiative(s) have work in progress.\n`);
+  }
 }
 
 async function cmdStart(taskId) {
   if (!taskId) die('Usage: start <taskId>');
-  const state = requireState();
+  const { state, slug, iState } = requireInitiativeState();
   const client = makeClient();
 
   // Warn if another task is already active
-  if (state.activeTask) {
-    warn(`Another task is already active: ${state.activeTask.specId || state.activeTask.taskId}`);
-    warn(`Complete it first with: node sdd-conductor.mjs complete ${state.activeTask.taskId}`);
+  if (iState.activeTask) {
+    warn(`Another task is already active in "${slug}": ${iState.activeTask.specId || iState.activeTask.taskId}`);
+    warn(`Complete it first with: node sdd-conductor.mjs complete ${iState.activeTask.taskId}`);
     warn(`Or force with --force flag to override`);
     if (!process.argv.includes('--force')) process.exit(1);
   }
 
   // Fetch the task
-  const task = await client.get(`/api/v2/dataspheres/${state.dsId}/tasks/${taskId}`);
+  const task = await client.get(`/api/v2/dataspheres/${iState.dsId}/tasks/${taskId}`);
   const specId = extractSpecId(task.content) || task.title?.match(/^[A-Z]+-\d+/)?.[0] || taskId;
   const implFiles = extractImplFiles(task.content);
   const dependsOn = extractDependsOn(task.content);
 
-  console.log(`\n🔵 SDD-CONDUCTOR START`);
+  console.log(`\n🔵 SDD-CONDUCTOR START  [${slug}]`);
   info(`Task: ${task.title}`);
   info(`Spec ID: ${specId}`);
   info(`Impl files: ${implFiles.length > 0 ? implFiles.join(', ') : '(none listed)'}`);
@@ -314,7 +490,7 @@ async function cmdStart(taskId) {
   if (dependsOn.length > 0) {
     info(`\nChecking dependencies...`);
     const allTasks = await client.get(
-      `/api/v2/dataspheres/${state.dsId}/tasks?planModeId=${state.planModeId}&limit=200`
+      `/api/v2/dataspheres/${iState.dsId}/tasks?planModeId=${iState.planModeId}&limit=200`
     );
     const taskList = allTasks.tasks || allTasks || [];
     const taskMap = Object.fromEntries(taskList.map(t => [
@@ -336,23 +512,22 @@ async function cmdStart(taskId) {
     info(`All ${dependsOn.length} dependencies are Done ✓`);
   }
 
-  // Verify impl files exist
   if (implFiles.length === 0) {
     warn(`Task has no Implementation Files section. Add one to the task content before coding.`);
   }
 
   // PATCH task to IN_PROGRESS
-  await client.patch(`/api/v2/dataspheres/${state.dsId}/tasks/${taskId}`, {
+  await client.patch(`/api/v2/dataspheres/${iState.dsId}/tasks/${taskId}`, {
     status: 'IN_PROGRESS',
   });
 
   // Post start comment
-  await client.post(`/api/v2/dataspheres/${state.dsId}/tasks/${taskId}/comments`, {
+  await client.post(`/api/v2/dataspheres/${iState.dsId}/tasks/${taskId}/comments`, {
     content: `[all-dai-sdd-system-message]\n\n**IN PROGRESS** — Starting ${specId}. Dependencies cleared. sdd-conductor v${VERSION}.`,
   });
 
-  // Write active task to state
-  state.activeTask = {
+  // Write active task to initiative state
+  iState.activeTask = {
     taskId,
     specId,
     title: task.title,
@@ -360,22 +535,22 @@ async function cmdStart(taskId) {
     implFiles,
     startedAt: new Date().toISOString(),
   };
-  saveState(state);
+  saveInitiative(state, slug, iState);
 
-  ok(`Task ${specId} marked IN_PROGRESS and logged to .sdd-state.json`);
+  ok(`Task ${specId} marked IN_PROGRESS and logged to .sdd-state.json (initiative: ${slug})`);
   info(`File guard active. Any file write outside [${implFiles.join(', ')}] will trigger a warning.`);
 }
 
 async function cmdComplete(taskId) {
   if (!taskId) die('Usage: complete <taskId>');
-  const state = requireState();
+  const { state, slug, iState } = requireInitiativeState();
   const client = makeClient();
 
   // Fetch the task
-  const task = await client.get(`/api/v2/dataspheres/${state.dsId}/tasks/${taskId}`);
+  const task = await client.get(`/api/v2/dataspheres/${iState.dsId}/tasks/${taskId}`);
   const specId = extractSpecId(task.content) || task.title?.match(/^[A-Z]+-\d+/)?.[0] || taskId;
 
-  console.log(`\n🟢 SDD-CONDUCTOR COMPLETE`);
+  console.log(`\n🟢 SDD-CONDUCTOR COMPLETE  [${slug}]`);
   info(`Task: ${task.title}`);
 
   // Gate 1: All acceptance checklist items must be checked
@@ -390,7 +565,7 @@ async function cmdComplete(taskId) {
   info(`Acceptance checklist: all items checked ✓`);
 
   // Gate 2: Completion comment must exist with [all-dai-sdd-system-message]
-  const comments = await client.get(`/api/v2/dataspheres/${state.dsId}/tasks/${taskId}/comments`);
+  const comments = await client.get(`/api/v2/dataspheres/${iState.dsId}/tasks/${taskId}/comments`);
   const commentList = comments.comments || comments || [];
   const completionComment = commentList.find(c =>
     c.content?.includes('[all-dai-sdd-system-message]') &&
@@ -410,11 +585,13 @@ async function cmdComplete(taskId) {
   }
   info(`Completion comment: found ✓`);
 
-  // Gate 2b: Test evidence required — at least one test run or test statement in comments
+  // Gate 2b: Test evidence required
   const totalCheckedItems = (task.content?.match(/data-checked="true"/g) || []).length;
   const hasTestEvidence = commentList.some(c =>
     c.content?.includes('[all-dai-sdd-system-message]') &&
-    (c.content?.includes('Test Run —') || c.content?.includes('✅') || c.content?.includes('tests passed') || c.content?.includes('playwright') || c.content?.includes('vitest'))
+    (c.content?.includes('Test Run —') || c.content?.includes('✅') ||
+     c.content?.includes('tests passed') || c.content?.includes('playwright') ||
+     c.content?.includes('vitest'))
   );
   if (!hasTestEvidence && totalCheckedItems > 0) {
     gate(
@@ -461,36 +638,35 @@ async function cmdComplete(taskId) {
   if (implFiles.length > 0) info(`Mock scan: clean ✓`);
 
   // PATCH task to Done
-  await client.patch(`/api/v2/dataspheres/${state.dsId}/tasks/${taskId}`, {
-    statusGroupId: state.doneGroupId,
+  await client.patch(`/api/v2/dataspheres/${iState.dsId}/tasks/${taskId}`, {
+    statusGroupId: iState.doneGroupId,
     status: 'DONE',
   });
-  info(`Task PATCH: status=DONE, statusGroupId=${state.doneGroupId} ✓`);
+  info(`Task PATCH: status=DONE, statusGroupId=${iState.doneGroupId} ✓`);
 
   // Propagate to parent Epic checklist
   if (task.parentId) {
-    await propagateEpicChecklist(client, state, task.parentId, specId, task.title);
+    await propagateEpicChecklist(client, iState, task.parentId, specId, task.title);
   }
 
-  // Clear active task from state
-  state.activeTask = null;
-  state.lastCompleted = {
+  // Clear active task from initiative state
+  iState.activeTask = null;
+  iState.lastCompleted = {
     taskId,
     specId,
     title: task.title,
     completedAt: new Date().toISOString(),
   };
-  saveState(state);
+  saveInitiative(state, slug, iState);
 
   ok(`${specId} marked Done. Checklist propagated to Epic.`);
 }
 
-async function propagateEpicChecklist(client, state, epicTaskId, doneSpecId, doneTitle) {
+async function propagateEpicChecklist(client, iState, epicTaskId, doneSpecId, doneTitle) {
   try {
-    const epic = await client.get(`/api/v2/dataspheres/${state.dsId}/tasks/${epicTaskId}`);
+    const epic = await client.get(`/api/v2/dataspheres/${iState.dsId}/tasks/${epicTaskId}`);
     if (!epic.content) return;
 
-    // Find the checklist item for this task and tick it
     const idPrefix = doneSpecId.match(/^[A-Z]+-\d+/)?.[0] || doneSpecId;
     const updated = epic.content.replace(
       new RegExp(`(data-checked="false"><p>)(${escapeRegex(idPrefix)}[^<]*)`, 'g'),
@@ -502,28 +678,57 @@ async function propagateEpicChecklist(client, state, epicTaskId, doneSpecId, don
       return;
     }
 
-    await client.patch(`/api/v2/dataspheres/${state.dsId}/tasks/${epicTaskId}`, {
+    await client.patch(`/api/v2/dataspheres/${iState.dsId}/tasks/${epicTaskId}`, {
       content: updated,
     });
     info(`Epic checklist: ticked ${idPrefix} ✓`);
 
-    // Check if all items are now checked
     const remaining = countUncheckedItems(updated);
     const epicSpecId = extractSpecId(updated) || epic.title?.match(/^[A-Z]+-\d+/)?.[0] || epicTaskId;
     if (remaining === 0) {
       info(`Epic fully complete — posting ready-for-validation comment`);
-      await client.post(`/api/v2/dataspheres/${state.dsId}/tasks/${epicTaskId}/comments`, {
+      await client.post(`/api/v2/dataspheres/${iState.dsId}/tasks/${epicTaskId}/comments`, {
         content: `[all-dai-sdd-system-message]\n\nAll Execution tasks complete. Ready for Validation.`,
       });
-      // Propagate up to parent North Star (if any)
       if (epic.parentId) {
-        await propagateNsChecklist(client, state, epic.parentId, epicSpecId, epic.title);
+        await propagateNsChecklist(client, iState, epic.parentId, epicSpecId, epic.title);
       }
     } else {
       info(`Epic: ${remaining} task(s) remaining`);
     }
   } catch (e) {
     warn(`Could not propagate to Epic ${epicTaskId}: ${e.message}`);
+  }
+}
+
+async function propagateNsChecklist(client, iState, nsTaskId, doneEpicSpecId, doneEpicTitle) {
+  try {
+    const ns = await client.get(`/api/v2/dataspheres/${iState.dsId}/tasks/${nsTaskId}`);
+    if (!ns.content) return;
+
+    const idPrefix = doneEpicSpecId.match(/^[A-Z]+-\d+/)?.[0] || doneEpicSpecId;
+    const updated = ns.content.replace(
+      new RegExp(`(data-checked="false"><p>)(${escapeRegex(idPrefix)}[^<]*)`, 'g'),
+      `data-checked="true"><p>$2`
+    );
+
+    if (updated === ns.content) {
+      info(`NS checklist: no matching item found for ${idPrefix}`);
+      return;
+    }
+
+    await client.patch(`/api/v2/dataspheres/${iState.dsId}/tasks/${nsTaskId}`, { content: updated });
+    info(`NS checklist: ticked ${idPrefix} ✓`);
+
+    const remaining = countUncheckedItems(updated);
+    if (remaining === 0) {
+      await client.post(`/api/v2/dataspheres/${iState.dsId}/tasks/${nsTaskId}/comments`, {
+        content: `[all-dai-sdd-system-message]\n\nAll Epics complete. North Star fully achieved — ready for final review.`,
+      });
+      info(`North Star ${idPrefix}: all Epics done — completion comment posted ✓`);
+    }
+  } catch (e) {
+    warn(`Could not propagate to NS ${nsTaskId}: ${e.message}`);
   }
 }
 
@@ -534,53 +739,64 @@ async function cmdStatus() {
     return;
   }
 
+  const initiatives = Object.entries(state.initiatives || {});
+  if (initiatives.length === 0) {
+    console.log('\n📋 No initiatives found — run: node sdd-conductor.mjs init\n');
+    return;
+  }
+
   console.log(`\n📋 SDD-CONDUCTOR STATUS`);
-  info(`Initiative: ${state.initiative}`);
-  info(`Datasphere: ${state.dsUri} (${state.dsId})`);
-  info(`Plan mode: ${state.planModeId}`);
 
-  if (!state.activeTask) {
-    info(`Active task: (none)`);
-    if (state.lastCompleted) {
-      info(`Last completed: ${state.lastCompleted.specId} at ${state.lastCompleted.completedAt}`);
-    }
-  } else {
-    const t = state.activeTask;
-    console.log(`\n  ACTIVE TASK:`);
-    info(`  Spec ID: ${t.specId}`);
-    info(`  Task ID: ${t.taskId}`);
-    info(`  Title: ${t.title}`);
-    info(`  Started: ${t.startedAt}`);
-    info(`  Impl files: ${t.implFiles?.join(', ') || '(none)'}`);
+  for (const [slug, iState] of initiatives) {
+    const isCurrent = slug === state.currentInitiative;
+    const marker = isCurrent ? '▶' : ' ';
+    console.log(`\n  ${marker} ${slug}  [${iState.dsUri}]`);
+    info(`  Plan mode: ${iState.planModeId}`);
 
-    // Fetch live status
-    try {
-      const client = makeClient();
-      const live = await client.get(`/api/v2/dataspheres/${state.dsId}/tasks/${t.taskId}`);
-      info(`  Live status: ${live.status} / ${getColumnName(live)}`);
-    } catch {
-      info(`  Live status: (could not fetch)`);
+    if (!iState.activeTask) {
+      info(`  Active task: (none)`);
+      if (iState.lastCompleted) {
+        info(`  Last completed: ${iState.lastCompleted.specId} at ${iState.lastCompleted.completedAt}`);
+      }
+    } else {
+      const t = iState.activeTask;
+      info(`  Active task: ${t.specId} — ${t.title}`);
+      info(`  Started: ${t.startedAt}`);
+      info(`  Impl files: ${t.implFiles?.join(', ') || '(none)'}`);
+
+      try {
+        const client = makeClient();
+        const live = await client.get(`/api/v2/dataspheres/${iState.dsId}/tasks/${t.taskId}`);
+        info(`  Live status: ${live.status} / ${getColumnName(live)}`);
+      } catch {
+        info(`  Live status: (could not fetch)`);
+      }
     }
+  }
+
+  if (initiatives.length > 1) {
+    console.log(`\n  Switch: node sdd-conductor.mjs switch <slug>`);
+    console.log(`  Cross-project: node sdd-conductor.mjs workspace`);
   }
   console.log('');
 }
 
 async function cmdGate(name, arg) {
   if (!name) die('Usage: gate <name> [arg]');
-  const state = requireState();
+  const { iState } = requireInitiativeState();
   const client = makeClient();
 
   switch (name) {
     case 'deps-done': {
       if (!arg) die('Usage: gate deps-done <taskId>');
-      const task = await client.get(`/api/v2/dataspheres/${state.dsId}/tasks/${arg}`);
+      const task = await client.get(`/api/v2/dataspheres/${iState.dsId}/tasks/${arg}`);
       const dependsOn = extractDependsOn(task.content);
       if (dependsOn.length === 0) {
         ok(`GATE deps-done: no dependencies declared`);
         return;
       }
       const allTasks = await client.get(
-        `/api/v2/dataspheres/${state.dsId}/tasks?planModeId=${state.planModeId}&limit=200`
+        `/api/v2/dataspheres/${iState.dsId}/tasks?planModeId=${iState.planModeId}&limit=200`
       );
       const taskList = allTasks.tasks || allTasks || [];
       const taskMap = Object.fromEntries(taskList.map(t => [
@@ -596,7 +812,7 @@ async function cmdGate(name, arg) {
     }
     case 'research-done': {
       if (!arg) die('Usage: gate research-done <rsTaskId>');
-      const task = await client.get(`/api/v2/dataspheres/${state.dsId}/tasks/${arg}`);
+      const task = await client.get(`/api/v2/dataspheres/${iState.dsId}/tasks/${arg}`);
       if (!isDone(task)) gate(`Research task ${arg} is not Done (currently: ${getColumnName(task)})`);
       ok(`GATE research-done: ${arg} is Done`);
       break;
@@ -613,7 +829,7 @@ async function cmdGate(name, arg) {
     }
     case 'checklist': {
       if (!arg) die('Usage: gate checklist <taskId>');
-      const task = await client.get(`/api/v2/dataspheres/${state.dsId}/tasks/${arg}`);
+      const task = await client.get(`/api/v2/dataspheres/${iState.dsId}/tasks/${arg}`);
       const unchecked = countUncheckedItems(task.content);
       if (unchecked > 0) gate(`${unchecked} unchecked items remain in task ${arg}`);
       ok(`GATE checklist: all items checked`);
@@ -621,7 +837,7 @@ async function cmdGate(name, arg) {
     }
     case 'impl-files': {
       if (!arg) die('Usage: gate impl-files <taskId>');
-      const task = await client.get(`/api/v2/dataspheres/${state.dsId}/tasks/${arg}`);
+      const task = await client.get(`/api/v2/dataspheres/${iState.dsId}/tasks/${arg}`);
       const files = extractImplFiles(task.content);
       if (files.length === 0) gate(`Task ${arg} has no Implementation Files section`);
       ok(`GATE impl-files: ${files.length} file(s) listed`);
@@ -633,10 +849,9 @@ async function cmdGate(name, arg) {
 }
 
 async function cmdCheckFileHook() {
-  // Read Claude PostToolUse JSON from stdin
   let raw = '';
   try {
-    if (process.stdin.isTTY) return; // not a hook invocation, skip silently
+    if (process.stdin.isTTY) return;
     for await (const chunk of process.stdin) raw += chunk;
     if (!raw.trim()) return;
   } catch {
@@ -647,7 +862,7 @@ async function cmdCheckFileHook() {
   try {
     input = JSON.parse(raw);
   } catch {
-    return; // malformed stdin, don't block
+    return;
   }
 
   const toolName = input.tool_name || '';
@@ -656,25 +871,26 @@ async function cmdCheckFileHook() {
   if (!filePath) return;
   if (!['Write', 'Edit', 'NotebookEdit'].includes(toolName)) return;
 
-  // Only check source files — skip config, docs, tests, lock files
   const skip = /\.(json|yaml|yml|md|lock|env|toml|txt|log|tsbuildinfo)$|node_modules|\.claude|\.git/;
   if (skip.test(filePath)) return;
 
   const state = loadState();
-  if (!state?.activeTask) {
-    // No active task — emit warning but don't block
+  // For hooks: find the initiative with an active task (could be any, not just current)
+  const activeEntry = Object.entries(state?.initiatives || {}).find(([, s]) => s.activeTask);
+  const iState = activeEntry?.[1] || state?.initiatives?.[state?.currentInitiative];
+
+  if (!iState?.activeTask) {
     warn(
       `No active SDD task. Before writing code, run:\n` +
       `  node sdd-conductor.mjs start <taskId>\n\n` +
       `  This ensures the tracker stays in sync and your work is traced.`
     );
-    return; // exit 0 — warn, don't hard-block
+    return;
   }
 
-  const { specId, implFiles, title } = state.activeTask;
-  if (!implFiles || implFiles.length === 0) return; // no impl files declared, can't check
+  const { specId, implFiles, title } = iState.activeTask;
+  if (!implFiles || implFiles.length === 0) return;
 
-  // Normalize paths for comparison
   const gitRoot = findGitRoot();
   const relPath = path.relative(gitRoot, path.isAbsolute(filePath) ? filePath : path.join(process.cwd(), filePath));
   const normalized = relPath.replace(/\\/g, '/');
@@ -694,7 +910,6 @@ async function cmdCheckFileHook() {
       `    1. Add "${normalized}" to the task's Implementation Files section and PATCH the task, OR\n` +
       `    2. Verify you're working on the right task (run: node sdd-conductor.mjs status)`
     );
-    // Exit 0 — this is a warning, not a hard block. The LLM must address it but isn't frozen.
   }
 }
 
@@ -719,7 +934,10 @@ async function cmdProgressHook() {
   if (!isTestRun) return;
 
   const state = loadState();
-  if (!state?.activeTask) return;
+  // Find initiative with active task (hooks don't know which initiative is "current")
+  const activeEntry = Object.entries(state?.initiatives || {}).find(([, s]) => s.activeTask);
+  if (!activeEntry) return;
+  const [, iState] = activeEntry;
 
   const result = extractTestResult(cmd, output);
   if (!result) return;
@@ -737,7 +955,7 @@ async function cmdProgressHook() {
     if (result.failed !== null && result.failed > 0) lines.push(`- Failed: ${result.failed}`);
     if (result.errors) lines.push(`\n**Errors:**\n\`\`\`\n${result.errors.slice(0, 500)}\n\`\`\``);
 
-    await client.post(`/api/v2/dataspheres/${state.dsId}/tasks/${state.activeTask.taskId}/comments`, {
+    await client.post(`/api/v2/dataspheres/${iState.dsId}/tasks/${iState.activeTask.taskId}/comments`, {
       content: lines.join('\n'),
     });
   } catch {
@@ -804,23 +1022,22 @@ function extractFirstError(output) {
 
 async function cmdProgress(message) {
   if (!message) die('Usage: progress <message>');
-  const state = requireState();
-  if (!state.activeTask) die('No active task. Run: node sdd-conductor.mjs start <taskId>');
+  const { iState } = requireInitiativeState();
+  if (!iState.activeTask) die('No active task. Run: node sdd-conductor.mjs start <taskId>');
   const client = makeClient();
 
-  await client.post(`/api/v2/dataspheres/${state.dsId}/tasks/${state.activeTask.taskId}/comments`, {
+  await client.post(`/api/v2/dataspheres/${iState.dsId}/tasks/${iState.activeTask.taskId}/comments`, {
     content: `[all-dai-sdd-system-message]\n\n**Progress:** ${message}\n\n_${new Date().toISOString()}_`,
   });
 
-  ok(`Progress posted to task ${state.activeTask.specId}`);
+  ok(`Progress posted to task ${iState.activeTask.specId}`);
 }
 
 async function cmdValidate(vaTaskId, extraArgs) {
   if (!vaTaskId) die('Usage: validate <vaTaskId> [--metric <n> --threshold <n> --iteration <n>]');
-  const state = requireState();
+  const { state, slug, iState } = requireInitiativeState();
   const client = makeClient();
 
-  // Parse flags
   const flags = {};
   for (let i = 0; i < extraArgs.length; i++) {
     if (extraArgs[i].startsWith('--') && extraArgs[i + 1] !== undefined) {
@@ -833,11 +1050,11 @@ async function cmdValidate(vaTaskId, extraArgs) {
   const threshold = flags.threshold !== undefined ? parseFloat(flags.threshold) : 100;
   const iteration = flags.iteration !== undefined ? parseInt(flags.iteration) : 1;
 
-  console.log(`\n🔁 SDD-CONDUCTOR VALIDATE`);
+  console.log(`\n🔁 SDD-CONDUCTOR VALIDATE  [${slug}]`);
   info(`VA task: ${vaTaskId}`);
   if (metric !== null) info(`Metric: ${metric} / threshold: ${threshold} (iteration ${iteration})`);
 
-  const task = await client.get(`/api/v2/dataspheres/${state.dsId}/tasks/${vaTaskId}`);
+  const task = await client.get(`/api/v2/dataspheres/${iState.dsId}/tasks/${vaTaskId}`);
   const specId = extractSpecId(task.content) || task.title?.match(/^[A-Z]+-\d+/)?.[0] || vaTaskId;
 
   const passed = metric === null || metric >= threshold;
@@ -845,16 +1062,14 @@ async function cmdValidate(vaTaskId, extraArgs) {
   if (passed) {
     info(`Metric ${metric} >= threshold ${threshold} — PASSED`);
 
-    // Tick all checklist items
     let updatedContent = task.content || '';
     const originalContent = updatedContent;
     updatedContent = updatedContent.replace(/data-checked="false"/g, 'data-checked="true"');
     if (updatedContent !== originalContent) {
-      await client.patch(`/api/v2/dataspheres/${state.dsId}/tasks/${vaTaskId}`, { content: updatedContent });
+      await client.patch(`/api/v2/dataspheres/${iState.dsId}/tasks/${vaTaskId}`, { content: updatedContent });
       info(`Checklist: all items ticked ✓`);
     }
 
-    // Post completion comment
     const commentLines = [
       `[all-dai-sdd-system-message]`,
       ``,
@@ -866,25 +1081,24 @@ async function cmdValidate(vaTaskId, extraArgs) {
     commentLines.push(`\n**Completion summary:** All acceptance criteria met.`);
     commentLines.push(`**Verified criteria:** Metric at or above threshold, all checklist items checked.`);
 
-    await client.post(`/api/v2/dataspheres/${state.dsId}/tasks/${vaTaskId}/comments`, {
+    await client.post(`/api/v2/dataspheres/${iState.dsId}/tasks/${vaTaskId}/comments`, {
       content: commentLines.join('\n'),
     });
     info(`Completion comment posted ✓`);
 
-    await client.patch(`/api/v2/dataspheres/${state.dsId}/tasks/${vaTaskId}`, {
-      statusGroupId: state.doneGroupId,
+    await client.patch(`/api/v2/dataspheres/${iState.dsId}/tasks/${vaTaskId}`, {
+      statusGroupId: iState.doneGroupId,
       status: 'DONE',
     });
-    info(`Task PATCH: status=DONE, statusGroupId=${state.doneGroupId} ✓`);
+    info(`Task PATCH: status=DONE, statusGroupId=${iState.doneGroupId} ✓`);
 
     if (task.parentId) {
-      await propagateEpicChecklist(client, state, task.parentId, specId, task.title);
+      await propagateEpicChecklist(client, iState, task.parentId, specId, task.title);
     }
 
-    // Clear active task — VA cycle complete
-    state.activeTask = null;
-    state.lastCompleted = { taskId: vaTaskId, specId, title: task.title, completedAt: new Date().toISOString() };
-    saveState(state);
+    iState.activeTask = null;
+    iState.lastCompleted = { taskId: vaTaskId, specId, title: task.title, completedAt: new Date().toISOString() };
+    saveInitiative(state, slug, iState);
 
     ok(`${specId} validated and moved to Done.`);
     process.exit(0);
@@ -894,10 +1108,9 @@ async function cmdValidate(vaTaskId, extraArgs) {
     const nextIter = iteration + 1;
     info(`Metric ${metric} < threshold ${threshold} (delta: -${delta}) — FAILED`);
 
-    // If there is an active EX task in state, post a link on it and clear it
-    if (state.activeTask && state.activeTask.taskId !== vaTaskId) {
+    if (iState.activeTask && iState.activeTask.taskId !== vaTaskId) {
       try {
-        await client.post(`/api/v2/dataspheres/${state.dsId}/tasks/${state.activeTask.taskId}/comments`, {
+        await client.post(`/api/v2/dataspheres/${iState.dsId}/tasks/${iState.activeTask.taskId}/comments`, {
           content: [
             `[all-dai-sdd-system-message]`,
             ``,
@@ -907,12 +1120,10 @@ async function cmdValidate(vaTaskId, extraArgs) {
         });
       } catch { /* non-fatal */ }
     }
-    // Clear active EX task — a new iteration task will be started next
-    state.activeTask = null;
-    saveState(state);
+    iState.activeTask = null;
+    saveInitiative(state, slug, iState);
 
-    // Post failure comment on the VA task
-    await client.post(`/api/v2/dataspheres/${state.dsId}/tasks/${vaTaskId}/comments`, {
+    await client.post(`/api/v2/dataspheres/${iState.dsId}/tasks/${vaTaskId}/comments`, {
       content: [
         `[all-dai-sdd-system-message]`,
         ``,
@@ -924,8 +1135,7 @@ async function cmdValidate(vaTaskId, extraArgs) {
     });
     info(`Failure comment posted ✓`);
 
-    // Auto-create next iteration EX task
-    if (state.executionGroupId) {
+    if (iState.executionGroupId) {
       const baseTitle = task.title.replace(/\s*\(iteration \d+\)$/, '');
       const newTitle = `${baseTitle} (iteration ${nextIter})`;
       const specParts = specId.match(/^(.*?)(-\d+)(.*)$/);
@@ -948,7 +1158,7 @@ async function cmdValidate(vaTaskId, extraArgs) {
         `column: execution`,
         `iteration: ${nextIter}`,
         `parent_va: ${vaTaskId}`,
-        `tags: [${state.initiative}, sdd, execution, refinement]`,
+        `tags: [${iState.initiative}, sdd, execution, refinement]`,
         `</code></pre>`,
         ``,
         implSection,
@@ -967,10 +1177,10 @@ async function cmdValidate(vaTaskId, extraArgs) {
         `</ul>`,
       ].join('\n');
 
-      const created = await client.post(`/api/v2/dataspheres/${state.dsId}/tasks`, {
+      const created = await client.post(`/api/v2/dataspheres/${iState.dsId}/tasks`, {
         title: newTitle,
-        statusGroupId: state.executionGroupId,
-        tags: [state.initiative, 'sdd', 'execution', 'refinement'],
+        statusGroupId: iState.executionGroupId,
+        tags: [iState.initiative, 'sdd', 'execution', 'refinement'],
         parentId: task.parentId || null,
         content: newContent,
       });
@@ -981,7 +1191,7 @@ async function cmdValidate(vaTaskId, extraArgs) {
       warn(`executionGroupId not set — run 'init' again or set manually to enable auto-iteration`);
     }
 
-    process.exit(1); // signal: loop should continue
+    process.exit(1);
   }
 }
 
@@ -1021,7 +1231,6 @@ async function cmdDashboardCheck(dsUri, pageSlug) {
     );
   }
 
-  // Warn if inline styles are present (anti-pattern)
   if (/style="[^"]*"/.test(content)) {
     warn(`Dashboard has inline style= attributes — these should be removed (native widgets only)`);
   }
@@ -1032,49 +1241,50 @@ async function cmdDashboardCheck(dsUri, pageSlug) {
 
 async function cmdSessionStart() {
   const state = loadState();
-  if (!state) return; // no SDD project, nothing to do
+  if (!state) return;
 
   console.log(`\n🔄 SDD-CONDUCTOR SESSION START`);
-  info(`Initiative: ${state.initiative}`);
 
-  if (!state.activeTask) {
-    info(`No active task in state.`);
-    return;
+  const initiatives = Object.entries(state.initiatives || {});
+  let anyActive = false;
+
+  for (const [slug, iState] of initiatives) {
+    if (!iState.activeTask) continue;
+    anyActive = true;
+
+    info(`Initiative "${slug}": active task ${iState.activeTask.specId}`);
+
+    try {
+      const client = makeClient();
+      const live = await client.get(`/api/v2/dataspheres/${iState.dsId}/tasks/${iState.activeTask.taskId}`);
+
+      if (isDone(live)) {
+        warn(
+          `Active task ${iState.activeTask.specId} (${slug}) is DONE in the planner but still active in state.\n` +
+          `  Clearing active task.`
+        );
+        iState.activeTask = null;
+        saveInitiative(state, slug, iState);
+      } else if (live.status !== 'IN_PROGRESS') {
+        warn(`Task ${iState.activeTask.specId} is not IN_PROGRESS (status: ${live.status}). Re-patching.`);
+        try {
+          await client.patch(`/api/v2/dataspheres/${iState.dsId}/tasks/${iState.activeTask.taskId}`, {
+            status: 'IN_PROGRESS',
+          });
+          info(`Re-patched to IN_PROGRESS.`);
+        } catch (e) {
+          warn(`Could not re-patch: ${e.message}`);
+        }
+      } else {
+        info(`Task ${iState.activeTask.specId}: IN_PROGRESS ✓ (started ${iState.activeTask.startedAt})`);
+      }
+    } catch (e) {
+      warn(`Could not reconcile "${slug}" with live API: ${e.message}`);
+    }
   }
 
-  // Reconcile with live API
-  try {
-    const client = makeClient();
-    const live = await client.get(`/api/v2/dataspheres/${state.dsId}/tasks/${state.activeTask.taskId}`);
-    const liveStatus = live.status;
-    const liveColumn = getColumnName(live);
-
-    if (isDone(live)) {
-      warn(
-        `Active task ${state.activeTask.specId} is DONE in the planner but still set as active in .sdd-state.json.\n` +
-        `  This means the last session ended without a clean sdd-conductor complete.\n` +
-        `  Clearing active task from state.`
-      );
-      state.activeTask = null;
-      saveState(state);
-    } else if (liveStatus !== 'IN_PROGRESS') {
-      warn(
-        `Active task ${state.activeTask.specId} is not IN_PROGRESS in the planner (status: ${liveStatus}).\n` +
-        `  Re-marking as IN_PROGRESS to restore tracker visibility.`
-      );
-      try {
-        await client.patch(`/api/v2/dataspheres/${state.dsId}/tasks/${state.activeTask.taskId}`, {
-          status: 'IN_PROGRESS',
-        });
-        info(`Re-patched to IN_PROGRESS.`);
-      } catch (e) {
-        warn(`Could not re-patch: ${e.message}`);
-      }
-    } else {
-      info(`Task ${state.activeTask.specId}: IN_PROGRESS ✓ (started ${state.activeTask.startedAt})`);
-    }
-  } catch (e) {
-    warn(`Could not reconcile with live API: ${e.message}`);
+  if (!anyActive) {
+    info(`No active tasks across ${initiatives.length} initiative(s).`);
   }
   console.log('');
 }
@@ -1098,7 +1308,6 @@ async function cmdInstall(projectDir) {
   const progressHookCmd = `node "${conductorPath}" progress-hook`;
   const sessionCmd = `node "${conductorPath}" session-start`;
 
-  // PostToolUse — file guard (Write|Edit)
   settings.hooks.PostToolUse = settings.hooks.PostToolUse || [];
   const existingFileHook = settings.hooks.PostToolUse.find(
     h => h.hooks?.some(hh => hh.command?.includes('check-file-hook'))
@@ -1110,7 +1319,6 @@ async function cmdInstall(projectDir) {
     });
   }
 
-  // PostToolUse — progress hook (Bash) — auto-posts test results to active task
   const existingProgressHook = settings.hooks.PostToolUse.find(
     h => h.hooks?.some(hh => hh.command?.includes('progress-hook'))
   );
@@ -1121,7 +1329,6 @@ async function cmdInstall(projectDir) {
     });
   }
 
-  // SessionStart — drift reconciliation
   settings.hooks.SessionStart = settings.hooks.SessionStart || [];
   const existingSessionHook = settings.hooks.SessionStart.find(
     h => h.hooks?.some(hh => hh.command?.includes('session-start'))
@@ -1142,14 +1349,20 @@ async function cmdInstall(projectDir) {
 }
 
 async function cmdDrive() {
-  const state = requireState();
+  const { state, slug, iState } = requireInitiativeState();
   const client = makeClient();
 
-  console.log(`\n🚀 SDD-CONDUCTOR DRIVE PLAN`);
-  info(`Initiative: ${state.initiative} | ${state.dsUri}`);
+  console.log(`\n🚀 SDD-CONDUCTOR DRIVE  [${slug}]`);
+  info(`Datasphere: ${iState.dsUri}`);
+
+  // Show other initiatives if multiple exist
+  const allSlugs = Object.keys(state.initiatives || {});
+  if (allSlugs.length > 1) {
+    info(`Other initiatives: ${allSlugs.filter(s => s !== slug).join(', ')}  (switch with: switch <slug>)`);
+  }
 
   const allTasks = await client.get(
-    `/api/v2/dataspheres/${state.dsId}/tasks?planModeId=${state.planModeId}&limit=500`
+    `/api/v2/dataspheres/${iState.dsId}/tasks?planModeId=${iState.planModeId}&limit=500`
   );
   const taskList = allTasks.tasks || allTasks || [];
 
@@ -1166,28 +1379,25 @@ async function cmdDrive() {
     groups[col].push(t);
   }
 
-  // Show active task
-  if (state.activeTask) {
+  if (iState.activeTask) {
     console.log(`\n  ACTIVE TASK:`);
-    info(`  ${state.activeTask.specId} — ${state.activeTask.title}`);
-    info(`  Started: ${state.activeTask.startedAt}`);
-    info(`  Impl files: ${state.activeTask.implFiles?.join(', ') || '(none)'}`);
-    info(`  When done: node sdd-conductor.mjs complete ${state.activeTask.taskId}`);
+    info(`  ${iState.activeTask.specId} — ${iState.activeTask.title}`);
+    info(`  Started: ${iState.activeTask.startedAt}`);
+    info(`  Impl files: ${iState.activeTask.implFiles?.join(', ') || '(none)'}`);
+    info(`  When done: node sdd-conductor.mjs complete ${iState.activeTask.taskId}`);
   }
 
-  // Research — any non-Done RS tasks block NS
   const rsTasks = taskList.filter(t => t.title?.match(/^RS-/) && !isDone(t));
   if (rsTasks.length > 0) {
     console.log(`\n  RESEARCH REQUIRED (${rsTasks.length}):`);
     for (const t of rsTasks) {
       const specId = extractSpecId(t.content) || t.title?.match(/^RS-\d+/)?.[0] || t.id;
       info(`  ${specId} · ${t.title}`);
-      info(`    → node sdd-conductor.mjs start ${t.id}  (run start_research, populate, complete)`);
+      info(`    → node sdd-conductor.mjs start ${t.id}`);
     }
   }
 
-  // Execution — ready (all deps Done) vs blocked
-  const exTasks = (groups['execution'] || []).filter(t => !isDone(t) && t.id !== state.activeTask?.taskId);
+  const exTasks = (groups['execution'] || []).filter(t => !isDone(t) && t.id !== iState.activeTask?.taskId);
   const readyTasks = [];
   const blockedTasks = [];
   for (const t of exTasks) {
@@ -1205,13 +1415,11 @@ async function cmdDrive() {
     }
   }
 
-  // Validation — non-Done VA tasks
   const vaTasks = (groups['validation'] || []).filter(t => !isDone(t));
   if (vaTasks.length > 0) {
     console.log(`\n  NEEDS VALIDATION (${vaTasks.length}):`);
     for (const t of vaTasks) {
       const specId = extractSpecId(t.content) || t.title?.match(/^[A-Z]+-\d+/)?.[0] || '';
-      const iterComments = t._commentCount || '';
       info(`  ${specId} · ${t.title}`);
       info(`    → node sdd-conductor.mjs validate ${t.id} --metric <measured> --threshold <gate> --iteration 1`);
     }
@@ -1226,7 +1434,6 @@ async function cmdDrive() {
     }
   }
 
-  // NS status — show any NS tasks with all checklist items checked but not Done
   const nsTasks = taskList.filter(t => {
     const col = getColumnName(t).toLowerCase();
     return (col === 'north stars' || t.title?.match(/^NS-/)) && !isDone(t);
@@ -1241,18 +1448,17 @@ async function cmdDrive() {
     }
   }
 
-  // Summary line
   const doneCount = (groups['done'] || []).length;
   const pct = taskList.length > 0 ? Math.round(doneCount / taskList.length * 100) : 0;
   console.log(`\n  PROGRESS: ${doneCount}/${taskList.length} Done (${pct}%) | ${readyTasks.length} Ready | ${vaTasks.length} In Validation | ${blockedTasks.length} Blocked`);
 
-  if (!state.activeTask && readyTasks.length > 0) {
+  if (!iState.activeTask && readyTasks.length > 0) {
     const next = readyTasks[0];
     const specId = extractSpecId(next.task.content) || next.task.title?.match(/^[A-Z]+-\d+/)?.[0] || '';
     console.log(`\n  ▶ NEXT: node sdd-conductor.mjs start ${next.task.id}  # ${specId}`);
-  } else if (!state.activeTask && vaTasks.length > 0) {
+  } else if (!iState.activeTask && vaTasks.length > 0) {
     console.log(`\n  ▶ NEXT: run validation test then call: node sdd-conductor.mjs validate ${vaTasks[0].id}`);
-  } else if (!state.activeTask && rsTasks.length > 0) {
+  } else if (!iState.activeTask && rsTasks.length > 0) {
     console.log(`\n  ▶ NEXT: node sdd-conductor.mjs start ${rsTasks[0].id}  # ${rsTasks[0].title}`);
   } else if (doneCount === taskList.length && taskList.length > 0) {
     console.log(`\n  ✅ All ${taskList.length} tasks complete!`);
@@ -1261,14 +1467,13 @@ async function cmdDrive() {
 }
 
 async function cmdSync() {
-  const state = requireState();
+  const { state, slug, iState } = requireInitiativeState();
   const client = makeClient();
 
-  console.log(`\n🔄 SDD-CONDUCTOR SYNC`);
-  info(`Initiative: ${state.initiative}`);
+  console.log(`\n🔄 SDD-CONDUCTOR SYNC  [${slug}]`);
 
   const allTasks = await client.get(
-    `/api/v2/dataspheres/${state.dsId}/tasks?planModeId=${state.planModeId}&limit=500`
+    `/api/v2/dataspheres/${iState.dsId}/tasks?planModeId=${iState.planModeId}&limit=500`
   );
   const liveTaskList = allTasks.tasks || allTasks || [];
 
@@ -1280,7 +1485,6 @@ async function cmdSync() {
 
   let issues = 0;
 
-  // Compare against tasks.yaml if present
   const root = findGitRoot();
   const yamlPath = [path.join(root, 'tasks.yaml'), ...findTasksYamls(root)].find(p => fs.existsSync(p));
 
@@ -1289,7 +1493,7 @@ async function cmdSync() {
     const yamlIds = [...yaml.matchAll(/^\s*id:\s*(\S+)/gm)].map(m => m[1]);
     const newInYaml = yamlIds.filter(id => !liveBySpecId[id]);
     const onBoardNotInYaml = Object.keys(liveBySpecId).filter(id =>
-      !yamlIds.includes(id) && !id.includes('-iter') // iter tasks are auto-created, expected
+      !yamlIds.includes(id) && !id.includes('-iter')
     );
 
     if (newInYaml.length > 0) {
@@ -1305,10 +1509,9 @@ async function cmdSync() {
     info(`No tasks.yaml found — skipping yaml diff`);
   }
 
-  // Execution tasks that have drifted out of IN_PROGRESS
   const drifted = liveTaskList.filter(t => {
     const col = getColumnName(t).toLowerCase();
-    return col === 'execution' && !isDone(t) && t.status !== 'IN_PROGRESS' && t.id !== state.activeTask?.taskId;
+    return col === 'execution' && !isDone(t) && t.status !== 'IN_PROGRESS' && t.id !== iState.activeTask?.taskId;
   });
   if (drifted.length > 0) {
     console.log(`\n  EXECUTION DRIFT (in Execution column but not IN_PROGRESS):`);
@@ -1319,20 +1522,18 @@ async function cmdSync() {
     issues += drifted.length;
   }
 
-  // State vs live — active task reconciliation
-  if (state.activeTask) {
+  if (iState.activeTask) {
     try {
-      const live = await client.get(`/api/v2/dataspheres/${state.dsId}/tasks/${state.activeTask.taskId}`);
+      const live = await client.get(`/api/v2/dataspheres/${iState.dsId}/tasks/${iState.activeTask.taskId}`);
       if (isDone(live)) {
-        warn(`Active task ${state.activeTask.specId} is already Done on board — clearing state`);
-        state.activeTask = null;
-        saveState(state);
+        warn(`Active task ${iState.activeTask.specId} is already Done on board — clearing state`);
+        iState.activeTask = null;
+        saveInitiative(state, slug, iState);
         issues++;
       }
     } catch { /* non-fatal */ }
   }
 
-  // NS tasks ready to close
   const nsReady = liveTaskList.filter(t => {
     const col = getColumnName(t).toLowerCase();
     return (col === 'north stars' || t.title?.match(/^NS-/)) && !isDone(t)
@@ -1352,37 +1553,6 @@ async function cmdSync() {
   } else {
     console.log(`\n⚠️  ${issues} sync issue(s) found above.\n`);
     process.exit(1);
-  }
-}
-
-async function propagateNsChecklist(client, state, nsTaskId, doneEpicSpecId, doneEpicTitle) {
-  try {
-    const ns = await client.get(`/api/v2/dataspheres/${state.dsId}/tasks/${nsTaskId}`);
-    if (!ns.content) return;
-
-    const idPrefix = doneEpicSpecId.match(/^[A-Z]+-\d+/)?.[0] || doneEpicSpecId;
-    const updated = ns.content.replace(
-      new RegExp(`(data-checked="false"><p>)(${escapeRegex(idPrefix)}[^<]*)`, 'g'),
-      `data-checked="true"><p>$2`
-    );
-
-    if (updated === ns.content) {
-      info(`NS checklist: no matching item found for ${idPrefix}`);
-      return;
-    }
-
-    await client.patch(`/api/v2/dataspheres/${state.dsId}/tasks/${nsTaskId}`, { content: updated });
-    info(`NS checklist: ticked ${idPrefix} ✓`);
-
-    const remaining = countUncheckedItems(updated);
-    if (remaining === 0) {
-      await client.post(`/api/v2/dataspheres/${state.dsId}/tasks/${nsTaskId}/comments`, {
-        content: `[all-dai-sdd-system-message]\n\nAll Epics complete. North Star fully achieved — ready for final review.`,
-      });
-      info(`North Star ${idPrefix}: all Epics done — completion comment posted ✓`);
-    }
-  } catch (e) {
-    warn(`Could not propagate to NS ${nsTaskId}: ${e.message}`);
   }
 }
 
@@ -1415,15 +1585,15 @@ function findTasksYamls(dir) {
 // Entry point
 // ---------------------------------------------------------------------------
 
-const [,, command, ...args] = process.argv;
-
 if (!command || command === '--help' || command === '-h') {
   console.log(`
 sdd-conductor v${VERSION} — SDD lifecycle enforcement
 
 Commands:
-  init                                  Bootstrap .sdd-state.json (run once per project)
-  drive                                 Ordered mission brief — what to do next end-to-end
+  init                                  Bootstrap initiative in .sdd-state.json (run once per initiative)
+  switch <slug>                         Switch current initiative
+  workspace                             Cross-project view of all registered initiatives
+  drive                                 Ordered mission brief — what to do next
   sync                                  Mid-plan reconcile: diff tasks.yaml vs live board
   start <taskId>                        Mark task IN_PROGRESS. BLOCKED if deps not Done.
   complete <taskId>                     Verify checklist + test evidence → Done → propagate NS/Epic.
@@ -1432,7 +1602,7 @@ Commands:
     --metric <n>                          Current metric (e.g. 85 for 85% pass rate)
     --threshold <n>                       Required to pass (default: 100)
     --iteration <n>                       Current iteration number (default: 1)
-  status                                Show current state + live task status.
+  status                                Show all initiatives + active task status.
   gate <name> [taskId]                  Verify named gate condition.
   dashboard-check <dsUri> <slug>        Verify dashboard page has all 5 required sections.
   check-file-hook                       PostToolUse(Write|Edit) hook — file guard.
@@ -1440,9 +1610,20 @@ Commands:
   session-start                         SessionStart hook — reconcile state.
   install [project-dir]                 Inject all hooks into .claude/settings.json.
 
+Global flag (any command):
+  --initiative <slug>                   Target a specific initiative instead of currentInitiative
+
 Gate names: deps-done, research-done, no-mocks, checklist, impl-files
 
 Exit codes: 0=pass  1=gate blocked / loop continues  2=hard error
+
+Multi-initiative example:
+  node sdd-conductor.mjs init                    # init first initiative
+  node sdd-conductor.mjs init                    # init second (different tasks.yaml, run from its dir)
+  node sdd-conductor.mjs status                  # see all initiatives
+  node sdd-conductor.mjs switch auth-v2          # switch current
+  node sdd-conductor.mjs drive --initiative auth-v2  # drive a specific one
+  node sdd-conductor.mjs workspace               # cross-project view
 `);
   process.exit(0);
 }
@@ -1450,6 +1631,8 @@ Exit codes: 0=pass  1=gate blocked / loop continues  2=hard error
 try {
   switch (command) {
     case 'init':            await cmdInit(); break;
+    case 'switch':          await cmdSwitch(args[0]); break;
+    case 'workspace':       await cmdWorkspace(); break;
     case 'drive':           await cmdDrive(); break;
     case 'sync':            await cmdSync(); break;
     case 'start':           await cmdStart(args[0]); break;
