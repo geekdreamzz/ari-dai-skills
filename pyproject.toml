@@ -24,11 +24,18 @@ dependencies = [
     "httpx>=0.27.0",
     "typer>=0.12.0",
     "rich>=13.0.0",
-    "z3-solver>=4.12.0",
-    "pyyaml>=6.0.0",
 ]
 
 [project.optional-dependencies]
+# Used only by skills/all-dai-sdd/verify_gates.py (standalone CLI gate verifier).
+# Kept optional because z3-solver lacks prebuilt wheels on most platforms after 4.9.x
+# (requires CMake + a C++ toolchain to build from source), which would otherwise block
+# every fresh install of the core MCP on stock macOS and Windows.
+# Install with: pip install "dai-skills[sdd]"   or   uv tool install "dai-skills[sdd]"
+sdd = [
+    "z3-solver>=4.12.0",
+    "pyyaml>=6.0.0",
+]
 dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",
