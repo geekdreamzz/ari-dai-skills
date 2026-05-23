@@ -1071,6 +1071,99 @@ When an Epic moves to Done:
 
 ---
 
+## Strategize Phase — Pre-Implementation Enforcement
+
+**Run once before any EX task code starts.** This is the gathering phase that makes the board honest before a single line of code is written. Skipping it means the trace graph, progress-summary, and activity feed show stale or empty data through the entire sprint.
+
+---
+
+### Strategize checklist (mandatory — all 6 must pass)
+
+```bash
+# 1. Verify .sdd-state.json is initialized
+node sdd-conductor.mjs status
+
+# 2. Verify all EX tasks have Implementation Files sections
+#    (conductor gate — exits 1 with the offending task if missing)
+for taskId in <ex-task-id-1> <ex-task-id-2>; do
+  node sdd-conductor.mjs gate impl-files $taskId
+done
+
+# 3. Verify NS→EP→EX dependency chain is intact
+for taskId in <ex-task-ids>; do
+  node sdd-conductor.mjs gate deps-done $taskId
+done
+
+# 4. Verify dashboard page has all 5 required sections
+node sdd-conductor.mjs dashboard-check <dsUri> <dashboard-slug>
+
+# 5. Verify no Execution task is being started without its Research gate cleared
+#    (if the initiative has RS tasks)
+for rsTaskId in <rs-task-ids>; do
+  node sdd-conductor.mjs gate research-done $rsTaskId
+done
+
+# 6. Verify plan mode trackerUrl is set (links dashboard ↔ planner)
+node sdd-conductor.mjs status  # shows trackerUrl warning if missing
+```
+
+**All 6 checks must pass before Step 1 of any EX task begins.** If any check exits 1, fix it first — do not proceed with implementation.
+
+---
+
+### What each check protects
+
+| Check | What it prevents |
+|---|---|
+| `status` | Starting a task with stale/wrong dsId or missing planModeId |
+| `gate impl-files` | Trace graph showing no Artifacts tier (impl files are the source of code links) |
+| `gate deps-done` | Running EX tasks that depend on unfinished research or upstream EX |
+| `dashboard-check` | Publishing a broken dashboard where progress-summary or trace-graph widget is missing |
+| `gate research-done` | Building the wrong approach (the canonical 153-min wasted run) |
+| `status` trackerUrl | Planner header missing the dashboard link — stakeholders can't reach the tracker |
+
+---
+
+### Dashboard template enforcement — 5 required sections
+
+Every SDD dashboard page **must** contain exactly these five sections. `dashboard-check` verifies them:
+
+| # | Section | Widget / Element | Failure mode if missing |
+|---|---|---|---|
+| 1 | Title + subtitle | Plain `<h1>` and `<p>` | No context for visitors |
+| 2 | Initiative Summary | `data-widget-type="progress-summary"` | No progress ring / Done counts |
+| 3 | Trace Graph | `data-widget-type="trace-graph"` | No NS→EP→EX→VA→Artifacts swimlane |
+| 4 | Live Activity | `data-widget-type="task-activity-feed"` | No comment/screenshot stream |
+| 5 | Doc footer | `<div data-type="doc-footer"></div>` | Missing footer (truncated look) |
+
+**Template quick-reference:**
+
+```html
+<h1><Project> &mdash; Initiative Dashboard</h1>
+<p><one-line description></p>
+
+<h2>Initiative Summary</h2>
+<div data-type="plannerWidget" data-widget-type="progress-summary"
+     data-datasphere-id="<dsId>" data-datasphere-uri="<uri>"
+     data-plan-mode-id="<planModeId>" data-refresh-interval="60"></div>
+
+<h2>Trace Graph</h2>
+<div data-type="plannerWidget" data-widget-type="trace-graph"
+     data-datasphere-id="<dsId>" data-datasphere-uri="<uri>"
+     data-plan-mode-id="<planModeId>"></div>
+
+<h2>Live Activity</h2>
+<div data-type="plannerWidget" data-widget-type="task-activity-feed"
+     data-datasphere-id="<dsId>" data-datasphere-uri="<uri>"
+     data-plan-mode-id="<planModeId>"></div>
+
+<div data-type="doc-footer"></div>
+```
+
+No inline `style=` attributes. No emojis or raw Unicode. No custom CSS grids. No substitutions.
+
+---
+
 ## Task In-Progress Workflow — Dashboard Visibility
 
 **REQUIRED before starting any task.** Run `sdd-conductor start` — this verifies dependencies, marks the task IN_PROGRESS, posts the start comment, and writes the active task to `.sdd-state.json` in one shot. The hooks then guard every file write against the active task's impl files list.
@@ -1081,6 +1174,16 @@ node /path/to/dai-skills/skills/sdd-conductor/sdd-conductor.mjs start <taskId>
 ```
 
 **Exit codes:** 0 = ready to code | 1 = deps not Done (shows which) | 2 = task not found
+
+**During implementation — post progress updates at key milestones** (these appear in the board's activity feed and trace graph):
+
+```bash
+# After each meaningful milestone (tests written, integration complete, etc.)
+node sdd-conductor.mjs progress "Tests written and passing (12/12) | Next: wire up integration"
+node sdd-conductor.mjs progress "Integration complete — wiring acceptance checklist items"
+```
+
+The `PostToolUse(Bash)` hook also auto-posts test results to the active task whenever you run vitest, playwright, pytest, or tsc — the board updates as a side effect of running tests, with no extra curl needed.
 
 If `sdd-conductor` is not available, fall back to manual curl (but fix the conductor first):
 
@@ -2719,14 +2822,32 @@ The Ralph loop is the enforcement mechanism that prevents SDD from stalling at a
 Each iteration follows this exact sequence — no step may be skipped:
 
 1. **Run** — Execute the validation task's measurement or test
-2. **Gate check** — Compare result against every quantitative threshold in the VA task acceptance criteria
-3. **If pass** → mark VA task Done, propagate checklist ticks up to Epic and North Star, post completion comment, exit loop
-4. **If North Star hit** → mark Done, post North Star comment with benchmark comparison, exit loop
-5. **If fail** → post iteration comment (format below) — do this BEFORE applying any fix
-6. **Hard blocker check** — Does any condition below apply? If yes → post BLOCKED comment, set task BLOCKED, exit loop; do not apply a fix
-7. **Diagnose** — Identify the specific root cause from failure output (metric value, error, coverage, etc.)
-8. **Apply best known fix** — Change the most likely impactful parameter, filter, or approach
-9. **Loop** → return to step 1, no user input required
+2. **Gate check** — Call `sdd-conductor validate` with the measured metric (see Conductor Call below). The conductor posts the board comment, creates the next iteration task, and exits 0 (pass) or 1 (continue).
+3. **Exit 0 (pass)** → conductor has already marked VA Done, propagated checklist, posted completion comment. Exit loop.
+4. **Exit 1 (fail)** → conductor has posted iteration comment and created the next EX iteration task on the board. Diagnose root cause, apply best known fix, loop.
+5. **Hard blocker check** — Does any condition below apply? If yes → post BLOCKED comment, set task BLOCKED, exit loop; do not apply a fix.
+
+**Conductor call (mandatory — replaces manual curl iteration comment):**
+
+```bash
+node /path/to/dai-skills/skills/sdd-conductor/sdd-conductor.mjs validate <vaTaskId> \
+  --metric <measured_value> \
+  --threshold <gate_threshold> \
+  --iteration <N>
+
+# Examples:
+node sdd-conductor.mjs validate task_abc123 --metric 85 --threshold 100 --iteration 1
+node sdd-conductor.mjs validate task_abc123 --metric 100 --threshold 100 --iteration 2
+```
+
+Exit 0 → VA is Done on the board, loop ends.
+Exit 1 → iteration comment posted, next refinement EX task created, continue.
+
+**After exit 1:** post a diagnosis supplement comment using `progress` before touching any code:
+
+```bash
+node sdd-conductor.mjs progress "Iteration N diagnosis: <root cause> | Fix: <exact change>"
+```
 
 ---
 
