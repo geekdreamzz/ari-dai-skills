@@ -198,6 +198,12 @@ The answers determine the mode:
 | Yes | No | **AUDIT** — board exists, generate tasks.yaml from live state, then assess |
 | Yes | Yes | **SYNC** — compare board vs tasks.yaml, determine delta, apply |
 
+**Additionally, on every invocation, check for in-flight Validation tasks that have failed at least one iteration:**
+
+| VA task state | Mode override |
+|---|---|
+| VA task in Validation column + at least one failed iteration comment | **LOOP** — resume Ralph loop, do not wait for user |
+
 ### Mode: NEW (full publish)
 → Proceed to Step 1 of the 14-step publish protocol below.
 
@@ -219,6 +225,19 @@ The answers determine the mode:
 4. Run Z3 on the merged state
 5. Apply delta — create missing, update drifted, report orphans
 6. Always run Z3 after sync to confirm UNSAT
+
+### Mode: LOOP
+Triggered automatically when a VA task in the Validation column has at least one failed iteration (detected by scanning for `Ralph loop — iteration` in task comments). Also triggered when the user says "keep going", "resume the loop", "keep iterating", or "why did the loop stop":
+1. Fetch the VA task and read iteration history from comments
+2. Identify the current best result and the gap to the gate threshold
+3. Run the next iteration (apply last-known best fix, re-measure, check gate)
+4. Post iteration comment (see Ralph Loop Protocol section)
+5. If gate passes → mark VA task Done, propagate checklist ticks
+6. If North Star hit → post North Star comment, mark Done, exit loop
+7. If BLOCKED condition met → post blocker comment, mark task BLOCKED, stop
+8. Otherwise → loop (go to step 3, no user input needed)
+
+**LOOP mode is the default behavior for any failing VA task — not an exception.** Not waiting for the user is the rule, not the exception.
 
 ### Mode: REFACTOR
 Triggered when user says "refactor", "restructure", or "reorganize":
@@ -858,6 +877,10 @@ curl -X POST "$DATASPHERES_BASE_URL/api/v2/dataspheres/<dsId>/tasks/status-group
 | Execution | Validation | No mocks/stubs in any implementation file (mock scan required) |
 | Validation | Done | Validation criteria explicitly passed with evidence |
 | Any | Done (direct) | BLOCKED — skipping Validation is never permitted |
+
+**Validation gate failure → Ralph loop (mandatory):**
+
+A VA task that fails its acceptance criteria does not stall. Failure immediately triggers the Ralph loop: diagnose root cause → apply best known fix → re-run → check gate → repeat. See [Ralph Loop Protocol](#ralph-loop-protocol--autonomous-validation-iteration). The loop runs autonomously without waiting for user input between iterations. Only a hard blocker (see below) or max iterations stops it.
 
 Then assign tasks to the correct groups using `statusGroupId` in the bulk create payload. **Never use a statusGroupId from a different plan mode or from the datasphere defaults** — FK constraint violation if the group belongs to another datasphere, and wrong columns if it belongs to another plan mode in the same datasphere.
 
@@ -2625,6 +2648,178 @@ Triggered automatically when:
 - A spec's `version` increments → flag all `implements` traces pointing to it: "Spec updated — verify these traces are still accurate before Validation gate"
 - A spec moves to `DEPRECATED` → flag all pointing traces as orphaned; prompt to update code annotations or reclassify the trace
 - A `CODE/test` trace exists for a spec section but no `CODE/function` trace for the same section → "Spec has test coverage but no implementation trace — possible dead test or missing annotation"
+
+---
+
+## Ralph Loop Protocol — Autonomous Validation Iteration
+→ *Referenced by: Column Architecture (gate-fail), Entry Points (LOOP mode), Task Done Workflow*
+
+The Ralph loop is the enforcement mechanism that prevents SDD from stalling at a failed validation. When any VA task fails its acceptance gate, the system does not wait for human input — it diagnoses, applies the best known fix, re-measures, and loops until the gate passes or a hard blocker is hit.
+
+**Core invariant: a failing VA task is never left as "noted failed." The loop always continues.**
+
+---
+
+### Loop iteration structure
+
+Each iteration follows this exact sequence — no step may be skipped:
+
+1. **Run** — Execute the validation task's measurement or test
+2. **Gate check** — Compare result against every quantitative threshold in the VA task acceptance criteria
+3. **If pass** → mark VA task Done, propagate checklist ticks up to Epic and North Star, post completion comment, exit loop
+4. **If North Star hit** → mark Done, post North Star comment with benchmark comparison, exit loop
+5. **If fail** → post iteration comment (format below) — do this BEFORE applying any fix
+6. **Hard blocker check** — Does any condition below apply? If yes → post BLOCKED comment, set task BLOCKED, exit loop; do not apply a fix
+7. **Diagnose** — Identify the specific root cause from failure output (metric value, error, coverage, etc.)
+8. **Apply best known fix** — Change the most likely impactful parameter, filter, or approach
+9. **Loop** → return to step 1, no user input required
+
+---
+
+### Iteration comment format
+
+Every failed iteration MUST post this comment to the VA task before touching anything for the next iteration:
+
+```
+[all-dai-sdd-system-message]
+
+**Ralph loop — iteration N / MAX_N**
+**Result:** <metric> = <value> (gate: ≥<threshold>, North Star: ≥<ns_threshold>)
+**Gap:** <value - threshold> below gate
+
+**Diagnosis:**
+<Root cause — specific, not generic. "Coverage too low (9x)" not "pipeline issue".>
+
+**Fix applied for next iteration:**
+<Exact change — parameter name, old value → new value, or approach change.>
+
+**Expected impact:**
+<Why this specific change should move the metric toward the gate.>
+
+**Next iteration starts immediately.**
+```
+
+For drive scripts (compute-heavy tasks): post this comment via the Dataspheres API inside the loop script — don't rely on the agent to post it after the fact.
+
+---
+
+### Hard blocker criteria
+
+Only these conditions exit the loop with a BLOCKED status. Everything else continues:
+
+| Condition | Definition |
+|---|---|
+| **Fundamental data constraint** | Input data cannot meet the threshold regardless of algorithm (e.g., coverage < 5x with no additional reads available) |
+| **Architectural mismatch** | The tool or approach is wrong for the data type at a fundamental level (e.g., GATK HaplotypeCaller on bisulfite-converted reads — produces 0 valid SNPs regardless of parameters) |
+| **Missing dependency — no alternative** | Required tool is not installed, cannot be installed in this environment, and no equivalent alternative exists |
+| **Max iterations reached** | `MAX_ITERS` exhausted (default: 8). Log best result, post final summary. |
+
+**Not hard blockers:** "results are poor", "it might not work", "it's taking a long time", "uncertain which fix is best." These are reasons to iterate, not reasons to stop.
+
+On hard blocker, post this comment and stop:
+
+```
+[all-dai-sdd-system-message]
+
+**Ralph loop — BLOCKED after iteration N**
+**Best result achieved:** <metric> = <value> (gate: ≥<threshold>, delta: <gap>)
+**Hard blocker:** <specific condition from the table above>
+**What must change before loop can resume:** <exact requirement>
+**Downstream blocked:** <task IDs that cannot advance until this is resolved>
+```
+
+---
+
+### Gate vs North Star
+
+The loop distinguishes two levels — passing the gate does NOT stop the loop:
+
+| Level | Threshold | Behavior on pass |
+|---|---|---|
+| **Gate** | Minimum acceptable (e.g., F1 ≥ 0.95) | Close VA task → Done, continue iterating toward North Star |
+| **North Star** | Exceeds published benchmark (e.g., F1 > 0.97) | Close VA task → Done, post celebration comment, exit loop |
+
+The loop runs past gate pass because SDD's goal is not minimum compliance — it is to surpass the benchmark. Close the task when the gate passes (the board reflects reality), but keep running until North Star is hit or MAX_ITERS is reached.
+
+---
+
+### Drive script pattern — compute-heavy validation (>30 min/iteration)
+
+When a VA task involves long-running compute (genome alignment, model training, large-scale simulation), the Ralph loop must run outside the agent context as a detached drive script. The agent context would time out; the script does not.
+
+**When to use a drive script:**
+- Single iteration takes >30 minutes of wall-clock time
+- Requires compute that must run in a specific environment (WSL, GPU node, HPC)
+- Multiple strategies need to be tried in parallel or sequence
+
+**Drive script requirements:**
+
+```bash
+#!/usr/bin/env bash
+# drive_<va-task-id>.sh — Ralph loop driver
+# Must implement all of these:
+
+MAX_ITERS=8          # hard cap — matches VA task spec
+GATE=0.95            # gate threshold — must match VA task acceptance criteria
+NORTH_STAR=0.97      # stretch target — must match VA task North Star criterion
+
+# 1. Wait for upstream prerequisites (e.g., alignment output)
+# 2. Run preprocessing once (e.g., dedup) — skip if already done
+# 3. Ralph loop:
+while [ "$iter" -lt "$MAX_ITERS" ]; do
+    # Run measurement
+    # Check gate → if pass: call close_<va-task-id>.py, exit 0
+    # Check North Star → if hit: call close_<va-task-id>.py with NS flag, exit 0
+    # Post iteration comment via Dataspheres API
+    # Diagnose failure
+    # Hard blocker check → if hit: post BLOCKED comment, exit 2
+    # Apply fix
+done
+# Max iterations: log best result, post final summary, exit 3
+
+# Exit codes: 0 = gate passed, 2 = hard blocker, 3 = max iterations
+```
+
+**Launch with setsid for full process detachment (WSL/Linux):**
+```bash
+(setsid bash specs/drive_<va-task-id>.sh \
+  >> drive_<va-task-id>.log 2>&1 < /dev/null &)
+sleep 2
+pgrep -af "drive_<va-task-id>"   # verify it's running
+```
+
+**Agent behavior while drive script runs:**
+- Schedule check-ins every 45–90 minutes (within 5-min cache window: 270s; longer if idle)
+- On each check-in: read log tail, check for gate pass / North Star / BLOCKER
+- On gate pass or North Star: confirm VA task was closed on the board, report to user
+- On BLOCKER: diagnose immediately — apply a fix if possible, relaunch the drive script
+- Never report "waiting for the script to finish" as a completed action — keep iterating
+
+**`close_<va-task-id>.py` requirements (called by drive script on gate pass):**
+- Parse validation output (e.g., vcfeval summary.txt, test output JSON)
+- Post completion comment to VA task with results table
+- Move VA task to Done group (set `statusGroupId` + `status: DONE`)
+- Propagate checklist tick to parent Epic
+
+---
+
+### Strategy grid pattern — multi-parameter search
+
+When the fix space involves multiple discrete parameter combinations (GQ filters, learning rates, threshold grids), the Ralph loop should try them in parallel within a single iteration rather than one per iteration:
+
+```bash
+# Try N strategies simultaneously within one iteration
+strategies=("s1:param1=A" "s2:param1=B" "s3:param1=C")
+for entry in "${strategies[@]}"; do
+    # build output for this strategy
+    # run measurement
+    # track best result
+done
+# After all strategies: check best against gate
+# Next iteration: adjust the grid based on which strategy performed best
+```
+
+This expands the search space per iteration and reaches the gate faster than single-parameter sweeps.
 
 ---
 
