@@ -389,24 +389,61 @@ async function cmdComplete(taskId) {
   }
   info(`Acceptance checklist: all items checked ✓`);
 
-  // Gate 2: Completion comment must exist (with [all-dai-sdd-system-message])
+  // Gate 2: Completion comment must exist with [all-dai-sdd-system-message]
   const comments = await client.get(`/api/v2/dataspheres/${state.dsId}/tasks/${taskId}/comments`);
   const commentList = comments.comments || comments || [];
-  const hasCompletionComment = commentList.some(c =>
+  const completionComment = commentList.find(c =>
     c.content?.includes('[all-dai-sdd-system-message]') &&
     (c.content?.includes('Completion summary') || c.content?.includes('Verified criteria'))
   );
-  if (!hasCompletionComment) {
+  if (!completionComment) {
     gate(
       `No completion comment found on task ${specId}.\n\n` +
-      `  Post a completion comment with format:\n` +
-      `    [all-dai-sdd-system-message]\n` +
-      `    **Completion summary:** ...\n` +
-      `    **Verified criteria:** ...\n` +
+      `  Post a completion comment:\n` +
+      `    [all-dai-sdd-system-message]\n\n` +
+      `    **Completion summary:** <what was built>\n` +
+      `    **Verified criteria:**\n` +
+      `    - <criterion 1> → <evidence: test name / screenshot / observation>\n` +
+      `    - <criterion 2> → <evidence>\n\n` +
       `  Then re-run: node sdd-conductor.mjs complete ${taskId}`
     );
   }
   info(`Completion comment: found ✓`);
+
+  // Gate 2b: Test evidence required — at least one test run or test statement in comments
+  const totalCheckedItems = (task.content?.match(/data-checked="true"/g) || []).length;
+  const hasTestEvidence = commentList.some(c =>
+    c.content?.includes('[all-dai-sdd-system-message]') &&
+    (c.content?.includes('Test Run —') || c.content?.includes('✅') || c.content?.includes('tests passed') || c.content?.includes('playwright') || c.content?.includes('vitest'))
+  );
+  if (!hasTestEvidence && totalCheckedItems > 0) {
+    gate(
+      `No test evidence found for task ${specId}.\n\n` +
+      `  Every completed task must show real test results before marking Done.\n` +
+      `  Either:\n` +
+      `    1. Run vitest/playwright (progress-hook auto-posts results), OR\n` +
+      `    2. node sdd-conductor.mjs progress "Tests: <X>/<Y> passed — <test suite>"\n\n` +
+      `  Then re-run: node sdd-conductor.mjs complete ${taskId}`
+    );
+  }
+  if (hasTestEvidence) info(`Test evidence: found ✓`);
+
+  // Gate 2c: Completion comment must explicitly reference each acceptance criterion
+  if (completionComment && totalCheckedItems > 0) {
+    const criteriaSection = completionComment.content.match(/\*\*Verified criteria:\*\*([\s\S]*?)(\n\n\*\*|\n---|\n\[|$)/);
+    const bulletCount = criteriaSection
+      ? (criteriaSection[1].match(/\n[-*•]\s/g) || []).length
+      : 0;
+    if (bulletCount < totalCheckedItems) {
+      gate(
+        `Completion comment has ${bulletCount} verified criterion bullet(s) but task has ${totalCheckedItems} checked item(s).\n\n` +
+        `  Every acceptance criterion must be explicitly verified with evidence.\n` +
+        `  Update the completion comment to include one bullet per criterion with real evidence.\n` +
+        `  Then re-run: node sdd-conductor.mjs complete ${taskId}`
+      );
+    }
+    info(`Criterion coverage: ${bulletCount}/${totalCheckedItems} verified ✓`);
+  }
 
   // Gate 3: No mocks in impl files
   const implFiles = extractImplFiles(task.content);
@@ -472,11 +509,16 @@ async function propagateEpicChecklist(client, state, epicTaskId, doneSpecId, don
 
     // Check if all items are now checked
     const remaining = countUncheckedItems(updated);
+    const epicSpecId = extractSpecId(updated) || epic.title?.match(/^[A-Z]+-\d+/)?.[0] || epicTaskId;
     if (remaining === 0) {
       info(`Epic fully complete — posting ready-for-validation comment`);
       await client.post(`/api/v2/dataspheres/${state.dsId}/tasks/${epicTaskId}/comments`, {
         content: `[all-dai-sdd-system-message]\n\nAll Execution tasks complete. Ready for Validation.`,
       });
+      // Propagate up to parent North Star (if any)
+      if (epic.parentId) {
+        await propagateNsChecklist(client, state, epic.parentId, epicSpecId, epic.title);
+      }
     } else {
       info(`Epic: ${remaining} task(s) remaining`);
     }
@@ -1099,6 +1141,251 @@ async function cmdInstall(projectDir) {
   info(`\nNext: node sdd-conductor.mjs init  (to set up .sdd-state.json)`);
 }
 
+async function cmdDrive() {
+  const state = requireState();
+  const client = makeClient();
+
+  console.log(`\n🚀 SDD-CONDUCTOR DRIVE PLAN`);
+  info(`Initiative: ${state.initiative} | ${state.dsUri}`);
+
+  const allTasks = await client.get(
+    `/api/v2/dataspheres/${state.dsId}/tasks?planModeId=${state.planModeId}&limit=500`
+  );
+  const taskList = allTasks.tasks || allTasks || [];
+
+  const bySpecId = {};
+  for (const t of taskList) {
+    const specId = extractSpecId(t.content) || t.title?.match(/^[A-Z]+-\d+/)?.[0];
+    if (specId) bySpecId[specId] = t;
+  }
+
+  const groups = {};
+  for (const t of taskList) {
+    const col = getColumnName(t).toLowerCase();
+    groups[col] = groups[col] || [];
+    groups[col].push(t);
+  }
+
+  // Show active task
+  if (state.activeTask) {
+    console.log(`\n  ACTIVE TASK:`);
+    info(`  ${state.activeTask.specId} — ${state.activeTask.title}`);
+    info(`  Started: ${state.activeTask.startedAt}`);
+    info(`  Impl files: ${state.activeTask.implFiles?.join(', ') || '(none)'}`);
+    info(`  When done: node sdd-conductor.mjs complete ${state.activeTask.taskId}`);
+  }
+
+  // Research — any non-Done RS tasks block NS
+  const rsTasks = taskList.filter(t => t.title?.match(/^RS-/) && !isDone(t));
+  if (rsTasks.length > 0) {
+    console.log(`\n  RESEARCH REQUIRED (${rsTasks.length}):`);
+    for (const t of rsTasks) {
+      const specId = extractSpecId(t.content) || t.title?.match(/^RS-\d+/)?.[0] || t.id;
+      info(`  ${specId} · ${t.title}`);
+      info(`    → node sdd-conductor.mjs start ${t.id}  (run start_research, populate, complete)`);
+    }
+  }
+
+  // Execution — ready (all deps Done) vs blocked
+  const exTasks = (groups['execution'] || []).filter(t => !isDone(t) && t.id !== state.activeTask?.taskId);
+  const readyTasks = [];
+  const blockedTasks = [];
+  for (const t of exTasks) {
+    const deps = extractDependsOn(t.content);
+    const notDone = deps.filter(dep => { const dt = bySpecId[dep]; return !dt || !isDone(dt); });
+    notDone.length === 0 ? readyTasks.push({ task: t }) : blockedTasks.push({ task: t, blocking: notDone });
+  }
+
+  if (readyTasks.length > 0) {
+    console.log(`\n  READY TO START (${readyTasks.length}):`);
+    for (const { task } of readyTasks) {
+      const specId = extractSpecId(task.content) || task.title?.match(/^[A-Z]+-\d+/)?.[0] || '';
+      info(`  ${specId} · ${task.title}`);
+      info(`    → node sdd-conductor.mjs start ${task.id}`);
+    }
+  }
+
+  // Validation — non-Done VA tasks
+  const vaTasks = (groups['validation'] || []).filter(t => !isDone(t));
+  if (vaTasks.length > 0) {
+    console.log(`\n  NEEDS VALIDATION (${vaTasks.length}):`);
+    for (const t of vaTasks) {
+      const specId = extractSpecId(t.content) || t.title?.match(/^[A-Z]+-\d+/)?.[0] || '';
+      const iterComments = t._commentCount || '';
+      info(`  ${specId} · ${t.title}`);
+      info(`    → node sdd-conductor.mjs validate ${t.id} --metric <measured> --threshold <gate> --iteration 1`);
+    }
+  }
+
+  if (blockedTasks.length > 0) {
+    console.log(`\n  BLOCKED (${blockedTasks.length}):`);
+    for (const { task, blocking } of blockedTasks) {
+      const specId = extractSpecId(task.content) || task.title?.match(/^[A-Z]+-\d+/)?.[0] || '';
+      info(`  ${specId} · ${task.title}`);
+      info(`    Waiting on: ${blocking.join(', ')}`);
+    }
+  }
+
+  // NS status — show any NS tasks with all checklist items checked but not Done
+  const nsTasks = taskList.filter(t => {
+    const col = getColumnName(t).toLowerCase();
+    return (col === 'north stars' || t.title?.match(/^NS-/)) && !isDone(t);
+  });
+  const nsReady = nsTasks.filter(t => t.content && countUncheckedItems(t.content) === 0 && t.content.includes('data-checked'));
+  if (nsReady.length > 0) {
+    console.log(`\n  NORTH STARS READY TO CLOSE:`);
+    for (const t of nsReady) {
+      const specId = extractSpecId(t.content) || t.title?.match(/^NS-\d+/)?.[0] || t.id;
+      info(`  ${specId} · ${t.title}`);
+      info(`    → node sdd-conductor.mjs complete ${t.id}`);
+    }
+  }
+
+  // Summary line
+  const doneCount = (groups['done'] || []).length;
+  const pct = taskList.length > 0 ? Math.round(doneCount / taskList.length * 100) : 0;
+  console.log(`\n  PROGRESS: ${doneCount}/${taskList.length} Done (${pct}%) | ${readyTasks.length} Ready | ${vaTasks.length} In Validation | ${blockedTasks.length} Blocked`);
+
+  if (!state.activeTask && readyTasks.length > 0) {
+    const next = readyTasks[0];
+    const specId = extractSpecId(next.task.content) || next.task.title?.match(/^[A-Z]+-\d+/)?.[0] || '';
+    console.log(`\n  ▶ NEXT: node sdd-conductor.mjs start ${next.task.id}  # ${specId}`);
+  } else if (!state.activeTask && vaTasks.length > 0) {
+    console.log(`\n  ▶ NEXT: run validation test then call: node sdd-conductor.mjs validate ${vaTasks[0].id}`);
+  } else if (!state.activeTask && rsTasks.length > 0) {
+    console.log(`\n  ▶ NEXT: node sdd-conductor.mjs start ${rsTasks[0].id}  # ${rsTasks[0].title}`);
+  } else if (doneCount === taskList.length && taskList.length > 0) {
+    console.log(`\n  ✅ All ${taskList.length} tasks complete!`);
+  }
+  console.log('');
+}
+
+async function cmdSync() {
+  const state = requireState();
+  const client = makeClient();
+
+  console.log(`\n🔄 SDD-CONDUCTOR SYNC`);
+  info(`Initiative: ${state.initiative}`);
+
+  const allTasks = await client.get(
+    `/api/v2/dataspheres/${state.dsId}/tasks?planModeId=${state.planModeId}&limit=500`
+  );
+  const liveTaskList = allTasks.tasks || allTasks || [];
+
+  const liveBySpecId = {};
+  for (const t of liveTaskList) {
+    const specId = extractSpecId(t.content) || t.title?.match(/^[A-Z]+-\d+/)?.[0];
+    if (specId) liveBySpecId[specId] = t;
+  }
+
+  let issues = 0;
+
+  // Compare against tasks.yaml if present
+  const root = findGitRoot();
+  const yamlPath = [path.join(root, 'tasks.yaml'), ...findTasksYamls(root)].find(p => fs.existsSync(p));
+
+  if (yamlPath) {
+    const yaml = fs.readFileSync(yamlPath, 'utf-8');
+    const yamlIds = [...yaml.matchAll(/^\s*id:\s*(\S+)/gm)].map(m => m[1]);
+    const newInYaml = yamlIds.filter(id => !liveBySpecId[id]);
+    const onBoardNotInYaml = Object.keys(liveBySpecId).filter(id =>
+      !yamlIds.includes(id) && !id.includes('-iter') // iter tasks are auto-created, expected
+    );
+
+    if (newInYaml.length > 0) {
+      console.log(`\n  NEW IN TASKS.YAML (not on board):`);
+      newInYaml.forEach(id => info(`  + ${id} — run: /all-dai-sdd publish to add`));
+      issues += newInYaml.length;
+    }
+    if (onBoardNotInYaml.length > 0) {
+      console.log(`\n  ON BOARD BUT NOT IN TASKS.YAML (may be auto-created iteration tasks):`);
+      onBoardNotInYaml.forEach(id => info(`  ? ${id} (${liveBySpecId[id]?.title})`));
+    }
+  } else {
+    info(`No tasks.yaml found — skipping yaml diff`);
+  }
+
+  // Execution tasks that have drifted out of IN_PROGRESS
+  const drifted = liveTaskList.filter(t => {
+    const col = getColumnName(t).toLowerCase();
+    return col === 'execution' && !isDone(t) && t.status !== 'IN_PROGRESS' && t.id !== state.activeTask?.taskId;
+  });
+  if (drifted.length > 0) {
+    console.log(`\n  EXECUTION DRIFT (in Execution column but not IN_PROGRESS):`);
+    for (const t of drifted) {
+      const specId = extractSpecId(t.content) || t.title?.match(/^[A-Z]+-\d+/)?.[0] || t.id;
+      info(`  ${specId} · ${t.title} [${t.status}]`);
+    }
+    issues += drifted.length;
+  }
+
+  // State vs live — active task reconciliation
+  if (state.activeTask) {
+    try {
+      const live = await client.get(`/api/v2/dataspheres/${state.dsId}/tasks/${state.activeTask.taskId}`);
+      if (isDone(live)) {
+        warn(`Active task ${state.activeTask.specId} is already Done on board — clearing state`);
+        state.activeTask = null;
+        saveState(state);
+        issues++;
+      }
+    } catch { /* non-fatal */ }
+  }
+
+  // NS tasks ready to close
+  const nsReady = liveTaskList.filter(t => {
+    const col = getColumnName(t).toLowerCase();
+    return (col === 'north stars' || t.title?.match(/^NS-/)) && !isDone(t)
+      && t.content && countUncheckedItems(t.content) === 0 && t.content.includes('data-checked="true"');
+  });
+  if (nsReady.length > 0) {
+    console.log(`\n  NORTH STARS FULLY CHECKED (ready to close):`);
+    for (const t of nsReady) {
+      const specId = extractSpecId(t.content) || t.title?.match(/^NS-\d+/)?.[0] || t.id;
+      info(`  ${specId} → node sdd-conductor.mjs complete ${t.id}`);
+    }
+    issues += nsReady.length;
+  }
+
+  if (issues === 0) {
+    ok(`Board is in sync. ${liveTaskList.length} tasks tracked.`);
+  } else {
+    console.log(`\n⚠️  ${issues} sync issue(s) found above.\n`);
+    process.exit(1);
+  }
+}
+
+async function propagateNsChecklist(client, state, nsTaskId, doneEpicSpecId, doneEpicTitle) {
+  try {
+    const ns = await client.get(`/api/v2/dataspheres/${state.dsId}/tasks/${nsTaskId}`);
+    if (!ns.content) return;
+
+    const idPrefix = doneEpicSpecId.match(/^[A-Z]+-\d+/)?.[0] || doneEpicSpecId;
+    const updated = ns.content.replace(
+      new RegExp(`(data-checked="false"><p>)(${escapeRegex(idPrefix)}[^<]*)`, 'g'),
+      `data-checked="true"><p>$2`
+    );
+
+    if (updated === ns.content) {
+      info(`NS checklist: no matching item found for ${idPrefix}`);
+      return;
+    }
+
+    await client.patch(`/api/v2/dataspheres/${state.dsId}/tasks/${nsTaskId}`, { content: updated });
+    info(`NS checklist: ticked ${idPrefix} ✓`);
+
+    const remaining = countUncheckedItems(updated);
+    if (remaining === 0) {
+      await client.post(`/api/v2/dataspheres/${state.dsId}/tasks/${nsTaskId}/comments`, {
+        content: `[all-dai-sdd-system-message]\n\nAll Epics complete. North Star fully achieved — ready for final review.`,
+      });
+      info(`North Star ${idPrefix}: all Epics done — completion comment posted ✓`);
+    }
+  } catch (e) {
+    warn(`Could not propagate to NS ${nsTaskId}: ${e.message}`);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Utilities
 // ---------------------------------------------------------------------------
@@ -1136,12 +1423,14 @@ sdd-conductor v${VERSION} — SDD lifecycle enforcement
 
 Commands:
   init                                  Bootstrap .sdd-state.json (run once per project)
+  drive                                 Ordered mission brief — what to do next end-to-end
+  sync                                  Mid-plan reconcile: diff tasks.yaml vs live board
   start <taskId>                        Mark task IN_PROGRESS. BLOCKED if deps not Done.
-  complete <taskId>                     Verify checklist → post comment → Done → propagate.
-  progress <message>                    Post progress update comment to active task.
-  validate <vaTaskId> [flags]           Ralph loop gate. Pass → Done. Fail → create next iteration.
-    --metric <n>                          Current metric value (e.g. 85 for 85% pass rate)
-    --threshold <n>                       Required value to pass (default: 100)
+  complete <taskId>                     Verify checklist + test evidence → Done → propagate NS/Epic.
+  progress <message>                    Post progress milestone to active task (board visibility).
+  validate <vaTaskId> [flags]           Ralph loop gate. Pass → Done+propagate. Fail → next iteration.
+    --metric <n>                          Current metric (e.g. 85 for 85% pass rate)
+    --threshold <n>                       Required to pass (default: 100)
     --iteration <n>                       Current iteration number (default: 1)
   status                                Show current state + live task status.
   gate <name> [taskId]                  Verify named gate condition.
@@ -1153,26 +1442,28 @@ Commands:
 
 Gate names: deps-done, research-done, no-mocks, checklist, impl-files
 
-Exit codes: 0=pass  1=gate blocked (loop continues)  2=hard error
+Exit codes: 0=pass  1=gate blocked / loop continues  2=hard error
 `);
   process.exit(0);
 }
 
 try {
   switch (command) {
-    case 'init':           await cmdInit(); break;
-    case 'start':          await cmdStart(args[0]); break;
-    case 'complete':       await cmdComplete(args[0]); break;
-    case 'progress':       await cmdProgress(args.join(' ')); break;
-    case 'validate':       await cmdValidate(args[0], args.slice(1)); break;
-    case 'status':         await cmdStatus(); break;
-    case 'gate':           await cmdGate(args[0], args[1]); break;
+    case 'init':            await cmdInit(); break;
+    case 'drive':           await cmdDrive(); break;
+    case 'sync':            await cmdSync(); break;
+    case 'start':           await cmdStart(args[0]); break;
+    case 'complete':        await cmdComplete(args[0]); break;
+    case 'progress':        await cmdProgress(args.join(' ')); break;
+    case 'validate':        await cmdValidate(args[0], args.slice(1)); break;
+    case 'status':          await cmdStatus(); break;
+    case 'gate':            await cmdGate(args[0], args[1]); break;
     case 'dashboard-check': await cmdDashboardCheck(args[0], args[1]); break;
     case 'check-file-hook': await cmdCheckFileHook(); break;
-    case 'progress-hook':  await cmdProgressHook(); break;
-    case 'session-start':  await cmdSessionStart(); break;
-    case 'install':        await cmdInstall(args[0]); break;
-    default:               die(`Unknown command: ${command}. Run with --help.`);
+    case 'progress-hook':   await cmdProgressHook(); break;
+    case 'session-start':   await cmdSessionStart(); break;
+    case 'install':         await cmdInstall(args[0]); break;
+    default:                die(`Unknown command: ${command}. Run with --help.`);
   }
 } catch (e) {
   if (e.code === 'ERR_CONDUCTOR_GATE') {
