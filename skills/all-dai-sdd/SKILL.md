@@ -1169,6 +1169,15 @@ No inline `style=` attributes. No emojis or raw Unicode. No custom CSS grids. No
 **REQUIRED before starting any task.** Run `sdd-conductor start` — this verifies dependencies, marks the task IN_PROGRESS, posts the start comment, and writes the active task to `.sdd-state.json` in one shot. The hooks then guard every file write against the active task's impl files list.
 
 ```bash
+# ── First time in a session (or after user gives feedback) ──
+# Get the ordered mission brief — what to do next end-to-end
+node sdd-conductor.mjs drive
+
+# ── After user changes the spec / gives mid-plan feedback ──
+# Reconcile the live board against tasks.yaml
+node sdd-conductor.mjs sync
+
+# ── Before writing code for a specific task ──
 # MANDATORY — run this before writing a single line of code
 node /path/to/dai-skills/skills/sdd-conductor/sdd-conductor.mjs start <taskId>
 ```
