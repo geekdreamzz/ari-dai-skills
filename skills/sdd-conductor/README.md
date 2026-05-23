@@ -36,19 +36,28 @@ node /path/to/dai-skills/skills/sdd-conductor/sdd-conductor.mjs init
 ## Lifecycle commands
 
 ```bash
-# Before writing any code for a task:
-node sdd-conductor.mjs start task_abc123
+# ── Strategize phase (once before any EX code starts) ──
+node sdd-conductor.mjs status                              # verify state initialized
+node sdd-conductor.mjs gate impl-files task_abc123        # EX task has impl files listed
+node sdd-conductor.mjs dashboard-check my-ds my-dashboard # dashboard has all 5 widgets
 
-# After completing a task:
-node sdd-conductor.mjs complete task_abc123
+# ── Execution phase ──
+node sdd-conductor.mjs start task_abc123                  # IN_PROGRESS + file guard on
+node sdd-conductor.mjs progress "Tests 12/12 green"       # post milestone to board
+node sdd-conductor.mjs complete task_abc123               # gates → Done → epic propagate
 
-# Point-in-time gate checks:
+# ── Validation / Ralph loop ──
+node sdd-conductor.mjs validate task_va001 --metric 85 --threshold 100 --iteration 1
+# exit 0 → VA Done on board, loop ends
+# exit 1 → iteration comment + next EX refinement task created, keep iterating
+
+# ── Point-in-time gate checks ──
 node sdd-conductor.mjs gate deps-done task_abc123
 node sdd-conductor.mjs gate checklist task_abc123
 node sdd-conductor.mjs gate no-mocks src/server/services/foo.service.ts
 node sdd-conductor.mjs gate research-done task_rs001
 
-# Check current state:
+# ── Status ──
 node sdd-conductor.mjs status
 ```
 
@@ -56,8 +65,8 @@ node sdd-conductor.mjs status
 
 | Code | Meaning |
 |------|---------|
-| 0 | Gate passed |
-| 1 | Gate blocked — violation found (details on stdout) |
+| 0 | Gate passed / validate passed (VA marked Done) |
+| 1 | Gate blocked — violation found / validate failed (loop continues) |
 | 2 | Hard error — bad args, API unreachable, no state file |
 
 ## Gates enforced by `complete`

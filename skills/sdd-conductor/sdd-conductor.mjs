@@ -656,6 +656,338 @@ async function cmdCheckFileHook() {
   }
 }
 
+async function cmdProgressHook() {
+  let raw = '';
+  try {
+    if (process.stdin.isTTY) return;
+    for await (const chunk of process.stdin) raw += chunk;
+    if (!raw.trim()) return;
+  } catch { return; }
+
+  let input;
+  try { input = JSON.parse(raw); } catch { return; }
+
+  if (input.tool_name !== 'Bash') return;
+
+  const cmd = input.tool_input?.command || '';
+  const output = input.tool_response?.output || input.tool_response?.stdout || '';
+  if (!output) return;
+
+  const isTestRun = /vitest|playwright|pytest|jest\s|npm run test|tsc\s+--noEmit/.test(cmd);
+  if (!isTestRun) return;
+
+  const state = loadState();
+  if (!state?.activeTask) return;
+
+  const result = extractTestResult(cmd, output);
+  if (!result) return;
+
+  try {
+    const client = makeClient();
+    const lines = [
+      `[all-dai-sdd-system-message]`,
+      ``,
+      `**Test Run — ${result.runner}** | ${new Date().toISOString()}`,
+      ``,
+      result.summary,
+    ];
+    if (result.passed !== null) lines.push(`- Passed: ${result.passed}`);
+    if (result.failed !== null && result.failed > 0) lines.push(`- Failed: ${result.failed}`);
+    if (result.errors) lines.push(`\n**Errors:**\n\`\`\`\n${result.errors.slice(0, 500)}\n\`\`\``);
+
+    await client.post(`/api/v2/dataspheres/${state.dsId}/tasks/${state.activeTask.taskId}/comments`, {
+      content: lines.join('\n'),
+    });
+  } catch {
+    // never block on hook failure
+  }
+}
+
+function extractTestResult(cmd, output) {
+  if (/vitest/.test(cmd) || /vitest/.test(output)) {
+    const passedMatch = output.match(/(\d+)\s+(?:tests?\s+)?passed/i);
+    const failedMatch = output.match(/(\d+)\s+(?:tests?\s+)?failed/i);
+    const passed = passedMatch ? parseInt(passedMatch[1]) : null;
+    const failed = failedMatch ? parseInt(failedMatch[1]) : 0;
+    if (passed === null && failed === 0) return null;
+    return {
+      runner: 'vitest',
+      summary: failed === 0 ? `✅ All ${passed} tests passed` : `❌ ${failed} failed / ${passed || 0} passed`,
+      passed, failed,
+      errors: failed > 0 ? extractFirstError(output) : null,
+    };
+  }
+  if (/playwright/.test(cmd)) {
+    const passedMatch = output.match(/(\d+)\s+passed/);
+    const failedMatch = output.match(/(\d+)\s+failed/);
+    const passed = passedMatch ? parseInt(passedMatch[1]) : null;
+    const failed = failedMatch ? parseInt(failedMatch[1]) : 0;
+    if (passed === null && failed === 0) return null;
+    return {
+      runner: 'playwright',
+      summary: failed === 0 ? `✅ All ${passed} tests passed` : `❌ ${failed} failed / ${passed || 0} passed`,
+      passed, failed,
+      errors: failed > 0 ? extractFirstError(output) : null,
+    };
+  }
+  if (/pytest/.test(cmd)) {
+    const m = output.match(/(\d+)\s+passed(?:,\s+(\d+)\s+(?:failed|error))?/);
+    if (!m) return null;
+    const passed = parseInt(m[1]);
+    const failed = m[2] ? parseInt(m[2]) : 0;
+    return {
+      runner: 'pytest',
+      summary: failed === 0 ? `✅ ${passed} passed` : `❌ ${failed} failed / ${passed} passed`,
+      passed, failed,
+      errors: failed > 0 ? extractFirstError(output) : null,
+    };
+  }
+  if (/tsc/.test(cmd)) {
+    const errorMatch = output.match(/Found (\d+) error/);
+    const count = errorMatch ? parseInt(errorMatch[1]) : (/error TS/.test(output) ? 1 : 0);
+    return {
+      runner: 'tsc',
+      summary: count === 0 ? `✅ TypeScript: no errors` : `❌ TypeScript: ${count} error(s)`,
+      passed: count === 0 ? 1 : 0, failed: count,
+      errors: count > 0 ? extractFirstError(output) : null,
+    };
+  }
+  return null;
+}
+
+function extractFirstError(output) {
+  const lines = output.split('\n').filter(l => /error|FAIL|✕|×/i.test(l));
+  return lines.slice(0, 5).join('\n').slice(0, 300) || null;
+}
+
+async function cmdProgress(message) {
+  if (!message) die('Usage: progress <message>');
+  const state = requireState();
+  if (!state.activeTask) die('No active task. Run: node sdd-conductor.mjs start <taskId>');
+  const client = makeClient();
+
+  await client.post(`/api/v2/dataspheres/${state.dsId}/tasks/${state.activeTask.taskId}/comments`, {
+    content: `[all-dai-sdd-system-message]\n\n**Progress:** ${message}\n\n_${new Date().toISOString()}_`,
+  });
+
+  ok(`Progress posted to task ${state.activeTask.specId}`);
+}
+
+async function cmdValidate(vaTaskId, extraArgs) {
+  if (!vaTaskId) die('Usage: validate <vaTaskId> [--metric <n> --threshold <n> --iteration <n>]');
+  const state = requireState();
+  const client = makeClient();
+
+  // Parse flags
+  const flags = {};
+  for (let i = 0; i < extraArgs.length; i++) {
+    if (extraArgs[i].startsWith('--') && extraArgs[i + 1] !== undefined) {
+      flags[extraArgs[i].slice(2)] = extraArgs[i + 1];
+      i++;
+    }
+  }
+
+  const metric = flags.metric !== undefined ? parseFloat(flags.metric) : null;
+  const threshold = flags.threshold !== undefined ? parseFloat(flags.threshold) : 100;
+  const iteration = flags.iteration !== undefined ? parseInt(flags.iteration) : 1;
+
+  console.log(`\n🔁 SDD-CONDUCTOR VALIDATE`);
+  info(`VA task: ${vaTaskId}`);
+  if (metric !== null) info(`Metric: ${metric} / threshold: ${threshold} (iteration ${iteration})`);
+
+  const task = await client.get(`/api/v2/dataspheres/${state.dsId}/tasks/${vaTaskId}`);
+  const specId = extractSpecId(task.content) || task.title?.match(/^[A-Z]+-\d+/)?.[0] || vaTaskId;
+
+  const passed = metric === null || metric >= threshold;
+
+  if (passed) {
+    info(`Metric ${metric} >= threshold ${threshold} — PASSED`);
+
+    // Tick all checklist items
+    let updatedContent = task.content || '';
+    const originalContent = updatedContent;
+    updatedContent = updatedContent.replace(/data-checked="false"/g, 'data-checked="true"');
+    if (updatedContent !== originalContent) {
+      await client.patch(`/api/v2/dataspheres/${state.dsId}/tasks/${vaTaskId}`, { content: updatedContent });
+      info(`Checklist: all items ticked ✓`);
+    }
+
+    // Post completion comment
+    const commentLines = [
+      `[all-dai-sdd-system-message]`,
+      ``,
+      `**Validation PASSED** — ${specId} | ${new Date().toISOString()}`,
+      ``,
+    ];
+    if (metric !== null) commentLines.push(`- Metric: ${metric} / threshold: ${threshold}`);
+    if (iteration > 1) commentLines.push(`- Completed on iteration ${iteration}`);
+    commentLines.push(`\n**Completion summary:** All acceptance criteria met.`);
+    commentLines.push(`**Verified criteria:** Metric at or above threshold, all checklist items checked.`);
+
+    await client.post(`/api/v2/dataspheres/${state.dsId}/tasks/${vaTaskId}/comments`, {
+      content: commentLines.join('\n'),
+    });
+    info(`Completion comment posted ✓`);
+
+    await client.patch(`/api/v2/dataspheres/${state.dsId}/tasks/${vaTaskId}`, {
+      statusGroupId: state.doneGroupId,
+      status: 'DONE',
+    });
+    info(`Task PATCH: status=DONE, statusGroupId=${state.doneGroupId} ✓`);
+
+    if (task.parentId) {
+      await propagateEpicChecklist(client, state, task.parentId, specId, task.title);
+    }
+
+    // Clear active task — VA cycle complete
+    state.activeTask = null;
+    state.lastCompleted = { taskId: vaTaskId, specId, title: task.title, completedAt: new Date().toISOString() };
+    saveState(state);
+
+    ok(`${specId} validated and moved to Done.`);
+    process.exit(0);
+
+  } else {
+    const delta = (threshold - metric).toFixed(2);
+    const nextIter = iteration + 1;
+    info(`Metric ${metric} < threshold ${threshold} (delta: -${delta}) — FAILED`);
+
+    // If there is an active EX task in state, post a link on it and clear it
+    if (state.activeTask && state.activeTask.taskId !== vaTaskId) {
+      try {
+        await client.post(`/api/v2/dataspheres/${state.dsId}/tasks/${state.activeTask.taskId}/comments`, {
+          content: [
+            `[all-dai-sdd-system-message]`,
+            ``,
+            `**Validation failed on ${specId}** — iteration ${iteration}. Refinement task will be created.`,
+            `Metric: ${metric} / threshold: ${threshold} (delta: -${delta})`,
+          ].join('\n'),
+        });
+      } catch { /* non-fatal */ }
+    }
+    // Clear active EX task — a new iteration task will be started next
+    state.activeTask = null;
+    saveState(state);
+
+    // Post failure comment on the VA task
+    await client.post(`/api/v2/dataspheres/${state.dsId}/tasks/${vaTaskId}/comments`, {
+      content: [
+        `[all-dai-sdd-system-message]`,
+        ``,
+        `**Validation FAILED — Iteration ${iteration}** | ${new Date().toISOString()}`,
+        ``,
+        `- Metric: ${metric} / threshold: ${threshold} (delta: -${delta})`,
+        `- Next: iteration ${nextIter} refinement task created in Execution`,
+      ].join('\n'),
+    });
+    info(`Failure comment posted ✓`);
+
+    // Auto-create next iteration EX task
+    if (state.executionGroupId) {
+      const baseTitle = task.title.replace(/\s*\(iteration \d+\)$/, '');
+      const newTitle = `${baseTitle} (iteration ${nextIter})`;
+      const specParts = specId.match(/^(.*?)(-\d+)(.*)$/);
+      const newSpecId = specParts
+        ? `${specParts[1]}${specParts[2]}-iter${nextIter}${specParts[3] || ''}`
+        : `${specId}-iter${nextIter}`;
+
+      const implFiles = extractImplFiles(task.content);
+      const implSection = implFiles.length > 0
+        ? `<h3>Implementation Files <!-- #impl --></h3>\n<ul>\n${implFiles.map(f => `  <li><code>${f}</code></li>`).join('\n')}\n</ul>\n\n`
+        : '';
+
+      const newContent = [
+        `<pre><code class="language-yaml">`,
+        `spec_id: ${newSpecId}`,
+        `title: ${newTitle}`,
+        `spec_type: algorithm`,
+        `version: 1.0.0`,
+        `status: ACTIVE`,
+        `column: execution`,
+        `iteration: ${nextIter}`,
+        `parent_va: ${vaTaskId}`,
+        `tags: [${state.initiative}, sdd, execution, refinement]`,
+        `</code></pre>`,
+        ``,
+        implSection,
+        `<h2>Context <!-- #ctx --></h2>`,
+        `<p>Refinement iteration ${nextIter}. Previous iteration ${iteration} failed validation gate.</p>`,
+        `<ul>`,
+        `<li>Metric: ${metric} (target: &gt;= ${threshold})</li>`,
+        `<li>Delta: ${delta} below threshold &mdash; investigate and fix.</li>`,
+        `</ul>`,
+        ``,
+        `<h2>Acceptance Criteria <!-- #ac --></h2>`,
+        `<ul data-type="taskList">`,
+        `  <li data-type="taskItem" data-checked="false"><p>Metric &gt;= ${threshold}</p></li>`,
+        `  <li data-type="taskItem" data-checked="false"><p>All existing tests pass</p></li>`,
+        `  <li data-type="taskItem" data-checked="false"><p>No mocks or stubs introduced</p></li>`,
+        `</ul>`,
+      ].join('\n');
+
+      const created = await client.post(`/api/v2/dataspheres/${state.dsId}/tasks`, {
+        title: newTitle,
+        statusGroupId: state.executionGroupId,
+        tags: [state.initiative, 'sdd', 'execution', 'refinement'],
+        parentId: task.parentId || null,
+        content: newContent,
+      });
+
+      const newId = created.task?.id || created.id || 'unknown';
+      info(`Iteration ${nextIter} task created: ${newTitle} (${newId})`);
+    } else {
+      warn(`executionGroupId not set — run 'init' again or set manually to enable auto-iteration`);
+    }
+
+    process.exit(1); // signal: loop should continue
+  }
+}
+
+async function cmdDashboardCheck(dsUri, pageSlug) {
+  if (!dsUri || !pageSlug) die('Usage: dashboard-check <dsUri> <page-slug>');
+  const env = loadEnv();
+  const baseUrl = env.DATASPHERES_BASE_URL || 'http://localhost:3000';
+  const apiKey = env.DATASPHERES_API_KEY;
+  if (!apiKey) die('DATASPHERES_API_KEY not set');
+
+  console.log(`\n🔍 SDD-CONDUCTOR DASHBOARD-CHECK`);
+  info(`Datasphere: ${dsUri}`);
+  info(`Page: ${pageSlug}`);
+
+  const res = await fetch(`${baseUrl}/api/v1/dataspheres/${dsUri}/pages/${pageSlug}`, {
+    headers: { Authorization: `Bearer ${apiKey}` },
+  });
+  if (!res.ok) die(`Could not fetch page ${pageSlug}: ${res.status}`);
+  const data = await res.json();
+  const content = data.page?.content || data.content || '';
+
+  const REQUIRED = [
+    { label: 'progress-summary widget',   pattern: /data-widget-type="progress-summary"/ },
+    { label: 'trace-graph widget',        pattern: /data-widget-type="trace-graph"/ },
+    { label: 'task-activity-feed widget', pattern: /data-widget-type="task-activity-feed"/ },
+    { label: 'doc-footer element',        pattern: /data-type="doc-footer"/ },
+    { label: 'H1 title',                  pattern: /<h1[^>]*>/ },
+  ];
+
+  const missing = REQUIRED.filter(r => !r.pattern.test(content)).map(r => r.label);
+
+  if (missing.length > 0) {
+    gate(
+      `Dashboard page "${pageSlug}" is missing required sections:\n\n` +
+      missing.map(m => `  ✗ ${m}`).join('\n') +
+      `\n\nFix the page content at ${baseUrl}/app/${dsUri}/pages/${pageSlug} to include all 5 sections.`
+    );
+  }
+
+  // Warn if inline styles are present (anti-pattern)
+  if (/style="[^"]*"/.test(content)) {
+    warn(`Dashboard has inline style= attributes — these should be removed (native widgets only)`);
+  }
+
+  ok(`GATE dashboard-check: all 5 required sections present`);
+  REQUIRED.forEach(r => info(`  ✓ ${r.label}`));
+}
+
 async function cmdSessionStart() {
   const state = loadState();
   if (!state) return; // no SDD project, nothing to do
@@ -721,9 +1053,10 @@ async function cmdInstall(projectDir) {
   settings.hooks = settings.hooks || {};
 
   const hookCmd = `node "${conductorPath}" check-file-hook`;
+  const progressHookCmd = `node "${conductorPath}" progress-hook`;
   const sessionCmd = `node "${conductorPath}" session-start`;
 
-  // PostToolUse — file guard
+  // PostToolUse — file guard (Write|Edit)
   settings.hooks.PostToolUse = settings.hooks.PostToolUse || [];
   const existingFileHook = settings.hooks.PostToolUse.find(
     h => h.hooks?.some(hh => hh.command?.includes('check-file-hook'))
@@ -732,6 +1065,17 @@ async function cmdInstall(projectDir) {
     settings.hooks.PostToolUse.push({
       matcher: 'Write|Edit',
       hooks: [{ type: 'command', command: hookCmd }],
+    });
+  }
+
+  // PostToolUse — progress hook (Bash) — auto-posts test results to active task
+  const existingProgressHook = settings.hooks.PostToolUse.find(
+    h => h.hooks?.some(hh => hh.command?.includes('progress-hook'))
+  );
+  if (!existingProgressHook) {
+    settings.hooks.PostToolUse.push({
+      matcher: 'Bash',
+      hooks: [{ type: 'command', command: progressHookCmd }],
     });
   }
 
@@ -749,8 +1093,9 @@ async function cmdInstall(projectDir) {
   fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2), 'utf-8');
 
   ok(`Hooks installed in ${settingsPath}`);
-  info(`File guard: PostToolUse(Write|Edit) → check-file-hook`);
-  info(`Session start: SessionStart → session-start`);
+  info(`File guard:      PostToolUse(Write|Edit) → check-file-hook`);
+  info(`Progress hook:   PostToolUse(Bash)        → progress-hook  (auto-posts test results)`);
+  info(`Session start:   SessionStart              → session-start`);
   info(`\nNext: node sdd-conductor.mjs init  (to set up .sdd-state.json)`);
 }
 
@@ -790,18 +1135,25 @@ if (!command || command === '--help' || command === '-h') {
 sdd-conductor v${VERSION} — SDD lifecycle enforcement
 
 Commands:
-  init                     Bootstrap .sdd-state.json (run once per project)
-  start <taskId>           Mark task IN_PROGRESS. BLOCKED if deps not Done.
-  complete <taskId>        Verify checklist → post comment → Done → propagate.
-  status                   Show current state + live task status.
-  gate <name> [taskId]     Verify named gate condition.
-  check-file-hook          Claude PostToolUse hook (reads stdin JSON).
-  session-start            Claude SessionStart hook — reconcile state.
-  install [project-dir]    Inject hooks into .claude/settings.json.
+  init                                  Bootstrap .sdd-state.json (run once per project)
+  start <taskId>                        Mark task IN_PROGRESS. BLOCKED if deps not Done.
+  complete <taskId>                     Verify checklist → post comment → Done → propagate.
+  progress <message>                    Post progress update comment to active task.
+  validate <vaTaskId> [flags]           Ralph loop gate. Pass → Done. Fail → create next iteration.
+    --metric <n>                          Current metric value (e.g. 85 for 85% pass rate)
+    --threshold <n>                       Required value to pass (default: 100)
+    --iteration <n>                       Current iteration number (default: 1)
+  status                                Show current state + live task status.
+  gate <name> [taskId]                  Verify named gate condition.
+  dashboard-check <dsUri> <slug>        Verify dashboard page has all 5 required sections.
+  check-file-hook                       PostToolUse(Write|Edit) hook — file guard.
+  progress-hook                         PostToolUse(Bash) hook — auto-post test results.
+  session-start                         SessionStart hook — reconcile state.
+  install [project-dir]                 Inject all hooks into .claude/settings.json.
 
 Gate names: deps-done, research-done, no-mocks, checklist, impl-files
 
-Exit codes: 0=pass  1=gate blocked  2=hard error
+Exit codes: 0=pass  1=gate blocked (loop continues)  2=hard error
 `);
   process.exit(0);
 }
@@ -811,9 +1163,13 @@ try {
     case 'init':           await cmdInit(); break;
     case 'start':          await cmdStart(args[0]); break;
     case 'complete':       await cmdComplete(args[0]); break;
+    case 'progress':       await cmdProgress(args.join(' ')); break;
+    case 'validate':       await cmdValidate(args[0], args.slice(1)); break;
     case 'status':         await cmdStatus(); break;
     case 'gate':           await cmdGate(args[0], args[1]); break;
+    case 'dashboard-check': await cmdDashboardCheck(args[0], args[1]); break;
     case 'check-file-hook': await cmdCheckFileHook(); break;
+    case 'progress-hook':  await cmdProgressHook(); break;
     case 'session-start':  await cmdSessionStart(); break;
     case 'install':        await cmdInstall(args[0]); break;
     default:               die(`Unknown command: ${command}. Run with --help.`);
