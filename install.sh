@@ -162,7 +162,7 @@ if [[ "$INSTALL_ALL" == true ]]; then
     skill=$(basename "$dir")
     if [[ -f "$dir/SKILL.md" ]]; then
       install_skill "$skill"
-      ((count++))
+      (( ++count )) || true
     fi
   done
   echo ""
