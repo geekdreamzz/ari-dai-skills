@@ -18,18 +18,31 @@ import sys
 from datetime import datetime, timezone
 from typing import Optional
 
-import yaml
-from z3 import (
-    And,
-    BoolRef,
-    BoolVal,
-    Implies,
-    Not,
-    Or,
-    Solver,
-    sat,
-    unsat,
-)
+try:
+    import yaml
+    from z3 import (
+        And,
+        BoolRef,
+        BoolVal,
+        Implies,
+        Not,
+        Or,
+        Solver,
+        sat,
+        unsat,
+    )
+except ModuleNotFoundError as e:
+    sys.stderr.write(
+        f"\nverify_gates.py needs the optional 'sdd' extra (missing: {e.name}).\n"
+        "Install with one of:\n"
+        "  pip install 'dai-skills[sdd]'\n"
+        "  uv tool install 'dai-skills[sdd]'\n"
+        "\nNote: z3-solver requires a C++ toolchain on platforms without prebuilt wheels.\n"
+        "  macOS:   brew install cmake\n"
+        "  Ubuntu:  sudo apt install cmake build-essential\n"
+        "  Windows: install Visual Studio Build Tools + CMake\n"
+    )
+    sys.exit(2)
 
 from sdd_schema import COLUMN_ORD, SddTask
 
