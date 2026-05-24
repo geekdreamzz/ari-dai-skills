@@ -564,8 +564,9 @@ async function cmdStart(taskId) {
       if (!extractFrontMatterField(task.content, 'epic_ref'))       missing.push('epic_ref');
       if (!extractFrontMatterField(task.content, 'north_star_ref')) missing.push('north_star_ref');
     } else if (isEX) {
-      if (!extractFrontMatterField(task.content, 'epic_ref'))       missing.push('epic_ref');
-      if (!extractFrontMatterField(task.content, 'north_star_ref')) missing.push('north_star_ref');
+      if (!extractFrontMatterField(task.content, 'epic_ref'))        missing.push('epic_ref');
+      if (!extractFrontMatterField(task.content, 'north_star_ref'))  missing.push('north_star_ref');
+      if (!extractFrontMatterField(task.content, 'validation_ref'))  missing.push('validation_ref (child VA ticket)');
     } else if (isEP) {
       if (!extractFrontMatterField(task.content, 'north_star_ref')) missing.push('north_star_ref');
     }
@@ -621,6 +622,14 @@ async function cmdComplete(taskId) {
     );
   }
   info(`Acceptance checklist: all items checked ✓`);
+
+  // Gate 1b: checklist format — all task lists must use <ul data-type="taskList">
+  {
+    const bareUl = /<ul(?![^>]*data-type="taskList")[^>]*>[\s\S]{0,50}<li[^>]*data-type="taskItem"/;
+    if (bareUl.test(task.content)) {
+      gate(`Checklist format violation: bare <ul> wrapping taskItem elements found in ${specId}.\nFix: replace all <ul> containing taskItem children with <ul data-type="taskList">.`);
+    }
+  }
 
   // Gate 2: Completion comment must exist with [all-dai-sdd-system-message]
   const comments = await client.get(`/api/v2/dataspheres/${iState.dsId}/tasks/${taskId}/comments`);
@@ -1040,8 +1049,9 @@ async function cmdGate(name, arg) {
         if (!extractFrontMatterField(content, 'epic_ref'))       warnings.push('VA task missing epic_ref');
         if (!extractFrontMatterField(content, 'north_star_ref')) warnings.push('VA task missing north_star_ref');
       } else if (isEX) {
-        if (!extractFrontMatterField(content, 'epic_ref'))       warnings.push('EX task missing epic_ref');
-        if (!extractFrontMatterField(content, 'north_star_ref')) warnings.push('EX task missing north_star_ref');
+        if (!extractFrontMatterField(content, 'epic_ref'))        warnings.push('EX task missing epic_ref');
+        if (!extractFrontMatterField(content, 'north_star_ref'))  warnings.push('EX task missing north_star_ref');
+        if (!extractFrontMatterField(content, 'validation_ref'))  warnings.push('EX task missing validation_ref (must point to child VA ticket)');
       } else if (isEP) {
         if (!extractFrontMatterField(content, 'north_star_ref')) warnings.push('Epic missing north_star_ref');
       }
@@ -1052,8 +1062,84 @@ async function cmdGate(name, arg) {
       ok(`GATE hierarchy: ${specId} has correct parent refs`);
       break;
     }
+    case 'checklist-format': {
+      // Rule 2 from SKILL.md Trace Graph Linking: all checklists must use <ul data-type="taskList">
+      // A bare <ul> wrapping <li data-type="taskItem"> breaks findChecklistRefs() edge detection.
+      if (!arg) die('Usage: gate checklist-format <taskId>');
+      const task = await client.get(`/api/v2/dataspheres/${iState.dsId}/tasks/${arg}`);
+      const content = task.content || '';
+      const bareUl = /<ul(?![^>]*data-type="taskList")[^>]*>[\s\S]{0,50}<li[^>]*data-type="taskItem"/;
+      if (bareUl.test(content)) {
+        gate(`Checklist format violation in task ${arg}: <ul> without data-type="taskList" wraps taskItem elements.\nFix: replace all <ul> containing taskItem children with <ul data-type="taskList">.`);
+      }
+      ok(`GATE checklist-format: all task list items correctly wrapped`);
+      break;
+    }
+    case 'title-prefix': {
+      // Rule 1 from SKILL.md Trace Graph Linking: titles must start with the SDD prefix for their column.
+      // extractSddId() only recognises RS-/NS-/E-/T-/V-T- — any other prefix = no graph edges.
+      if (!arg) die('Usage: gate title-prefix <taskId>');
+      const task = await client.get(`/api/v2/dataspheres/${iState.dsId}/tasks/${arg}`);
+      const title  = task.title || '';
+      const content = task.content || '';
+      const column = (extractFrontMatterField(content, 'column') || '').toLowerCase();
+      const prefixRules = {
+        'research':    { re: /^RS-\d/, label: 'RS-NNN ·' },
+        'north-stars': { re: /^NS-\d/, label: 'NS-NNN ·' },
+        'epics':       { re: /^E-\d/,  label: 'E-NNN ·'  },
+        'execution':   { re: /^T-\d/,  label: 'T-NNN ·'  },
+        'validation':  { re: /^V-T-\d/,label: 'V-T-NNN ·'},
+      };
+      const rule = prefixRules[column];
+      if (rule && !rule.re.test(title)) {
+        gate(`Title prefix mismatch for task ${arg}:\n  column="${column}" requires "${rule.label}" format\n  got: "${title}"\nRename the task to start with the correct SDD prefix.`);
+      }
+      if (!rule && column) warn(`Unknown column "${column}" — cannot validate prefix`);
+      ok(`GATE title-prefix: "${title.slice(0, 50)}" matches column "${column}"`);
+      break;
+    }
+    case 'tracker-link': {
+      // Step 13 (SKILL.md): trackerUrl must be set on the plan mode + dashboard must have planner link.
+      if (!arg) die('Usage: gate tracker-link <dsUri>');
+      const { iState: ist } = requireInitiativeState();
+      const env = loadEnv();
+      const bUrl = env.DATASPHERES_BASE_URL || 'http://localhost:3000';
+      const aKey = env.DATASPHERES_API_KEY;
+      const fails = [];
+      // Check 1: trackerUrl on plan mode
+      try {
+        const pmRes = await fetch(`${bUrl}/api/v2/dataspheres/${ist.dsId}/tasks/plan-modes/${ist.planModeId}`,
+          { headers: { Authorization: `Bearer ${aKey}` } });
+        if (pmRes.ok) {
+          const pmData = await pmRes.json();
+          const tUrl = pmData.planMode?.trackerUrl || pmData.trackerUrl || '';
+          if (!tUrl) fails.push(`trackerUrl not set on plan mode (Step 13A) — PATCH plan-mode ${ist.planModeId} with {trackerUrl:"<PUBLIC_URL>/pages/${arg}/<dashboard-slug>"}`);
+          else info(`  ✓ trackerUrl: ${tUrl}`);
+        }
+      } catch { fails.push('Could not fetch plan mode — check dsId + planModeId in .sdd-state.json'); }
+      // Check 2: dashboard page has planner deep link
+      const slug = ist.dashboardSlug;
+      if (slug) {
+        try {
+          const pgRes = await fetch(`${bUrl}/api/v1/dataspheres/${arg}/pages/${slug}`,
+            { headers: { Authorization: `Bearer ${aKey}` } });
+          if (pgRes.ok) {
+            const pgData = await pgRes.json();
+            const pgContent = pgData.page?.content || pgData.content || '';
+            if (!/href="[^"]*\/app\/[^"]*\/planner/.test(pgContent))
+              fails.push(`Dashboard "${slug}" missing planner deep link (Step 13B) — add <a href="<PUBLIC_URL>/app/${arg}/planner?mode=${ist.planModeId}">Open in Planner</a>`);
+            else info(`  ✓ dashboard has planner link`);
+          }
+        } catch { /* non-fatal */ }
+      } else {
+        fails.push('dashboardSlug not in .sdd-state.json — run dashboard-check first');
+      }
+      if (fails.length > 0) gate(`Tracker link check failed:\n${fails.map(f => `  ✗ ${f}`).join('\n')}`);
+      ok(`GATE tracker-link: trackerUrl set + dashboard planner link present`);
+      break;
+    }
     default:
-      die(`Unknown gate: ${name}. Valid: deps-done, research-done, no-mocks, checklist, impl-files, hierarchy`);
+      die(`Unknown gate: ${name}. Valid: deps-done, research-done, no-mocks, checklist, impl-files, hierarchy, checklist-format, title-prefix, tracker-link`);
   }
 }
 
@@ -1265,6 +1351,26 @@ async function cmdValidate(vaTaskId, extraArgs) {
 
   const task = await client.get(`/api/v2/dataspheres/${iState.dsId}/tasks/${vaTaskId}`);
   const specId = extractSpecId(task.content) || task.title?.match(/^[A-Z]+-\d+/)?.[0] || vaTaskId;
+
+  // Gate: VA hierarchy refs must be present before validating
+  {
+    const vaTitle = task.title || '';
+    const vaSid   = extractSpecId(task.content) || '';
+    if (/^V-T-/i.test(vaTitle) || /^VA-/i.test(vaSid)) {
+      const hMissing = [];
+      if (!extractFrontMatterField(task.content, 'execution_ref'))  hMissing.push('execution_ref (parent EX task)');
+      if (!extractFrontMatterField(task.content, 'epic_ref'))       hMissing.push('epic_ref');
+      if (!extractFrontMatterField(task.content, 'north_star_ref')) hMissing.push('north_star_ref');
+      if (hMissing.length > 0)
+        gate(`VA hierarchy refs missing — fix frontmatter before validating:\n${hMissing.map(m => `  ✗ ${m}`).join('\n')}`);
+    }
+  }
+  // Gate: checklist format on VA task
+  {
+    const bareUl = /<ul(?![^>]*data-type="taskList")[^>]*>[\s\S]{0,50}<li[^>]*data-type="taskItem"/;
+    if (bareUl.test(task.content))
+      gate(`VA task ${specId} has bare <ul> wrapping taskItems — fix to <ul data-type="taskList"> before validating.`);
+  }
 
   const passed = metric === null || metric >= threshold;
 
@@ -1568,6 +1674,24 @@ async function cmdDashboardCheck(dsUri, pageSlug) {
   ok(`GATE dashboard-check: all ${REQUIRED.length} required sections present`);
   REQUIRED.forEach(r => info(`  ✓ ${r.label}`));
 
+  // Step 13 gate: trackerUrl must be set on the plan mode (SKILL.md Step 13A)
+  {
+    const st = loadState();
+    const ist = st?.initiatives?.[st?.currentInitiative] || Object.values(st?.initiatives || {})[0];
+    if (ist?.planModeId && ist?.dsId) {
+      try {
+        const pmRes = await fetch(`${baseUrl}/api/v2/dataspheres/${ist.dsId}/tasks/plan-modes/${ist.planModeId}`,
+          { headers: { Authorization: `Bearer ${apiKey}` } });
+        if (pmRes.ok) {
+          const pmData = await pmRes.json();
+          const tUrl = pmData.planMode?.trackerUrl || pmData.trackerUrl || '';
+          if (!tUrl) warn(`Step 13A: trackerUrl not set on plan mode — run: node sdd-conductor.mjs gate tracker-link ${dsUri}`);
+          else info(`  ✓ trackerUrl: ${tUrl}`);
+        }
+      } catch { /* non-fatal */ }
+    }
+  }
+
   // Persist dashboard slug in state so sync can re-check automatically
   const stateForSave = loadState();
   if (stateForSave) {
@@ -1677,64 +1801,74 @@ async function cmdUpdateDashboard(dsUri, pageSlug) {
   const seenEx = new Set();
   const seenVa = new Set();
 
+  // Deep link format per SKILL.md: /app/<uri>/planner?mode=<planModeId>&taskId=<taskId>
+  const taskLink = (t) => `/app/${dsUri}/planner?mode=${planModeId}&taskId=${t.id}`;
+  // ▶ active, ● in-progress, ○ pending VA
+  const actIcon  = '&#9654;'; // ▶
+  const inpIcon  = '&#9900;'; // ●
+  const pendIcon = '&#9675;'; // ○
+  const doneIcon = '&#10003;'; // ✓
+
+  let treeHtml = '<ul>\n';
+  let treeCount = 0;
+
   for (const n of ns) {
     const epList = epicsForNs(n);
-    // Only show NS if it has active Epics with active EX tasks
     const hasWork = epList.some(e => exForEpic(e).length > 0);
     if (!hasWork && epList.length === 0) continue;
-
-    rows.push({ indent: '', id: specId(n), title: shortTitle(n), status: 'In Progress' });
+    treeCount++;
+    treeHtml += `  <li><a href="${taskLink(n)}">${inpIcon} ${n.title || ''}</a>\n    <ul>\n`;
     for (const e of epList) {
       const exList = exForEpic(e);
-      if (exList.length === 0) continue; // skip Epics with no active EX tasks
-      rows.push({ indent: '&nbsp;&nbsp;', id: specId(e), title: shortTitle(e), status: 'In Progress' });
+      if (exList.length === 0) continue;
+      treeHtml += `      <li><a href="${taskLink(e)}">${inpIcon} ${e.title || ''}</a>\n        <ul>\n`;
       for (const x of exList) {
         if (seenEx.has(x.id)) continue;
         seenEx.add(x.id);
+        treeCount++;
         const isAct = activeTaskState && x.id === activeTaskState.taskId;
-        rows.push({ indent: '&nbsp;&nbsp;&nbsp;&nbsp;', id: specId(x), title: shortTitle(x), status: isAct ? '<strong>Active</strong>' : 'In Progress' });
+        const icon  = isAct ? actIcon : inpIcon;
+        const label = isAct ? `<strong>${x.title || ''}</strong>` : (x.title || '');
+        treeHtml += `          <li><a href="${taskLink(x)}">${icon} ${label}</a>\n`;
+        // AC checklist items inline — spinning pending (○) or green check (✓)
+        const acItems = extractSectionChecklist(x.content, 'Acceptance Criteria');
+        if (acItems.length > 0) {
+          treeHtml += `            <ul>\n`;
+          for (const item of acItems) {
+            treeHtml += `              <li>${item.checked ? doneIcon : pendIcon} ${item.text}</li>\n`;
+          }
+          treeHtml += `            </ul>\n`;
+        }
+        treeHtml += `          </li>\n`;
         for (const v of vaForEx(x)) {
           if (seenVa.has(v.id)) continue;
           seenVa.add(v.id);
-          rows.push({ indent: '&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;', id: specId(v), title: shortTitle(v), status: 'Pending Validation' });
+          treeCount++;
+          treeHtml += `          <li><a href="${taskLink(v)}">${pendIcon} ${v.title || ''}</a></li>\n`;
         }
       }
+      treeHtml += `        </ul>\n      </li>\n`;
     }
+    treeHtml += `    </ul>\n  </li>\n`;
   }
-  // Orphan EX/VA not linked to any NS/Epic
+  // Orphan active EX/VA not linked to any NS/Epic
   for (const x of ex) {
-    if (!seenEx.has(x.id)) {
-      const isAct = activeTaskState && x.id === activeTaskState.taskId;
-      rows.push({ indent: '', id: specId(x), title: shortTitle(x), status: isAct ? '<strong>Active</strong>' : 'In Progress' });
-    }
+    if (seenEx.has(x.id)) continue;
+    treeCount++;
+    const isAct = activeTaskState && x.id === activeTaskState.taskId;
+    treeHtml += `  <li><a href="${taskLink(x)}">${isAct ? actIcon : inpIcon} ${x.title || ''}</a></li>\n`;
   }
   for (const v of va) {
-    if (!seenVa.has(v.id)) {
-      rows.push({ indent: '', id: specId(v), title: shortTitle(v), status: 'Pending Validation' });
-    }
+    if (seenVa.has(v.id)) continue;
+    treeCount++;
+    treeHtml += `  <li><a href="${taskLink(v)}">${pendIcon} ${v.title || ''}</a></li>\n`;
   }
+  treeHtml += '</ul>';
 
-  if (rows.length === 0) {
-    rows.push({ indent: '', id: '—', title: 'No tasks currently in progress', status: '—' });
-  }
+  if (treeCount === 0) treeHtml = '<p><em>No tasks currently in progress.</em></p>';
 
-  const tableRows = rows.map(r =>
-    `<tr class="tiptap-table-row">` +
-    `<td class="tiptap-table-cell"><p>${r.indent}<strong>${r.id}</strong></p></td>` +
-    `<td class="tiptap-table-cell"><p>${r.title}</p></td>` +
-    `<td class="tiptap-table-cell"><p>${r.status}</p></td>` +
-    `</tr>`
-  ).join('\n');
-
-  const focusHtml =
-    `<table class="tiptap-table"><tbody>\n` +
-    `<tr class="tiptap-table-row">` +
-    `<td class="tiptap-table-cell"><p><strong>ID</strong></p></td>` +
-    `<td class="tiptap-table-cell"><p><strong>Task</strong></p></td>` +
-    `<td class="tiptap-table-cell"><p><strong>Status</strong></p></td>` +
-    `</tr>\n` +
-    tableRows +
-    `\n</tbody></table>`;
+  // Wrap in focus markers — these delimit the injected block for future updates
+  const focusBlock = `<!-- #focus -->\n${treeHtml}\n<!-- /focus -->`;
 
   // GET current page content
   const pageRes = await fetch(`${baseUrl}/api/v1/dataspheres/${dsUri}/pages/${pageSlug}`, {
@@ -1744,27 +1878,31 @@ async function cmdUpdateDashboard(dsUri, pageSlug) {
   const pageData = await pageRes.json();
   let content = pageData.page?.content || pageData.content || '';
 
-  // Replace section between <!-- #focus --> heading and the next <h2>
-  // Pattern: <h2>Current Focus <!-- #focus --></h2> ... (up to next <h2> or end)
-  const focusHeading = `<h2>Current Focus <!-- #focus --></h2>`;
-  const focusSection = `${focusHeading}\n${focusHtml}`;
-
-  if (content.includes('<!-- #focus -->') || /Current Focus/i.test(content)) {
-    // Replace existing section
+  // Injection strategy:
+  // 1. If both <!-- #focus --> and <!-- /focus --> exist: replace between them (clean update)
+  // 2. If only <!-- #focus --> exists (old h2-based format): remove the h2 heading + replace block
+  // 3. Otherwise: insert after progress-summary widget div (first publish)
+  if (content.includes('<!-- #focus -->') && content.includes('<!-- /focus -->')) {
+    content = content.replace(/<!-- #focus -->[\s\S]*?<!-- \/focus -->/, focusBlock);
+  } else if (content.includes('<!-- #focus -->')) {
+    // Old format: had Current Focus h2 with #focus — strip the h2, inject focusBlock in its place
     content = content.replace(
-      /(<h2[^>]*>(?:Current Focus)[^<]*<\/h2>)([\s\S]*?)(?=<h2|$)/i,
-      `${focusSection}\n\n`
-    );
-  } else {
-    // Insert after progress-summary widget div
-    content = content.replace(
-      /(<\/div>\s*)((?=<h2[^>]*>(?:Trace Graph|trace.?graph)))/i,
-      `$1\n${focusSection}\n\n$2`
+      /(<h2[^>]*>[^<]*Current Focus[^<]*<\/h2>)([\s\S]*?)(?=<h2|$)/i,
+      `${focusBlock}\n\n`
     );
     if (!content.includes('<!-- #focus -->')) {
-      // Fallback: insert after <h1> block
-      content = content.replace(/(<\/p>\s*)(?=<h2)/, `$1\n${focusSection}\n\n`);
+      content = content.replace(/<!-- #focus -->/, focusBlock);
     }
+  } else {
+    // First inject: place after progress-summary widget div, before Trace Graph
+    const inserted = content.replace(
+      /(<div[^>]*data-widget-type="progress-summary"[^>]*><\/div>)/i,
+      `$1\n${focusBlock}`
+    );
+    content = inserted !== content ? inserted : content.replace(
+      /(<h2[^>]*>(?:Trace\s+Graph)[^<]*<\/h2>)/i,
+      `${focusBlock}\n\n$1`
+    );
   }
 
   const putRes = await fetch(`${baseUrl}/api/v1/dataspheres/${dsUri}/pages/${pageSlug}`, {
@@ -1777,8 +1915,7 @@ async function cmdUpdateDashboard(dsUri, pageSlug) {
     die(`PUT page failed (${putRes.status}): ${t.slice(0, 200)}`);
   }
 
-  ok(`Current Focus section updated — ${rows.length} in-progress item(s)`);
-  rows.forEach(r => info(`  ${r.indent}${r.id} · ${r.title}`));
+  ok(`Current Focus tree updated — ${treeCount} in-progress item(s)`);
   info(`\nDashboard: ${env.DATASPHERES_BASE_URL?.replace('http://localhost', 'https://dataspheres.ai') || baseUrl}/pages/${dsUri}/${pageSlug}`);
 }
 
