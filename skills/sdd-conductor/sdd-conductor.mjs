@@ -272,6 +272,15 @@ function getColumnName(task) {
   return task.statusGroup?.name || task.column || 'unknown';
 }
 
+// Unwrap single-task GET responses: { task: {...} } → {...}
+// The v2 API inconsistently returns the task wrapped in a "task" envelope.
+// This is backward-compatible: if already unwrapped, task.task is undefined and we return task.
+function unwrapTask(res) {
+  return (res && res.task && typeof res.task === 'object' && !Array.isArray(res.task))
+    ? res.task
+    : res;
+}
+
 function isDone(task) {
   const col = getColumnName(task).toLowerCase();
   return col === 'done' || task.status === 'DONE';
@@ -509,7 +518,7 @@ async function cmdStart(taskId) {
   }
 
   // Fetch the task
-  const task = await client.get(`/api/v2/dataspheres/${iState.dsId}/tasks/${taskId}`);
+  const task = unwrapTask(await client.get(`/api/v2/dataspheres/${iState.dsId}/tasks/${taskId}`));
   const specId = extractSpecId(task.content) || task.title?.match(/^[A-Z]+-\d+/)?.[0] || taskId;
   const implFiles = extractImplFiles(task.content);
   const dependsOn = extractDependsOn(task.content);
@@ -606,7 +615,7 @@ async function cmdComplete(taskId) {
   const client = makeClient();
 
   // Fetch the task
-  const task = await client.get(`/api/v2/dataspheres/${iState.dsId}/tasks/${taskId}`);
+  const task = unwrapTask(await client.get(`/api/v2/dataspheres/${iState.dsId}/tasks/${taskId}`));
   const specId = extractSpecId(task.content) || task.title?.match(/^[A-Z]+-\d+/)?.[0] || taskId;
 
   console.log(`\n🟢 SDD-CONDUCTOR COMPLETE  [${slug}]`);
@@ -1034,7 +1043,7 @@ async function cmdGate(name, arg) {
       // EX needs epic_ref + north_star_ref.
       // Epic needs north_star_ref.
       if (!arg) die('Usage: gate hierarchy <taskId>');
-      const task = await client.get(`/api/v2/dataspheres/${iState.dsId}/tasks/${arg}`);
+      const task = unwrapTask(await client.get(`/api/v2/dataspheres/${iState.dsId}/tasks/${arg}`));
       const content = task.content || '';
       const titleStr = task.title || '';
       const specId = extractSpecId(content) || titleStr.match(/^[A-Z]+-\d+/)?.[0] || arg;
@@ -1066,7 +1075,7 @@ async function cmdGate(name, arg) {
       // Rule 2 from SKILL.md Trace Graph Linking: all checklists must use <ul data-type="taskList">
       // A bare <ul> wrapping <li data-type="taskItem"> breaks findChecklistRefs() edge detection.
       if (!arg) die('Usage: gate checklist-format <taskId>');
-      const task = await client.get(`/api/v2/dataspheres/${iState.dsId}/tasks/${arg}`);
+      const task = unwrapTask(await client.get(`/api/v2/dataspheres/${iState.dsId}/tasks/${arg}`));
       const content = task.content || '';
       const bareUl = /<ul(?![^>]*data-type="taskList")[^>]*>[\s\S]{0,50}<li[^>]*data-type="taskItem"/;
       if (bareUl.test(content)) {
@@ -1079,10 +1088,10 @@ async function cmdGate(name, arg) {
       // Rule 1 from SKILL.md Trace Graph Linking: titles must start with the SDD prefix for their column.
       // extractSddId() only recognises RS-/NS-/E-/T-/V-T- — any other prefix = no graph edges.
       if (!arg) die('Usage: gate title-prefix <taskId>');
-      const task = await client.get(`/api/v2/dataspheres/${iState.dsId}/tasks/${arg}`);
+      const task = unwrapTask(await client.get(`/api/v2/dataspheres/${iState.dsId}/tasks/${arg}`));
       const title  = task.title || '';
-      const content = task.content || '';
-      const column = (extractFrontMatterField(content, 'column') || '').toLowerCase();
+      // Column comes from the API statusGroup, not frontmatter — normalize spaces to hyphens
+      const column = getColumnName(task).toLowerCase().replace(/\s+/g, '-');
       const prefixRules = {
         'research':    { re: /^RS-\d/, label: 'RS-NNN ·' },
         'north-stars': { re: /^NS-\d/, label: 'NS-NNN ·' },
@@ -1094,7 +1103,7 @@ async function cmdGate(name, arg) {
       if (rule && !rule.re.test(title)) {
         gate(`Title prefix mismatch for task ${arg}:\n  column="${column}" requires "${rule.label}" format\n  got: "${title}"\nRename the task to start with the correct SDD prefix.`);
       }
-      if (!rule && column) warn(`Unknown column "${column}" — cannot validate prefix`);
+      if (!rule && column && column !== 'unknown' && column !== 'done') warn(`Unknown column "${column}" — cannot validate prefix`);
       ok(`GATE title-prefix: "${title.slice(0, 50)}" matches column "${column}"`);
       break;
     }
@@ -1349,7 +1358,7 @@ async function cmdValidate(vaTaskId, extraArgs) {
   info(`VA task: ${vaTaskId}`);
   if (metric !== null) info(`Metric: ${metric} / threshold: ${threshold} (iteration ${iteration})`);
 
-  const task = await client.get(`/api/v2/dataspheres/${iState.dsId}/tasks/${vaTaskId}`);
+  const task = unwrapTask(await client.get(`/api/v2/dataspheres/${iState.dsId}/tasks/${vaTaskId}`));
   const specId = extractSpecId(task.content) || task.title?.match(/^[A-Z]+-\d+/)?.[0] || vaTaskId;
 
   // Gate: VA hierarchy refs must be present before validating
@@ -1405,6 +1414,40 @@ async function cmdValidate(vaTaskId, extraArgs) {
         `  3. If an item cannot be verified: update the plan — add new EX tasks, re-run /all-dai-sdd\n` +
         `  4. Re-run: node sdd-conductor.mjs validate ${vaTaskId} [flags]`
       );
+    }
+
+    // Gate: parent EX task's Acceptance Criteria must also be fully checked before VA can close.
+    // The sub-checklist items on the EX task represent what was built — they must be ticked to prove
+    // the implementation is complete, not just that the metric passed.
+    {
+      const exRef = extractFrontMatterField(task.content, 'execution_ref');
+      if (exRef) {
+        try {
+          const exTaskList = (await client.get(
+            `/api/v2/dataspheres/${iState.dsId}/tasks?planModeId=${iState.planModeId}&limit=500`
+          )).tasks || [];
+          const exTaskForCheck = exTaskList.find(t =>
+            extractSpecId(t.content) === exRef ||
+            t.title?.match(/^[A-Z]+-\d+/)?.[0] === exRef
+          );
+          if (exTaskForCheck) {
+            const exAcItems = extractSectionChecklist(exTaskForCheck.content, 'Acceptance Criteria');
+            const exUnchecked = exAcItems.filter(i => !i.checked);
+            if (exUnchecked.length > 0) {
+              gate(
+                `EX task ${exRef} has ${exUnchecked.length} unchecked Acceptance Criteria item(s).\n` +
+                `The VA gate cannot close until the parent EX task checklist is also verified:\n\n` +
+                exUnchecked.map(i => `  - ${i.text}`).join('\n') +
+                `\n\nFor each item:\n` +
+                `  1. Verify it is genuinely implemented and tested\n` +
+                `  2. PATCH the EX task: data-checked="false" → data-checked="true"\n` +
+                `  3. Re-run: node sdd-conductor.mjs validate ${vaTaskId} [flags]`
+              );
+            }
+            info(`EX task ${exRef} checklist: all ${exAcItems.length} item(s) checked ✓`);
+          }
+        } catch { /* non-fatal if EX task lookup fails */ }
+      }
     }
 
     // Post detailed verification comment — lists every item as audit trail
