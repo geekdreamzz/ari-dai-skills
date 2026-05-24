@@ -1506,17 +1506,16 @@ async function cmdDashboardCheck(dsUri, pageSlug) {
     warn(`Dashboard has inline style= attributes — these should be removed (native widgets only)`);
   }
 
-  // Template drift: canonical order is Live Activity (task-activity-feed) BEFORE Trace Graph (trace-graph).
-  // If the page has them reversed (old order), swap the two sections and PUT the updated content.
+  // Template drift: canonical order per SKILL.md Step 12 is Trace Graph BEFORE Live Activity.
+  // If the page has them swapped, fix it.
   const feedPos = content.indexOf('data-widget-type="task-activity-feed"');
   const graphPos = content.indexOf('data-widget-type="trace-graph"');
-  if (feedPos > graphPos && feedPos !== -1 && graphPos !== -1) {
-    warn(`Template drift detected: Trace Graph appears before Live Activity. Canonical order is Live Activity first. Fixing...`);
+  if (feedPos !== -1 && graphPos !== -1 && feedPos < graphPos) {
+    warn(`Template drift detected: Live Activity appears before Trace Graph. Canonical order is Trace Graph first. Fixing...`);
 
-    // Extract the Live Activity section (h2 + widget div) and Trace Graph section (h2 + widget div)
-    // Strategy: split on the Trace Graph h2 heading, capture both blocks, and swap them.
+    // Swap: move trace-graph section before task-activity-feed section
     const fixedContent = content.replace(
-      /(<h2[^>]*>(?:Trace\s+Graph|trace.?graph)[^<]*<\/h2>\s*<div[^>]*data-widget-type="trace-graph"[^>]*><\/div>)([\s\S]*?)(<h2[^>]*>(?:Live\s+Activity|activity.?feed)[^<]*<\/h2>\s*<div[^>]*data-widget-type="task-activity-feed"[^>]*><\/div>)/i,
+      /(<h2[^>]*>(?:Live\s+Activity|activity.?feed)[^<]*<\/h2>\s*<div[^>]*data-widget-type="task-activity-feed"[^>]*><\/div>)([\s\S]*?)(<h2[^>]*>(?:Trace\s+Graph|trace.?graph)[^<]*<\/h2>\s*<div[^>]*data-widget-type="trace-graph"[^>]*><\/div>)/i,
       '$3$2$1'
     );
 
@@ -1537,7 +1536,7 @@ async function cmdDashboardCheck(dsUri, pageSlug) {
     }
   }
 
-  ok(`GATE dashboard-check: all 5 required sections present`);
+  ok(`GATE dashboard-check: all ${REQUIRED.length} required sections present`);
   REQUIRED.forEach(r => info(`  ✓ ${r.label}`));
 
   // Persist dashboard slug in state so sync can re-check automatically
