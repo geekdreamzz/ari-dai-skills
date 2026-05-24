@@ -231,6 +231,34 @@ function countUncheckedItems(content) {
   return (content.match(/data-checked="false"/g) || []).length;
 }
 
+// Returns [{text, checked}] for every taskItem element in content
+function extractChecklistItems(content) {
+  if (!content) return [];
+  const items = [];
+  const rx = /data-checked="(true|false)"[^>]*><p>(.*?)<\/p>/g;
+  let m;
+  while ((m = rx.exec(content)) !== null) {
+    items.push({ checked: m[1] === 'true', text: m[2].replace(/<[^>]+>/g, '').trim() });
+  }
+  return items;
+}
+
+// Returns checklist items within a named H2–H4 section
+function extractSectionChecklist(content, sectionTitle) {
+  if (!content) return [];
+  const esc = escapeRegex(sectionTitle);
+  const rx = new RegExp(`<h[2-4][^>]*>[^<]*${esc}[^<]*<\\/h[2-4]>([\\s\\S]*?)(?=<h[2-4]|$)`, 'i');
+  const m = content.match(rx);
+  return m ? extractChecklistItems(m[1]) : [];
+}
+
+// Extract a named field from the YAML front-matter block in task content
+function extractFrontMatterField(content, fieldName) {
+  if (!content) return null;
+  const m = content.match(new RegExp(`${escapeRegex(fieldName)}:\\s*([^\\n\\r<]+)`));
+  return m ? m[1].trim().replace(/^['"]|['"]$/g, '') : null;
+}
+
 function hasMockPatterns(content) {
   const patterns = [
     /\bmock\b/i, /\bstub\b/i, /\bMagicMock\b/, /unittest\.mock/,
@@ -667,6 +695,132 @@ async function cmdComplete(taskId) {
   ok(`${specId} marked Done. Checklist propagated to Epic.`);
 }
 
+// ---------------------------------------------------------------------------
+// Hierarchical validation chain — VA → EX → Epic → NS → Research review
+// ---------------------------------------------------------------------------
+
+async function runNsValidation(client, iState, nsTaskId) {
+  try {
+    const ns = await client.get(`/api/v2/dataspheres/${iState.dsId}/tasks/${nsTaskId}`);
+    if (!ns.content) return;
+    const nsSpecId = extractSpecId(ns.content) || ns.title?.match(/^[A-Z]+-\d+/)?.[0] || nsTaskId;
+
+    const acItems  = extractSectionChecklist(ns.content, 'Acceptance Criteria');
+    const frItems  = extractSectionChecklist(ns.content, 'Functional Requirements');
+    const nfrItems = extractSectionChecklist(ns.content, 'Non-Functional Requirements');
+    const allItems = [
+      ...acItems.map(i  => ({ ...i, section: 'AC'  })),
+      ...frItems.map(i  => ({ ...i, section: 'FR'  })),
+      ...nfrItems.map(i => ({ ...i, section: 'NFR' })),
+    ];
+    const unchecked = allItems.filter(i => !i.checked);
+
+    if (unchecked.length > 0) {
+      await client.post(`/api/v2/dataspheres/${iState.dsId}/tasks/${nsTaskId}/comments`, {
+        content: [
+          `[all-dai-sdd-system-message]`,
+          ``,
+          `**North Star Validation Required** — ${nsSpecId} | ${new Date().toISOString()}`,
+          ``,
+          `All Epics are complete. Verify each acceptance item before closing this North Star:`,
+          ``,
+          ...unchecked.map(i => `- [ ] [${i.section}] ${i.text}`),
+          ``,
+          `For each unchecked item: verify it is accurate and actually tested — not rubber-stamped.`,
+          `If an item cannot be verified: update the plan with new Epics or EX tasks, re-run /all-dai-sdd.`,
+        ].join('\n'),
+      });
+      info(`NS ${nsSpecId}: ${unchecked.length} acceptance item(s) need verification — comment posted`);
+      return;
+    }
+
+    await client.patch(`/api/v2/dataspheres/${iState.dsId}/tasks/${nsTaskId}`, {
+      statusGroupId: iState.doneGroupId,
+      status: 'DONE',
+    });
+    const verifiedList = allItems.map(i => `- [${i.section}] ${i.text} ✓`).join('\n');
+    await client.post(`/api/v2/dataspheres/${iState.dsId}/tasks/${nsTaskId}/comments`, {
+      content: [
+        `[all-dai-sdd-system-message]`,
+        ``,
+        `**North Star ACHIEVED** — ${nsSpecId} | ${new Date().toISOString()}`,
+        ``,
+        `All Epics complete and all acceptance criteria individually verified.`,
+        allItems.length > 0 ? `\n**Verified:**\n${verifiedList}` : ``,
+        ``,
+        `**Final step: Research Review + Summary Page**`,
+        `- Review all RS tasks linked to this North Star — verify they are in Done column`,
+        `- Review verbatim origin prompts against what was actually delivered`,
+        `- Write the Next Steps & UAT summary page (see Dashboard Page Template in SKILL.md)`,
+        `- Run /all-dai-sdd — AUDIT mode will detect all NS Done and generate the close-out page`,
+      ].join('\n'),
+    });
+    info(`NS ${nsSpecId}: all items verified -> moved to Done -- final research review triggered`);
+  } catch (e) {
+    warn(`Could not run NS validation for ${nsTaskId}: ${e.message}`);
+  }
+}
+
+async function runEpicValidation(client, iState, epicTaskId) {
+  try {
+    const epic = await client.get(`/api/v2/dataspheres/${iState.dsId}/tasks/${epicTaskId}`);
+    if (!epic.content) return;
+    const epicSpecId = extractSpecId(epic.content) || epic.title?.match(/^[A-Z]+-\d+/)?.[0] || epicTaskId;
+
+    const acItems  = extractSectionChecklist(epic.content, 'Acceptance Criteria');
+    const frItems  = extractSectionChecklist(epic.content, 'Functional Requirements');
+    const nfrItems = extractSectionChecklist(epic.content, 'Non-Functional Requirements');
+    const allItems = [
+      ...acItems.map(i  => ({ ...i, section: 'AC'  })),
+      ...frItems.map(i  => ({ ...i, section: 'FR'  })),
+      ...nfrItems.map(i => ({ ...i, section: 'NFR' })),
+    ];
+    const unchecked = allItems.filter(i => !i.checked);
+
+    if (unchecked.length > 0) {
+      await client.post(`/api/v2/dataspheres/${iState.dsId}/tasks/${epicTaskId}/comments`, {
+        content: [
+          `[all-dai-sdd-system-message]`,
+          ``,
+          `**Epic Validation Required** — ${epicSpecId} | ${new Date().toISOString()}`,
+          ``,
+          `All Execution tasks are complete. Verify each acceptance item before closing this Epic:`,
+          ``,
+          ...unchecked.map(i => `- [ ] [${i.section}] ${i.text}`),
+          ``,
+          `For each unchecked item: verify it is accurate and actually tested — not rubber-stamped.`,
+          `If an item cannot be verified: create a new EX task or update the plan, re-run /all-dai-sdd.`,
+        ].join('\n'),
+      });
+      info(`Epic ${epicSpecId}: ${unchecked.length} acceptance item(s) need verification — comment posted`);
+      return;
+    }
+
+    await client.patch(`/api/v2/dataspheres/${iState.dsId}/tasks/${epicTaskId}`, {
+      statusGroupId: iState.doneGroupId,
+      status: 'DONE',
+    });
+    const verifiedList = allItems.map(i => `- [${i.section}] ${i.text} ✓`).join('\n');
+    await client.post(`/api/v2/dataspheres/${iState.dsId}/tasks/${epicTaskId}/comments`, {
+      content: [
+        `[all-dai-sdd-system-message]`,
+        ``,
+        `**Epic VERIFIED** — ${epicSpecId} | ${new Date().toISOString()}`,
+        ``,
+        `All Execution tasks complete and all acceptance criteria individually verified.`,
+        allItems.length > 0 ? `\n**Verified:**\n${verifiedList}` : ``,
+      ].join('\n'),
+    });
+    info(`Epic ${epicSpecId}: all items verified -> moved to Done`);
+
+    if (epic.parentId) {
+      await propagateNsChecklist(client, iState, epic.parentId, epicSpecId, epic.title);
+    }
+  } catch (e) {
+    warn(`Could not run Epic validation for ${epicTaskId}: ${e.message}`);
+  }
+}
+
 async function propagateEpicChecklist(client, iState, epicTaskId, doneSpecId, doneTitle) {
   try {
     const epic = await client.get(`/api/v2/dataspheres/${iState.dsId}/tasks/${epicTaskId}`);
@@ -689,15 +843,9 @@ async function propagateEpicChecklist(client, iState, epicTaskId, doneSpecId, do
     info(`Epic checklist: ticked ${idPrefix} ✓`);
 
     const remaining = countUncheckedItems(updated);
-    const epicSpecId = extractSpecId(updated) || epic.title?.match(/^[A-Z]+-\d+/)?.[0] || epicTaskId;
     if (remaining === 0) {
-      info(`Epic fully complete — posting ready-for-validation comment`);
-      await client.post(`/api/v2/dataspheres/${iState.dsId}/tasks/${epicTaskId}/comments`, {
-        content: `[all-dai-sdd-system-message]\n\nAll Execution tasks complete. Ready for Validation.`,
-      });
-      if (epic.parentId) {
-        await propagateNsChecklist(client, iState, epic.parentId, epicSpecId, epic.title);
-      }
+      info(`Epic execution checklist fully ticked — running Epic acceptance validation`);
+      await runEpicValidation(client, iState, epicTaskId);
     } else {
       info(`Epic: ${remaining} task(s) remaining`);
     }
@@ -727,10 +875,8 @@ async function propagateNsChecklist(client, iState, nsTaskId, doneEpicSpecId, do
 
     const remaining = countUncheckedItems(updated);
     if (remaining === 0) {
-      await client.post(`/api/v2/dataspheres/${iState.dsId}/tasks/${nsTaskId}/comments`, {
-        content: `[all-dai-sdd-system-message]\n\nAll Epics complete. North Star fully achieved — ready for final review.`,
-      });
-      info(`North Star ${idPrefix}: all Epics done — completion comment posted ✓`);
+      info(`NS ${idPrefix}: all Epics done — running NS acceptance validation`);
+      await runNsValidation(client, iState, nsTaskId);
     }
   } catch (e) {
     warn(`Could not propagate to NS ${nsTaskId}: ${e.message}`);
@@ -848,8 +994,41 @@ async function cmdGate(name, arg) {
       ok(`GATE impl-files: ${files.length} file(s) listed`);
       break;
     }
+    case 'hierarchy': {
+      // Verify that front-matter parent refs are set for the correct task type.
+      // VA needs execution_ref + epic_ref + north_star_ref.
+      // EX needs epic_ref + north_star_ref.
+      // Epic needs north_star_ref.
+      if (!arg) die('Usage: gate hierarchy <taskId>');
+      const task = await client.get(`/api/v2/dataspheres/${iState.dsId}/tasks/${arg}`);
+      const content = task.content || '';
+      const titleStr = task.title || '';
+      const specId = extractSpecId(content) || titleStr.match(/^[A-Z]+-\d+/)?.[0] || arg;
+
+      const isVA  = /^VA-/i.test(specId) || /^V-T-/i.test(titleStr);
+      const isEX  = /^EX-/i.test(specId) || /^T-\d/i.test(titleStr);
+      const isEP  = /^EP-/i.test(specId) || /^E-\d/i.test(titleStr);
+
+      const warnings = [];
+      if (isVA) {
+        if (!extractFrontMatterField(content, 'execution_ref'))  warnings.push('VA task missing execution_ref (must point to parent EX task)');
+        if (!extractFrontMatterField(content, 'epic_ref'))       warnings.push('VA task missing epic_ref');
+        if (!extractFrontMatterField(content, 'north_star_ref')) warnings.push('VA task missing north_star_ref');
+      } else if (isEX) {
+        if (!extractFrontMatterField(content, 'epic_ref'))       warnings.push('EX task missing epic_ref');
+        if (!extractFrontMatterField(content, 'north_star_ref')) warnings.push('EX task missing north_star_ref');
+      } else if (isEP) {
+        if (!extractFrontMatterField(content, 'north_star_ref')) warnings.push('Epic missing north_star_ref');
+      }
+
+      if (warnings.length > 0) {
+        gate(`Hierarchy check failed for ${specId}:\n${warnings.map(w => `  ✗ ${w}`).join('\n')}`);
+      }
+      ok(`GATE hierarchy: ${specId} has correct parent refs`);
+      break;
+    }
     default:
-      die(`Unknown gate: ${name}. Valid: deps-done, research-done, no-mocks, checklist, impl-files`);
+      die(`Unknown gate: ${name}. Valid: deps-done, research-done, no-mocks, checklist, impl-files, hierarchy`);
   }
 }
 
@@ -1067,37 +1246,112 @@ async function cmdValidate(vaTaskId, extraArgs) {
   if (passed) {
     info(`Metric ${metric} >= threshold ${threshold} — PASSED`);
 
-    let updatedContent = task.content || '';
-    const originalContent = updatedContent;
-    updatedContent = updatedContent.replace(/data-checked="false"/g, 'data-checked="true"');
-    if (updatedContent !== originalContent) {
-      await client.patch(`/api/v2/dataspheres/${iState.dsId}/tasks/${vaTaskId}`, { content: updatedContent });
-      info(`Checklist: all items ticked ✓`);
+    // Anti-rubber-stamp: extract each requirement category and gate on unchecked items.
+    // The AI must verify every item individually before calling validate — not auto-tick.
+    const acItems  = extractSectionChecklist(task.content, 'Acceptance Criteria');
+    const frItems  = extractSectionChecklist(task.content, 'Functional Requirements');
+    const nfrItems = extractSectionChecklist(task.content, 'Non-Functional Requirements');
+    const allItems = [
+      ...acItems.map(i  => ({ ...i, section: 'AC'  })),
+      ...frItems.map(i  => ({ ...i, section: 'FR'  })),
+      ...nfrItems.map(i => ({ ...i, section: 'NFR' })),
+    ];
+    const unchecked = allItems.filter(i => !i.checked);
+    // Legacy: if task uses no section headings, fall back to raw count
+    const legacyUnchecked = allItems.length === 0 ? countUncheckedItems(task.content) : 0;
+
+    if (unchecked.length > 0 || legacyUnchecked > 0) {
+      const details = unchecked.length > 0
+        ? unchecked.map(i => `  [${i.section}] ${i.text}`).join('\n')
+        : `  ${legacyUnchecked} checklist item(s) unchecked`;
+      gate(
+        `${unchecked.length || legacyUnchecked} item(s) not yet verified — do not rubber-stamp.\n\n` +
+        `Review each item against actual evidence, then check it in the task:\n\n` +
+        details +
+        `\n\nFor each unchecked item:\n` +
+        `  1. Verify it is accurate and actually tested (metric passing is not sufficient for FR/NFR)\n` +
+        `  2. PATCH the task: data-checked="false" -> data-checked="true" ONLY when genuinely verified\n` +
+        `  3. If an item cannot be verified: update the plan — add new EX tasks, re-run /all-dai-sdd\n` +
+        `  4. Re-run: node sdd-conductor.mjs validate ${vaTaskId} [flags]`
+      );
     }
 
+    // Post detailed verification comment — lists every item as audit trail
     const commentLines = [
       `[all-dai-sdd-system-message]`,
       ``,
       `**Validation PASSED** — ${specId} | ${new Date().toISOString()}`,
       ``,
     ];
-    if (metric !== null) commentLines.push(`- Metric: ${metric} / threshold: ${threshold}`);
-    if (iteration > 1) commentLines.push(`- Completed on iteration ${iteration}`);
-    commentLines.push(`\n**Completion summary:** All acceptance criteria met.`);
-    commentLines.push(`**Verified criteria:** Metric at or above threshold, all checklist items checked.`);
+    if (metric !== null) commentLines.push(`**Metric:** ${metric} / threshold: ${threshold} ✓`);
+    if (iteration > 1) commentLines.push(`**Completed on iteration:** ${iteration}`);
+    commentLines.push(``, `**Verified criteria (individually checked — not rubber-stamped):**`);
+    if (allItems.length > 0) {
+      for (const sec of ['AC', 'FR', 'NFR']) {
+        const secItems = allItems.filter(i => i.section === sec);
+        if (secItems.length === 0) continue;
+        const label = sec === 'AC' ? 'Acceptance Criteria' : sec === 'FR' ? 'Functional Requirements' : 'Non-Functional Requirements';
+        commentLines.push(``, `_${label}:_`);
+        for (const item of secItems) commentLines.push(`- ${item.text} ✓`);
+      }
+    } else {
+      commentLines.push(`- All acceptance checklist items verified ✓`);
+    }
 
     await client.post(`/api/v2/dataspheres/${iState.dsId}/tasks/${vaTaskId}/comments`, {
       content: commentLines.join('\n'),
     });
-    info(`Completion comment posted ✓`);
+    info(`Verification comment posted ✓`);
 
     await client.patch(`/api/v2/dataspheres/${iState.dsId}/tasks/${vaTaskId}`, {
       statusGroupId: iState.doneGroupId,
       status: 'DONE',
     });
-    info(`Task PATCH: status=DONE, statusGroupId=${iState.doneGroupId} ✓`);
+    info(`Task PATCH: status=DONE ✓`);
 
-    if (task.parentId) {
+    // Resolve parent EX task: prefer execution_ref front-matter over parentId.
+    // Hierarchy: VA belongs to EX, EX belongs to Epic. VA must propagate through EX.
+    const execRef = extractFrontMatterField(task.content, 'execution_ref');
+    let execTask = null;
+
+    if (execRef) {
+      try {
+        const allTasks = await client.get(
+          `/api/v2/dataspheres/${iState.dsId}/tasks?planModeId=${iState.planModeId}&limit=500`
+        );
+        const taskList = allTasks.tasks || allTasks || [];
+        execTask = taskList.find(t =>
+          extractSpecId(t.content) === execRef ||
+          t.title?.match(/^[A-Z]+-\d+/)?.[0] === execRef
+        ) || null;
+      } catch { /* fall back to parentId */ }
+    }
+
+    if (!execTask && task.parentId) {
+      // If parentId is an EX task (in Execution column), treat it as the EX task
+      try {
+        const parent = await client.get(`/api/v2/dataspheres/${iState.dsId}/tasks/${task.parentId}`);
+        const parentCol = getColumnName(parent).toLowerCase();
+        if (parentCol === 'execution' || parent.title?.match(/^(T-\d|EX-)/i)) {
+          execTask = parent;
+        }
+      } catch { /* ignore */ }
+    }
+
+    if (execTask) {
+      const execSpecId = extractSpecId(execTask.content) || execTask.title?.match(/^[A-Z]+-\d+/)?.[0];
+      if (!isDone(execTask)) {
+        await client.patch(`/api/v2/dataspheres/${iState.dsId}/tasks/${execTask.id}`, {
+          statusGroupId: iState.doneGroupId,
+          status: 'DONE',
+        });
+        info(`EX task ${execSpecId} moved to Done (VA validated) ✓`);
+      }
+      if (execTask.parentId) {
+        await propagateEpicChecklist(client, iState, execTask.parentId, execSpecId, execTask.title);
+      }
+    } else if (task.parentId) {
+      // Fallback: treat parentId as Epic (pre-hierarchy behaviour)
       await propagateEpicChecklist(client, iState, task.parentId, specId, task.title);
     }
 
@@ -1105,7 +1359,7 @@ async function cmdValidate(vaTaskId, extraArgs) {
     iState.lastCompleted = { taskId: vaTaskId, specId, title: task.title, completedAt: new Date().toISOString() };
     saveInitiative(state, slug, iState);
 
-    ok(`${specId} validated and moved to Done.`);
+    ok(`${specId} validated and moved to Done. Hierarchical chain triggered (VA -> EX -> Epic -> NS).`);
     process.exit(0);
 
   } else {
@@ -1673,7 +1927,7 @@ Commands:
 Global flag (any command):
   --initiative <slug>                   Target a specific initiative instead of currentInitiative
 
-Gate names: deps-done, research-done, no-mocks, checklist, impl-files
+Gate names: deps-done, research-done, no-mocks, checklist, impl-files, hierarchy
 
 Exit codes: 0=pass  1=gate blocked / loop continues  2=hard error
 

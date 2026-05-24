@@ -295,13 +295,18 @@ After setup, `.sdd-state.json` in the project root is the single source of truth
 | Command | Gate | Exits 1 if |
 |---|---|---|
 | `start <taskId>` | Deps-done | Any `depends_on` task not in Done column |
-| `complete <taskId>` | Checklist | Any `data-checked="false"` item remains |
+| `complete <taskId>` | Checklist | Any `data-checked="false"` item remains (AC + FR + NFR) |
 | `complete <taskId>` | Comment | No `[all-dai-sdd-system-message]` completion comment |
 | `complete <taskId>` | No-mocks | Mock/stub pattern found in impl files |
+| `validate <vaTaskId>` | Anti-rubber-stamp | Any AC/FR/NFR item unchecked — lists exactly which ones |
+| `validate <vaTaskId>` | Chain: VA→EX | Moves parent EX to Done after VA passes |
+| `validate <vaTaskId>` | Chain: EX→Epic | Runs Epic AC/FR/NFR validation when all EX done |
+| `validate <vaTaskId>` | Chain: Epic→NS | Runs NS AC/FR/NFR validation when all Epics done |
 | `gate deps-done <id>` | Deps | Same as start |
 | `gate checklist <id>` | Checklist | Same as complete |
 | `gate no-mocks <file>` | Mocks | Same as complete |
 | `gate research-done <id>` | Research | RS task not in Done |
+| `gate hierarchy <id>` | Parent refs | VA missing execution_ref / EX missing epic_ref / Epic missing north_star_ref |
 | `check-file-hook` (auto) | File guard | File written not in active task's `Implementation Files` (warning, not block) |
 | `session-start` (auto) | Drift | Active task out of sync with live API |
 
@@ -1055,19 +1060,110 @@ The platform styles `data-checked="true"` with strikethrough + gray text automat
 
 ---
 
-## Sub-Checklist Propagation
+## Hierarchical Validation Chain
 
-When an Execution task moves to Done:
-1. Fetch parent Epic content
-2. Find `<li data-type="taskItem" data-checked="false"><p>T-XXX ·` in the Epic HTML
-3. Replace `data-checked="false"` → `data-checked="true"` for that item
-4. PATCH the Epic task content
-5. If no `data-checked="false"` items remain → post comment on Epic: "All Execution tasks complete. Ready for Validation."
+The SDD validation flow is bottom-up and strictly ordered. Every tier must be individually verified before the next tier can close. **No rubber-stamping at any level.**
 
-When an Epic moves to Done:
-1. Find `<li data-type="taskItem" data-checked="false"><p>E-XXX ·` in the parent North Star content
-2. Replace `data-checked="false"` → `data-checked="true"` for that item
-3. If no `data-checked="false"` items remain → move North Star to Done
+```
+Validation Ticket (VA)
+  → verifies parent Execution Task (EX)
+      → verifies parent Epic (EP)
+          → verifies parent North Star (NS)
+              → triggers Research review + Next Steps summary page
+```
+
+### Hierarchy rules (enforced by front matter + conductor)
+
+| Task type | Belongs to | Has many |
+|---|---|---|
+| North Star (NS) | (initiative root) | many Epics |
+| Epic (EP) | one North Star | many Execution Tasks |
+| Execution Task (EX) | one Epic | one Validation Ticket |
+| Validation Ticket (VA) | one Execution Task | — |
+
+Every task must declare its parent in front matter:
+- VA: `execution_ref`, `epic_ref`, `north_star_ref`
+- EX: `validation_ref`, `epic_ref`, `north_star_ref`
+- Epic: `north_star_ref`
+
+Check with: `node sdd-conductor.mjs gate hierarchy <taskId>`
+
+### Required sections in every task (all three are checklists)
+
+Each task at every tier (NS, Epic, EX, VA) must contain these three checklist sections:
+
+```html
+<h2>Acceptance Criteria <!-- #ac --></h2>
+<ul data-type="taskList">
+  <li data-type="taskItem" data-checked="false"><p>Observable, testable criterion 1</p></li>
+</ul>
+
+<h2>Functional Requirements <!-- #fr --></h2>
+<ul data-type="taskList">
+  <li data-type="taskItem" data-checked="false"><p>FR-1: What the system must do</p></li>
+</ul>
+
+<h2>Non-Functional Requirements <!-- #nfr --></h2>
+<ul data-type="taskList">
+  <li data-type="taskItem" data-checked="false"><p>NFR-1: Performance / reliability / security constraint</p></li>
+</ul>
+```
+
+These are distinct from the **Execution Checklist** (auto-ticked by conductor) and **North Star Checklist** (auto-ticked when Epics close). AC/FR/NFR must be manually verified.
+
+### Validation flow — step by step
+
+**Step 1 — VA ticket verifies parent EX task:**
+1. The VA ticket references the parent EX task via `execution_ref` in front matter
+2. Pull the parent EX task; read its AC, FR, and NFR checklist items
+3. For each item: verify it is accurate and actually tested — do NOT tick unless there is real evidence
+4. PATCH each verified item: `data-checked="false"` → `data-checked="true"` in the VA task
+5. Call `sdd-conductor validate <vaTaskId> --metric <n> --threshold <n>`
+6. Conductor gates if any items are unchecked (lists exactly which items need evidence)
+7. On pass: conductor moves VA to Done, auto-moves EX to Done, ticks EX in Epic's Execution Checklist
+
+**Step 2 — Epic is validated when all its EX tasks are done:**
+1. Conductor detects all Execution Checklist items are ticked in the Epic
+2. Conductor checks Epic's own AC, FR, NFR items — if any unchecked, posts a blocking comment listing them
+3. For each unchecked item: verify it is accurate and tested; PATCH to checked
+4. If all verified: conductor moves Epic to Done, ticks Epic in NS's North Star Checklist
+5. If any fail: create new EX tasks or update plan — re-run `/all-dai-sdd`
+
+**Step 3 — NS is validated when all its Epics are done:**
+1. Conductor detects all North Star Checklist items are ticked in the NS
+2. Conductor checks NS's own AC, FR, NFR items
+3. Same pattern: verify each individually, PATCH when verified
+4. If all verified: conductor moves NS to Done, posts final research review trigger
+5. If any fail: update plan with new Epics/EX tasks — re-run `/all-dai-sdd`
+
+**Step 4 — Final Research Review (after all NS Done):**
+1. Verify all RS tasks linked to the initiative are in Done column
+2. Read the verbatim origin prompts from each NS task (the `<blockquote>` in Origin Prompts)
+3. Compare what was promised vs. what was delivered — document any gaps
+4. Write the Next Steps & UAT summary page via the template in this spec
+5. Run `/all-dai-sdd` — AUDIT mode detects 100% NS completion and triggers summary page generation
+
+### Refine-and-rerun on failure
+
+When any verification step fails (a checklist item can't be verified):
+1. Post a diagnosis comment on the failed task explaining what is missing and why
+2. Create new EX tasks or update existing tasks to address the gap
+3. Update the Epic/NS checklist to include the new task
+4. Re-run `/all-dai-sdd` — it will detect the new tasks and include them in the next iteration
+
+**Never rubber-stamp.** Checking an item without real evidence is a data integrity failure — it breaks the traceability chain from user prompt → spec → code → verified result.
+
+### Sub-checklist auto-propagation (Execution Checklist only)
+
+The Execution Checklist in Epics and North Star Checklist in NS tasks are auto-ticked by the conductor. These are separate from AC/FR/NFR:
+
+When an Execution task is validated (VA passes):
+1. Conductor ticks `T-XXX` item in parent Epic's Execution Checklist
+2. If all EX items ticked → runs Epic AC/FR/NFR validation (Step 2 above)
+
+When an Epic is verified and moved to Done:
+1. Conductor ticks `E-XXX` item in parent NS's North Star Checklist
+2. If all Epic items ticked → runs NS AC/FR/NFR validation (Step 3 above)
 
 ---
 
@@ -1496,6 +1592,19 @@ tasks:
       <li><p>Observable outcome 1 (verifiable without access to the DB).</p></li>
       <li><p>Observable outcome 2.</p></li>
       </ul>
+      <h2>Acceptance Criteria <!-- #ac --></h2>
+      <ul data-type="taskList">
+        <li data-type="taskItem" data-checked="false"><p>All Epics verified and individually accepted</p></li>
+        <li data-type="taskItem" data-checked="false"><p>Observable outcome 1 confirmed with evidence</p></li>
+      </ul>
+      <h2>Functional Requirements <!-- #fr --></h2>
+      <ul data-type="taskList">
+        <li data-type="taskItem" data-checked="false"><p>FR-1: High-level system behavior this NS delivers</p></li>
+      </ul>
+      <h2>Non-Functional Requirements <!-- #nfr --></h2>
+      <ul data-type="taskList">
+        <li data-type="taskItem" data-checked="false"><p>NFR-1: Initiative-level quality bar (benchmark target, SLA, etc.)</p></li>
+      </ul>
 
   - id: E-001
     type: epic
@@ -1504,7 +1613,37 @@ tasks:
     priority: HIGH
     tags: [epic, my-feature, phase-1]
     parentNorthStar: NS-001
+    north_star_ref: NS-001
     children: [T-001, T-002]
+    content: |
+      <pre><code class="language-yaml">
+      spec_id: E-001
+      title: Phase 1 short title
+      version: 1.0.0
+      status: ACTIVE
+      column: epics
+      north_star_ref: NS-001
+      </code></pre>
+      <h2>Phase Summary</h2>
+      <p>What this Epic delivers and why it matters to the North Star.</p>
+      <h2>Execution Checklist</h2>
+      <ul data-type="taskList">
+        <li data-type="taskItem" data-checked="false"><p>T-001 &middot; short task title</p></li>
+        <li data-type="taskItem" data-checked="false"><p>T-002 &middot; short task title</p></li>
+      </ul>
+      <h2>Acceptance Criteria <!-- #ac --></h2>
+      <ul data-type="taskList">
+        <li data-type="taskItem" data-checked="false"><p>Epic-level observable outcome 1</p></li>
+        <li data-type="taskItem" data-checked="false"><p>All child EX tasks verified and accepted</p></li>
+      </ul>
+      <h2>Functional Requirements <!-- #fr --></h2>
+      <ul data-type="taskList">
+        <li data-type="taskItem" data-checked="false"><p>FR-1: Phase-level system behavior</p></li>
+      </ul>
+      <h2>Non-Functional Requirements <!-- #nfr --></h2>
+      <ul data-type="taskList">
+        <li data-type="taskItem" data-checked="false"><p>NFR-1: Phase-level performance or reliability target</p></li>
+      </ul>
 
   - id: T-001
     type: execution
@@ -1532,6 +1671,7 @@ tasks:
       column: execution
       epic_ref: E-001
       north_star_ref: NS-001
+      validation_ref: VA-T-001
       context_refs: []
       superseded_by: null
       created: YYYY-MM-DD
@@ -1545,15 +1685,69 @@ tasks:
         <li data-type="taskItem" data-checked="false"><p>Test written and green</p></li>
         <li data-type="taskItem" data-checked="false"><p>Screenshot captured</p></li>
       </ul>
+      <h2>Functional Requirements <!-- #fr --></h2>
+      <ul data-type="taskList">
+        <li data-type="taskItem" data-checked="false"><p>FR-1: Describe what the system must do (observable behavior)</p></li>
+        <li data-type="taskItem" data-checked="false"><p>FR-2: Input/output contract or API behavior</p></li>
+      </ul>
+      <h2>Non-Functional Requirements <!-- #nfr --></h2>
+      <ul data-type="taskList">
+        <li data-type="taskItem" data-checked="false"><p>NFR-1: Performance target (latency, throughput, memory bound)</p></li>
+        <li data-type="taskItem" data-checked="false"><p>NFR-2: Reliability or error-handling constraint</p></li>
+      </ul>
       <h2>Technical Design <!-- #td --></h2>
       <h3>Implementation Scope <!-- #td-scope --></h3>
       <p>Files to touch + what to do in each.</p>
+
+  - id: VA-T-001
+    type: validation
+    title: "VA-T-001 · Validate T-001 short title"
+    statusGroup: "Validation"
+    priority: HIGH
+    tags: [my-feature, sdd, validation]
+    parentExecution: T-001
+    parentEpic: E-001
+    parentNorthStar: NS-001
+    content: |
+      <pre><code class="language-yaml">
+      spec_id: VA-T-001
+      title: Validate T-001 short title
+      version: 1.0.0
+      status: ACTIVE
+      column: validation
+      execution_ref: T-001
+      epic_ref: E-001
+      north_star_ref: NS-001
+      created: YYYY-MM-DD
+      updated: YYYY-MM-DD
+      author: your-handle
+      </code></pre>
+      <h2>Validation Scope <!-- #vs --></h2>
+      <p>Verifies: <strong>T-001 &middot; short title</strong> — all acceptance criteria, functional requirements, and non-functional requirements.</p>
+      <h2>Acceptance Criteria <!-- #ac --></h2>
+      <ul data-type="taskList">
+        <li data-type="taskItem" data-checked="false"><p>Observable criterion 1 (mirrored from T-001 AC)</p></li>
+        <li data-type="taskItem" data-checked="false"><p>Observable criterion 2</p></li>
+        <li data-type="taskItem" data-checked="false"><p>Test suite green with evidence attached</p></li>
+      </ul>
+      <h2>Functional Requirements <!-- #fr --></h2>
+      <ul data-type="taskList">
+        <li data-type="taskItem" data-checked="false"><p>FR-1: System behavior verified (mirrored from T-001 FR)</p></li>
+        <li data-type="taskItem" data-checked="false"><p>FR-2: Input/output contract verified</p></li>
+      </ul>
+      <h2>Non-Functional Requirements <!-- #nfr --></h2>
+      <ul data-type="taskList">
+        <li data-type="taskItem" data-checked="false"><p>NFR-1: Performance target met — measured value attached as evidence</p></li>
+        <li data-type="taskItem" data-checked="false"><p>NFR-2: Reliability constraint verified</p></li>
+      </ul>
+      <h2>Evidence <!-- #ev --></h2>
+      <p>Attach: test output, metric readings, screenshots. Do not check any item above without referencing specific evidence here.</p>
 ```
 
 ---
 
 ## North Star Artifact Requirements
-→ *Referenced by: Step 9 (gate), tasks.yaml Shape, Sub-Checklist Propagation*
+→ *Referenced by: Step 9 (gate), tasks.yaml Shape, Hierarchical Validation Chain*
 
 Every North Star task MUST contain four sections **before it is considered publishable**. These are not optional — they are the mechanism that makes all-dai-sdd traceable from user prompt → spec → code.
 
