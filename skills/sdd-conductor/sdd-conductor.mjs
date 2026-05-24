@@ -1472,13 +1472,14 @@ async function cmdDashboardCheck(dsUri, pageSlug) {
   const data = await res.json();
   let content = data.page?.content || data.content || '';
 
+  // Widget format: data-type="plannerWidget" data-widget-type="<type>" data-plan-mode-id="<id>"
   const REQUIRED = [
-    { label: 'progress-summary widget',   pattern: /data-widget-type="progress-summary"/ },
-    { label: 'task-activity-feed widget', pattern: /data-widget-type="task-activity-feed"/ },
-    { label: 'trace-graph widget',        pattern: /data-widget-type="trace-graph"/ },
-    { label: 'H1 title',                  pattern: /<h1[^>]*>/ },
+    { label: 'plannerWidget node',         pattern: /data-type="plannerWidget"/ },
+    { label: 'progress-ring widget',       pattern: /data-widget-type="progress-ring"/ },
+    { label: 'column-breakdown widget',    pattern: /data-widget-type="column-breakdown"/ },
+    { label: 'active-tasks widget',        pattern: /data-widget-type="active-tasks"/ },
+    { label: 'H1 title',                   pattern: /<h1[^>]*>/ },
   ];
-  // doc-footer: warn-only — production API strips data-type attributes so this is cosmetic
   const OPTIONAL = [
     { label: 'doc-footer element', pattern: /data-type="doc-footer"/ },
   ];
@@ -1489,7 +1490,9 @@ async function cmdDashboardCheck(dsUri, pageSlug) {
     gate(
       `Dashboard page "${pageSlug}" is missing required sections:\n\n` +
       missing.map(m => `  ✗ ${m}`).join('\n') +
-      `\n\nFix the page content at ${baseUrl}/app/${dsUri}/pages/${pageSlug} to include all 4 required sections.`
+      `\n\nFix the page content at ${baseUrl}/app/${dsUri}/pages/${pageSlug} to include all 5 required sections.\n` +
+      `Widget format: <div data-type="plannerWidget" data-widget-type="<type>" data-plan-mode-id="<pmId>"></div>\n` +
+      `Types: progress-ring, column-breakdown, active-tasks`
     );
   }
 
