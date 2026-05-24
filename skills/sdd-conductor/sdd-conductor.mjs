@@ -18,7 +18,8 @@
  *   node sdd-conductor.mjs validate <vaTaskId>       Ralph loop gate (exit 0=pass / exit 1=next iter).
  *   node sdd-conductor.mjs status                    Show all initiatives + active task status.
  *   node sdd-conductor.mjs gate <name> [args...]     Verify named gate. Exits 1 if not met.
- *   node sdd-conductor.mjs dashboard-check <dsUri> <slug>  Verify 5 required dashboard sections.
+ *   node sdd-conductor.mjs dashboard-check <dsUri> <slug>  Verify 6 required dashboard sections.
+ *   node sdd-conductor.mjs update-dashboard <dsUri> <slug> Generate/refresh Current Focus hierarchy section.
  *   node sdd-conductor.mjs check-file-hook           Read stdin (Claude PostToolUse JSON), warn on mismatch.
  *   node sdd-conductor.mjs session-start             Read .sdd-state.json, reconcile with live API.
  *   node sdd-conductor.mjs install [project-dir]     Inject hooks into project's .claude/settings.json.
@@ -1476,6 +1477,7 @@ async function cmdDashboardCheck(dsUri, pageSlug) {
   // + data-datasphere-id + data-datasphere-uri + data-plan-mode-id
   const REQUIRED = [
     { label: 'progress-summary widget',   pattern: /data-widget-type="progress-summary"/ },
+    { label: 'Current Focus section',     pattern: /<!--\s*#focus\s*-->|Current Focus/i },
     { label: 'trace-graph widget',        pattern: /data-widget-type="trace-graph"/ },
     { label: 'task-activity-feed widget', pattern: /data-widget-type="task-activity-feed"/ },
     { label: 'plannerWidget node',        pattern: /data-type="plannerWidget"/ },
@@ -1491,9 +1493,8 @@ async function cmdDashboardCheck(dsUri, pageSlug) {
     gate(
       `Dashboard page "${pageSlug}" is missing required sections:\n\n` +
       missing.map(m => `  ✗ ${m}`).join('\n') +
-      `\n\nFix the page content at ${baseUrl}/app/${dsUri}/pages/${pageSlug} to include all 5 required sections.\n` +
-      `Widget format: <div data-type="plannerWidget" data-widget-type="<type>" data-plan-mode-id="<pmId>"></div>\n` +
-      `Types: progress-ring, column-breakdown, active-tasks`
+      `\n\nFix: run \`node sdd-conductor.mjs update-dashboard ${dsUri} ${pageSlug}\` to generate the Current Focus section,\n` +
+      `then ensure all 6 sections are present per SKILL.md Step 12 template.`
     );
   }
 
@@ -1550,6 +1551,207 @@ async function cmdDashboardCheck(dsUri, pageSlug) {
       info(`Dashboard slug "${pageSlug}" saved to state — future syncs will auto-check`);
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// cmdUpdateDashboard — generate/refresh the "Current Focus" hierarchy section
+// ---------------------------------------------------------------------------
+
+async function cmdUpdateDashboard(dsUri, pageSlug) {
+  if (!dsUri || !pageSlug) die('Usage: update-dashboard <dsUri> <page-slug>');
+  const env = loadEnv();
+  const baseUrl = env.DATASPHERES_BASE_URL || 'http://localhost:3000';
+  const apiKey = env.DATASPHERES_API_KEY;
+  if (!apiKey) die('DATASPHERES_API_KEY not set');
+
+  console.log(`\n📊 SDD-CONDUCTOR UPDATE-DASHBOARD`);
+  info(`Datasphere: ${dsUri}`);
+
+  // Resolve dsId from URI
+  const dsRes = await fetch(`${baseUrl}/api/v1/dataspheres/${dsUri}`, {
+    headers: { Authorization: `Bearer ${apiKey}` },
+  });
+  if (!dsRes.ok) die(`Could not fetch datasphere ${dsUri}: ${dsRes.status}`);
+  const dsData = await dsRes.json();
+  const dsId = dsData.datasphere?.id || dsData.id;
+  if (!dsId) die('Could not resolve dsId');
+
+  // Load state for planModeId
+  const state = loadState();
+  const iState = state?.initiatives?.[state?.currentInitiative] || Object.values(state?.initiatives || {})[0];
+  const planModeId = iState?.planModeId;
+  if (!planModeId) die('planModeId not found in .sdd-state.json — run init first');
+
+  // Fetch all tasks
+  const tRes = await fetch(`${baseUrl}/api/v2/dataspheres/${dsId}/tasks?planModeId=${planModeId}&limit=500`, {
+    headers: { Authorization: `Bearer ${apiKey}` },
+  });
+  if (!tRes.ok) die(`Could not fetch tasks: ${tRes.status}`);
+  const tData = await tRes.json();
+  const tasks = tData.tasks || tData || [];
+
+  // Classify tasks by column name; exclude BLOCKED and DONE
+  const colName = t => (t.statusGroup?.name || '').toLowerCase();
+  const isActive = t =>
+    ['execution', 'north stars', 'epics', 'validation'].includes(colName(t)) &&
+    t.status !== 'DONE' && t.status !== 'BLOCKED';
+
+  const active = tasks.filter(isActive);
+  const byId   = Object.fromEntries(tasks.map(t => [t.id, t]));
+  const ns     = active.filter(t => colName(t) === 'north stars');
+  const ep     = active.filter(t => colName(t) === 'epics');
+  const ex     = active.filter(t => colName(t) === 'execution');
+  const va     = active.filter(t => colName(t) === 'validation');
+
+  const activeTaskState = iState?.activeTask;
+
+  // Build parent-aware hierarchy via parentId first, epic_ref/north_star_ref front matter as fallback
+  const rows = [];
+  const shortTitle = t => (t.title || '').replace(/^[A-Z]+-[A-Z0-9-]+\s*[·\-]\s*/i, '').slice(0, 70);
+  const specId = t => extractFrontMatterField(t.content, 'spec_id') || t.title?.match(/^([A-Z]+-[A-Z0-9-]+)/)?.[1] || '—';
+
+  // Extract short ref token from a spec_id or front matter value, e.g. "EP-001" from "SPEC-CRISPR-EP001"
+  const shortRef = s => s?.replace(/^SPEC-[A-Z]+-/i, '').replace(/-?0+/, '-0').replace(/-(\d+)$/, m => m) || s || '';
+
+  // Link EX→Epic via parentId, then via epic_ref front matter
+  const exForEpic = epTask => {
+    const byParent = ex.filter(x => x.parentId === epTask.id);
+    if (byParent.length) return byParent;
+    const epRef = shortRef(specId(epTask));
+    return ex.filter(x => {
+      const ref = extractFrontMatterField(x.content, 'epic_ref') || '';
+      return ref && (ref.includes(epRef) || shortRef(ref) === epRef);
+    });
+  };
+
+  // Link VA→EX via parentId, then execution_ref
+  const vaForEx = exTask => {
+    const byParent = va.filter(v => v.parentId === exTask.id);
+    if (byParent.length) return byParent;
+    const exRef = shortRef(specId(exTask));
+    return va.filter(v => {
+      const ref = extractFrontMatterField(v.content, 'execution_ref') || '';
+      return ref && (ref.includes(exRef) || shortRef(ref) === exRef);
+    });
+  };
+
+  // Link Epic→NS via parentId, then north_star_ref
+  const epicsForNs = nsTask => {
+    const byParent = ep.filter(e => e.parentId === nsTask.id);
+    if (byParent.length) return byParent;
+    const nsRef = shortRef(specId(nsTask));
+    return ep.filter(e => {
+      const ref = extractFrontMatterField(e.content, 'north_star_ref') || '';
+      return ref && (ref.includes(nsRef) || shortRef(ref) === nsRef);
+    });
+  };
+
+  const seenEx = new Set();
+  const seenVa = new Set();
+
+  for (const n of ns) {
+    const epList = epicsForNs(n);
+    // Only show NS if it has active Epics with active EX tasks
+    const hasWork = epList.some(e => exForEpic(e).length > 0);
+    if (!hasWork && epList.length === 0) continue;
+
+    rows.push({ indent: '', id: specId(n), title: shortTitle(n), status: 'In Progress' });
+    for (const e of epList) {
+      const exList = exForEpic(e);
+      if (exList.length === 0) continue; // skip Epics with no active EX tasks
+      rows.push({ indent: '&nbsp;&nbsp;', id: specId(e), title: shortTitle(e), status: 'In Progress' });
+      for (const x of exList) {
+        if (seenEx.has(x.id)) continue;
+        seenEx.add(x.id);
+        const isAct = activeTaskState && x.id === activeTaskState.taskId;
+        rows.push({ indent: '&nbsp;&nbsp;&nbsp;&nbsp;', id: specId(x), title: shortTitle(x), status: isAct ? '<strong>Active</strong>' : 'In Progress' });
+        for (const v of vaForEx(x)) {
+          if (seenVa.has(v.id)) continue;
+          seenVa.add(v.id);
+          rows.push({ indent: '&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;', id: specId(v), title: shortTitle(v), status: 'Pending Validation' });
+        }
+      }
+    }
+  }
+  // Orphan EX/VA not linked to any NS/Epic
+  for (const x of ex) {
+    if (!seenEx.has(x.id)) {
+      const isAct = activeTaskState && x.id === activeTaskState.taskId;
+      rows.push({ indent: '', id: specId(x), title: shortTitle(x), status: isAct ? '<strong>Active</strong>' : 'In Progress' });
+    }
+  }
+  for (const v of va) {
+    if (!seenVa.has(v.id)) {
+      rows.push({ indent: '', id: specId(v), title: shortTitle(v), status: 'Pending Validation' });
+    }
+  }
+
+  if (rows.length === 0) {
+    rows.push({ indent: '', id: '—', title: 'No tasks currently in progress', status: '—' });
+  }
+
+  const tableRows = rows.map(r =>
+    `<tr class="tiptap-table-row">` +
+    `<td class="tiptap-table-cell"><p>${r.indent}<strong>${r.id}</strong></p></td>` +
+    `<td class="tiptap-table-cell"><p>${r.title}</p></td>` +
+    `<td class="tiptap-table-cell"><p>${r.status}</p></td>` +
+    `</tr>`
+  ).join('\n');
+
+  const focusHtml =
+    `<table class="tiptap-table"><tbody>\n` +
+    `<tr class="tiptap-table-row">` +
+    `<td class="tiptap-table-cell"><p><strong>ID</strong></p></td>` +
+    `<td class="tiptap-table-cell"><p><strong>Task</strong></p></td>` +
+    `<td class="tiptap-table-cell"><p><strong>Status</strong></p></td>` +
+    `</tr>\n` +
+    tableRows +
+    `\n</tbody></table>`;
+
+  // GET current page content
+  const pageRes = await fetch(`${baseUrl}/api/v1/dataspheres/${dsUri}/pages/${pageSlug}`, {
+    headers: { Authorization: `Bearer ${apiKey}` },
+  });
+  if (!pageRes.ok) die(`Could not fetch page ${pageSlug}: ${pageRes.status}`);
+  const pageData = await pageRes.json();
+  let content = pageData.page?.content || pageData.content || '';
+
+  // Replace section between <!-- #focus --> heading and the next <h2>
+  // Pattern: <h2>Current Focus <!-- #focus --></h2> ... (up to next <h2> or end)
+  const focusHeading = `<h2>Current Focus <!-- #focus --></h2>`;
+  const focusSection = `${focusHeading}\n${focusHtml}`;
+
+  if (content.includes('<!-- #focus -->') || /Current Focus/i.test(content)) {
+    // Replace existing section
+    content = content.replace(
+      /(<h2[^>]*>(?:Current Focus)[^<]*<\/h2>)([\s\S]*?)(?=<h2|$)/i,
+      `${focusSection}\n\n`
+    );
+  } else {
+    // Insert after progress-summary widget div
+    content = content.replace(
+      /(<\/div>\s*)((?=<h2[^>]*>(?:Trace Graph|trace.?graph)))/i,
+      `$1\n${focusSection}\n\n$2`
+    );
+    if (!content.includes('<!-- #focus -->')) {
+      // Fallback: insert after <h1> block
+      content = content.replace(/(<\/p>\s*)(?=<h2)/, `$1\n${focusSection}\n\n`);
+    }
+  }
+
+  const putRes = await fetch(`${baseUrl}/api/v1/dataspheres/${dsUri}/pages/${pageSlug}`, {
+    method: 'PUT',
+    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content }),
+  });
+  if (!putRes.ok) {
+    const t = await putRes.text();
+    die(`PUT page failed (${putRes.status}): ${t.slice(0, 200)}`);
+  }
+
+  ok(`Current Focus section updated — ${rows.length} in-progress item(s)`);
+  rows.forEach(r => info(`  ${r.indent}${r.id} · ${r.title}`));
+  info(`\nDashboard: ${env.DATASPHERES_BASE_URL?.replace('http://localhost', 'https://dataspheres.ai') || baseUrl}/pages/${dsUri}/${pageSlug}`);
 }
 
 async function cmdSessionStart() {
@@ -1966,8 +2168,9 @@ try {
     case 'validate':        await cmdValidate(args[0], args.slice(1)); break;
     case 'status':          await cmdStatus(); break;
     case 'gate':            await cmdGate(args[0], args[1]); break;
-    case 'dashboard-check': await cmdDashboardCheck(args[0], args[1]); break;
-    case 'check-file-hook': await cmdCheckFileHook(); break;
+    case 'dashboard-check':   await cmdDashboardCheck(args[0], args[1]); break;
+    case 'update-dashboard':  await cmdUpdateDashboard(args[0], args[1]); break;
+    case 'check-file-hook':   await cmdCheckFileHook(); break;
     case 'progress-hook':   await cmdProgressHook(); break;
     case 'session-start':   await cmdSessionStart(); break;
     case 'install':         await cmdInstall(args[0]); break;

@@ -752,7 +752,7 @@ Required sections (all mandatory, skip none):
 4. **Activity feed** — `data-widget-type="task-activity-feed"` — recent comments and screenshots
 5. **`<div data-type="doc-footer"></div>`** — always last, no exceptions
 
-**Gate evidence required:** `slug=<dashboard-slug> HTTP 200/201` AND all 5 sections present
+**Gate evidence required:** `slug=<dashboard-slug> HTTP 200/201` AND all 6 sections present (run `update-dashboard` to generate the Current Focus section before checking)
 
 ---
 
@@ -819,7 +819,13 @@ All 5 sections are required. Replace `<dsId>`, `<uri>`, `<planModeId>`, `<Projec
      data-plan-mode-id="<planModeId>"
      data-refresh-interval="60"></div>
 
-<!-- SECTION 3: Trace Graph widget — 6-tier swimlane (Research > NS > EP > EX > VA > Artifacts) -->
+<!-- SECTION 3: Current Focus — conductor-generated in-progress hierarchy -->
+<!-- Run: node sdd-conductor.mjs update-dashboard <dsUri> <slug> to regenerate -->
+<!-- Shows: NS → Epic → Active EX → Pending VA with status for every in-progress item -->
+<h2>Current Focus <!-- #focus --></h2>
+<!-- sdd-conductor inserts hierarchy table here — do not edit manually -->
+
+<!-- SECTION 4: Trace Graph widget — 6-tier swimlane (Research > NS > EP > EX > VA > Artifacts) -->
 <h2>Trace Graph</h2>
 <div data-type="plannerWidget"
      data-widget-type="trace-graph"
@@ -827,7 +833,7 @@ All 5 sections are required. Replace `<dsId>`, `<uri>`, `<planModeId>`, `<Projec
      data-datasphere-uri="<uri>"
      data-plan-mode-id="<planModeId>"></div>
 
-<!-- SECTION 4: Activity feed -->
+<!-- SECTION 5: Activity feed -->
 <h2>Live Activity</h2>
 <div data-type="plannerWidget"
      data-widget-type="task-activity-feed"
@@ -835,7 +841,7 @@ All 5 sections are required. Replace `<dsId>`, `<uri>`, `<planModeId>`, `<Projec
      data-datasphere-uri="<uri>"
      data-plan-mode-id="<planModeId>"></div>
 
-<!-- SECTION 5: doc-footer — ALWAYS LAST -->
+<!-- SECTION 6: doc-footer — ALWAYS LAST -->
 <div data-type="doc-footer"></div>
 ```
 
@@ -1220,17 +1226,30 @@ node sdd-conductor.mjs status  # shows trackerUrl warning if missing
 
 ---
 
-### Dashboard template enforcement — 5 required sections
+### Dashboard template enforcement — 6 required sections
 
-Every SDD dashboard page **must** contain exactly these five sections. `dashboard-check` verifies them:
+Every SDD dashboard page **must** contain exactly these six sections. `dashboard-check` verifies them:
 
 | # | Section | Widget / Element | Failure mode if missing |
 |---|---|---|---|
 | 1 | Title + subtitle | Plain `<h1>` and `<p>` | No context for visitors |
 | 2 | Initiative Summary | `data-widget-type="progress-summary"` | No progress ring / Done counts |
-| 3 | Trace Graph | `data-widget-type="trace-graph"` | No NS→EP→EX→VA→Artifacts swimlane |
-| 4 | Live Activity | `data-widget-type="task-activity-feed"` | No comment/screenshot stream |
-| 5 | Doc footer | `<div data-type="doc-footer"></div>` | Missing footer (truncated look) |
+| 3 | Current Focus | `<!-- #focus -->` heading + conductor-generated hierarchy table | No visible NS→EP→EX→VA in-progress chain |
+| 4 | Trace Graph | `data-widget-type="trace-graph"` | No NS→EP→EX→VA→Artifacts swimlane |
+| 5 | Live Activity | `data-widget-type="task-activity-feed"` | No comment/screenshot stream |
+| 6 | Doc footer | `<div data-type="doc-footer"></div>` | Missing footer (truncated look) |
+
+**Section 3 — Current Focus — is conductor-generated.** It is NOT a platform widget. It is an HTML hierarchy table showing every in-progress NS, its in-progress Epics, the active EX task(s), and pending VA task(s). The conductor generates and PATCH-es it on every `update-dashboard` call.
+
+```bash
+# Generate / refresh the Current Focus section:
+node sdd-conductor.mjs update-dashboard <dsUri> <dashboard-slug>
+```
+
+This command reads the live board, builds the hierarchy of all in-progress tasks, and PATCHes the section between `<!-- #focus -->` and the next `<h2>`. Run it:
+- After every task status change
+- At the start of every session (part of `drive` output)
+- Before sharing a dashboard link with stakeholders
 
 **Template quick-reference:**
 
@@ -1242,6 +1261,9 @@ Every SDD dashboard page **must** contain exactly these five sections. `dashboar
 <div data-type="plannerWidget" data-widget-type="progress-summary"
      data-datasphere-id="<dsId>" data-datasphere-uri="<uri>"
      data-plan-mode-id="<planModeId>" data-refresh-interval="60"></div>
+
+<h2>Current Focus <!-- #focus --></h2>
+<!-- sdd-conductor inserts hierarchy table here — run update-dashboard to regenerate -->
 
 <h2>Trace Graph</h2>
 <div data-type="plannerWidget" data-widget-type="trace-graph"
