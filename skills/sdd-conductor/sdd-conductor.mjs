@@ -1472,13 +1472,14 @@ async function cmdDashboardCheck(dsUri, pageSlug) {
   const data = await res.json();
   let content = data.page?.content || data.content || '';
 
-  // Widget format: data-type="plannerWidget" data-widget-type="<type>" data-plan-mode-id="<id>"
+  // Widget format per SKILL.md Step 12 template — all require data-type="plannerWidget"
+  // + data-datasphere-id + data-datasphere-uri + data-plan-mode-id
   const REQUIRED = [
-    { label: 'plannerWidget node',         pattern: /data-type="plannerWidget"/ },
-    { label: 'progress-ring widget',       pattern: /data-widget-type="progress-ring"/ },
-    { label: 'column-breakdown widget',    pattern: /data-widget-type="column-breakdown"/ },
-    { label: 'active-tasks widget',        pattern: /data-widget-type="active-tasks"/ },
-    { label: 'H1 title',                   pattern: /<h1[^>]*>/ },
+    { label: 'progress-summary widget',   pattern: /data-widget-type="progress-summary"/ },
+    { label: 'trace-graph widget',        pattern: /data-widget-type="trace-graph"/ },
+    { label: 'task-activity-feed widget', pattern: /data-widget-type="task-activity-feed"/ },
+    { label: 'plannerWidget node',        pattern: /data-type="plannerWidget"/ },
+    { label: 'H1 title',                  pattern: /<h1[^>]*>/ },
   ];
   const OPTIONAL = [
     { label: 'doc-footer element', pattern: /data-type="doc-footer"/ },
