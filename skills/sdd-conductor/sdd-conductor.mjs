@@ -1476,8 +1476,11 @@ async function cmdDashboardCheck(dsUri, pageSlug) {
     { label: 'progress-summary widget',   pattern: /data-widget-type="progress-summary"/ },
     { label: 'task-activity-feed widget', pattern: /data-widget-type="task-activity-feed"/ },
     { label: 'trace-graph widget',        pattern: /data-widget-type="trace-graph"/ },
-    { label: 'doc-footer element',        pattern: /data-type="doc-footer"/ },
     { label: 'H1 title',                  pattern: /<h1[^>]*>/ },
+  ];
+  // doc-footer: warn-only — production API strips data-type attributes so this is cosmetic
+  const OPTIONAL = [
+    { label: 'doc-footer element', pattern: /data-type="doc-footer"/ },
   ];
 
   const missing = REQUIRED.filter(r => !r.pattern.test(content)).map(r => r.label);
@@ -1486,9 +1489,13 @@ async function cmdDashboardCheck(dsUri, pageSlug) {
     gate(
       `Dashboard page "${pageSlug}" is missing required sections:\n\n` +
       missing.map(m => `  ✗ ${m}`).join('\n') +
-      `\n\nFix the page content at ${baseUrl}/app/${dsUri}/pages/${pageSlug} to include all 5 sections.`
+      `\n\nFix the page content at ${baseUrl}/app/${dsUri}/pages/${pageSlug} to include all 4 required sections.`
     );
   }
+
+  OPTIONAL.filter(r => !r.pattern.test(content)).forEach(r =>
+    warn(`Optional section absent (API may strip it): ${r.label}`)
+  );
 
   if (/style="[^"]*"/.test(content)) {
     warn(`Dashboard has inline style= attributes — these should be removed (native widgets only)`);
