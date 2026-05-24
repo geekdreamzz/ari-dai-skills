@@ -1803,11 +1803,6 @@ async function cmdUpdateDashboard(dsUri, pageSlug) {
 
   // Deep link format per SKILL.md: /app/<uri>/planner?mode=<planModeId>&taskId=<taskId>
   const taskLink = (t) => `/app/${dsUri}/planner?mode=${planModeId}&taskId=${t.id}`;
-  // ▶ active, ● in-progress, ○ pending VA
-  const actIcon  = '&#9654;'; // ▶
-  const inpIcon  = '&#9900;'; // ●
-  const pendIcon = '&#9675;'; // ○
-  const doneIcon = '&#10003;'; // ✓
 
   let treeHtml = '<ul>\n';
   let treeCount = 0;
@@ -1817,25 +1812,22 @@ async function cmdUpdateDashboard(dsUri, pageSlug) {
     const hasWork = epList.some(e => exForEpic(e).length > 0);
     if (!hasWork && epList.length === 0) continue;
     treeCount++;
-    treeHtml += `  <li><a href="${taskLink(n)}">${inpIcon} ${n.title || ''}</a>\n    <ul>\n`;
+    treeHtml += `  <li><a href="${taskLink(n)}">${n.title || ''}</a>\n    <ul>\n`;
     for (const e of epList) {
       const exList = exForEpic(e);
       if (exList.length === 0) continue;
-      treeHtml += `      <li><a href="${taskLink(e)}">${inpIcon} ${e.title || ''}</a>\n        <ul>\n`;
+      treeHtml += `      <li><a href="${taskLink(e)}">${e.title || ''}</a>\n        <ul>\n`;
       for (const x of exList) {
         if (seenEx.has(x.id)) continue;
         seenEx.add(x.id);
         treeCount++;
-        const isAct = activeTaskState && x.id === activeTaskState.taskId;
-        const icon  = isAct ? actIcon : inpIcon;
-        const label = isAct ? `<strong>${x.title || ''}</strong>` : (x.title || '');
-        treeHtml += `          <li><a href="${taskLink(x)}">${icon} ${label}</a>\n`;
-        // AC checklist items inline — spinning pending (○) or green check (✓)
+        treeHtml += `          <li><a href="${taskLink(x)}">${x.title || ''}</a>\n`;
+        // AC checklist items — text first, status emoji appended at end
         const acItems = extractSectionChecklist(x.content, 'Acceptance Criteria');
         if (acItems.length > 0) {
           treeHtml += `            <ul>\n`;
           for (const item of acItems) {
-            treeHtml += `              <li>${item.checked ? doneIcon : pendIcon} ${item.text}</li>\n`;
+            treeHtml += `              <li>${item.text} ${item.checked ? '✅' : '⏳'}</li>\n`;
           }
           treeHtml += `            </ul>\n`;
         }
@@ -1844,7 +1836,7 @@ async function cmdUpdateDashboard(dsUri, pageSlug) {
           if (seenVa.has(v.id)) continue;
           seenVa.add(v.id);
           treeCount++;
-          treeHtml += `          <li><a href="${taskLink(v)}">${pendIcon} ${v.title || ''}</a></li>\n`;
+          treeHtml += `          <li><a href="${taskLink(v)}">${v.title || ''}</a></li>\n`;
         }
       }
       treeHtml += `        </ul>\n      </li>\n`;
@@ -1855,13 +1847,12 @@ async function cmdUpdateDashboard(dsUri, pageSlug) {
   for (const x of ex) {
     if (seenEx.has(x.id)) continue;
     treeCount++;
-    const isAct = activeTaskState && x.id === activeTaskState.taskId;
-    treeHtml += `  <li><a href="${taskLink(x)}">${isAct ? actIcon : inpIcon} ${x.title || ''}</a></li>\n`;
+    treeHtml += `  <li><a href="${taskLink(x)}">${x.title || ''}</a></li>\n`;
   }
   for (const v of va) {
     if (seenVa.has(v.id)) continue;
     treeCount++;
-    treeHtml += `  <li><a href="${taskLink(v)}">${pendIcon} ${v.title || ''}</a></li>\n`;
+    treeHtml += `  <li><a href="${taskLink(v)}">${v.title || ''}</a></li>\n`;
   }
   treeHtml += '</ul>';
 
