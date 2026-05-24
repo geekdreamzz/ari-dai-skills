@@ -1216,12 +1216,12 @@ async function cmdDashboardCheck(dsUri, pageSlug) {
   });
   if (!res.ok) die(`Could not fetch page ${pageSlug}: ${res.status}`);
   const data = await res.json();
-  const content = data.page?.content || data.content || '';
+  let content = data.page?.content || data.content || '';
 
   const REQUIRED = [
     { label: 'progress-summary widget',   pattern: /data-widget-type="progress-summary"/ },
-    { label: 'trace-graph widget',        pattern: /data-widget-type="trace-graph"/ },
     { label: 'task-activity-feed widget', pattern: /data-widget-type="task-activity-feed"/ },
+    { label: 'trace-graph widget',        pattern: /data-widget-type="trace-graph"/ },
     { label: 'doc-footer element',        pattern: /data-type="doc-footer"/ },
     { label: 'H1 title',                  pattern: /<h1[^>]*>/ },
   ];
@@ -1240,8 +1240,51 @@ async function cmdDashboardCheck(dsUri, pageSlug) {
     warn(`Dashboard has inline style= attributes — these should be removed (native widgets only)`);
   }
 
+  // Template drift: canonical order is Live Activity (task-activity-feed) BEFORE Trace Graph (trace-graph).
+  // If the page has them reversed (old order), swap the two sections and PUT the updated content.
+  const feedPos = content.indexOf('data-widget-type="task-activity-feed"');
+  const graphPos = content.indexOf('data-widget-type="trace-graph"');
+  if (feedPos > graphPos && feedPos !== -1 && graphPos !== -1) {
+    warn(`Template drift detected: Trace Graph appears before Live Activity. Canonical order is Live Activity first. Fixing...`);
+
+    // Extract the Live Activity section (h2 + widget div) and Trace Graph section (h2 + widget div)
+    // Strategy: split on the Trace Graph h2 heading, capture both blocks, and swap them.
+    const fixedContent = content.replace(
+      /(<h2[^>]*>(?:Trace\s+Graph|trace.?graph)[^<]*<\/h2>\s*<div[^>]*data-widget-type="trace-graph"[^>]*><\/div>)([\s\S]*?)(<h2[^>]*>(?:Live\s+Activity|activity.?feed)[^<]*<\/h2>\s*<div[^>]*data-widget-type="task-activity-feed"[^>]*><\/div>)/i,
+      '$3$2$1'
+    );
+
+    if (fixedContent !== content) {
+      const putRes = await fetch(`${baseUrl}/api/v1/dataspheres/${dsUri}/pages/${pageSlug}`, {
+        method: 'PUT',
+        headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: fixedContent }),
+      });
+      if (putRes.ok) {
+        ok(`Template drift fixed: Live Activity now appears before Trace Graph (HTTP ${putRes.status})`);
+        content = fixedContent;
+      } else {
+        warn(`Could not auto-fix template drift (PUT returned ${putRes.status}) — fix manually`);
+      }
+    } else {
+      warn(`Could not auto-fix template drift — sections not in expected markup structure. Fix manually.`);
+    }
+  }
+
   ok(`GATE dashboard-check: all 5 required sections present`);
   REQUIRED.forEach(r => info(`  ✓ ${r.label}`));
+
+  // Persist dashboard slug in state so sync can re-check automatically
+  const stateForSave = loadState();
+  if (stateForSave) {
+    const slugForSave = stateForSave.currentInitiative;
+    if (slugForSave && stateForSave.initiatives?.[slugForSave]) {
+      stateForSave.initiatives[slugForSave].dashboardSlug = pageSlug;
+      stateForSave.initiatives[slugForSave].dsUri = dsUri;
+      saveState(stateForSave);
+      info(`Dashboard slug "${pageSlug}" saved to state — future syncs will auto-check`);
+    }
+  }
 }
 
 async function cmdSessionStart() {
@@ -1562,6 +1605,14 @@ async function cmdSync() {
   } else {
     console.log(`\n⚠️  ${issues} sync issue(s) found above.\n`);
     process.exit(1);
+  }
+
+  // Auto-check dashboard for template drift if slug is known
+  if (iState.dashboardSlug && iState.dsUri) {
+    console.log(`\n📊 Checking dashboard template drift...`);
+    await cmdDashboardCheck(iState.dsUri, iState.dashboardSlug).catch(e => {
+      warn(`Dashboard check failed: ${e.message}`);
+    });
   }
 }
 
