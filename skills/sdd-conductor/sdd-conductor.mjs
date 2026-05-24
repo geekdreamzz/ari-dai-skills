@@ -550,6 +550,30 @@ async function cmdStart(taskId) {
     warn(`Task has no Implementation Files section. Add one to the task content before coding.`);
   }
 
+  // Gate: hierarchy refs — VA needs execution_ref + epic_ref + north_star_ref
+  //       EX needs epic_ref + north_star_ref; Epic needs north_star_ref
+  {
+    const titleStr = task.title || '';
+    const sid = extractSpecId(task.content) || '';
+    const isVA = /^V-T-/i.test(titleStr) || /^VA-/i.test(sid);
+    const isEX = /^T-\d/i.test(titleStr) || /^EX-/i.test(sid);
+    const isEP = /^E-\d/i.test(titleStr) || /^EP-/i.test(sid);
+    const missing = [];
+    if (isVA) {
+      if (!extractFrontMatterField(task.content, 'execution_ref'))  missing.push('execution_ref (parent EX task)');
+      if (!extractFrontMatterField(task.content, 'epic_ref'))       missing.push('epic_ref');
+      if (!extractFrontMatterField(task.content, 'north_star_ref')) missing.push('north_star_ref');
+    } else if (isEX) {
+      if (!extractFrontMatterField(task.content, 'epic_ref'))       missing.push('epic_ref');
+      if (!extractFrontMatterField(task.content, 'north_star_ref')) missing.push('north_star_ref');
+    } else if (isEP) {
+      if (!extractFrontMatterField(task.content, 'north_star_ref')) missing.push('north_star_ref');
+    }
+    if (missing.length > 0) {
+      gate(`Hierarchy refs missing — trace graph edges will be broken:\n${missing.map(m => `  ✗ ${m}`).join('\n')}\n\nAdd the missing fields to the task frontmatter, then re-run start.`);
+    }
+  }
+
   // PATCH task to IN_PROGRESS
   await client.patch(`/api/v2/dataspheres/${iState.dsId}/tasks/${taskId}`, {
     status: 'IN_PROGRESS',
@@ -1408,6 +1432,9 @@ async function cmdValidate(vaTaskId, extraArgs) {
         ? `<h3>Implementation Files <!-- #impl --></h3>\n<ul>\n${implFiles.map(f => `  <li><code>${f}</code></li>`).join('\n')}\n</ul>\n\n`
         : '';
 
+      const parentEpicRef      = extractFrontMatterField(task.content, 'epic_ref') || '';
+      const parentNorthStarRef = extractFrontMatterField(task.content, 'north_star_ref') || '';
+
       const newContent = [
         `<pre><code class="language-yaml">`,
         `spec_id: ${newSpecId}`,
@@ -1418,6 +1445,8 @@ async function cmdValidate(vaTaskId, extraArgs) {
         `column: execution`,
         `iteration: ${nextIter}`,
         `parent_va: ${vaTaskId}`,
+        ...(parentEpicRef      ? [`epic_ref: ${parentEpicRef}`]      : []),
+        ...(parentNorthStarRef ? [`north_star_ref: ${parentNorthStarRef}`] : []),
         `tags: [${iState.initiative}, sdd, execution, refinement]`,
         `</code></pre>`,
         ``,
