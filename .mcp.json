@@ -1,8 +1,0 @@
-{
-  "mcpServers": {
-    "dai-skills": {
-      "command": "dai",
-      "args": ["mcp", "start"]
-    }
-  }
-}

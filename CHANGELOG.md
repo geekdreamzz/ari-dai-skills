@@ -5,6 +5,18 @@ Format: [Semantic Versioning](https://semver.org). Breaking changes are marked *
 
 ---
 
+## [Unreleased]
+
+### Fixed
+- **macOS `git clone` no longer breaks.** `.cursorrules` and `.github/copilot-instructions.md` were stored as git symlinks whose target paths were ~12KB of markdown content, exceeding macOS's symlink-target limit and aborting checkout with `File name too long`. Replaced with a real `CLAUDE.md` at the repo root plus short relative symlinks (`.cursorrules → CLAUDE.md`, `.github/copilot-instructions.md → ../CLAUDE.md`).
+- **`install.sh` preflight** no longer suggests `uv tool install dai-skills`. The `dai-skills` package was intentionally never published to PyPI (see 0.2.0 — "`dai bootstrap` and `bootstrap.sh`"), and the suggestion produced a misleading "package not found" error. Preflight now checks for Node.js, which is what `sdd-conductor` actually needs.
+- **`.env.example`** now sets `DATASPHERES_BASE_URL` to the API host (`https://dataspheres-ai.onrender.com`) and adds `DATASPHERES_PUBLIC_URL` for the dashboard host. The single-variable version conflated the two and broke API calls when copied verbatim.
+
+### Removed
+- **`.mcp.json`** — stale leftover from the Python/uv/MCP layer that was ripped out in `ee7d57e`. The referenced `dai mcp start` command no longer exists.
+
+---
+
 ## [0.2.0] — 2026-04-28
 
 ### Added
