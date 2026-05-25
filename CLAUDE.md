@@ -239,3 +239,8 @@ If a tool isn't in the hand-written modules, the dynamic loader registers it fro
 6. Translate tool output to plain language + `_url` link
 7. Bulk endpoints, not loops
 8. Fail loudly — no silent fallbacks
+9. **Page publish gate (applies to ALL skills — pages, newsletters, SDD dashboards, blog posts):**
+   Before calling `create_page` or `update_page` with substantial content, write the HTML to a temp file and run:
+   `node skills/sdd-conductor/sdd-conductor.mjs gate tiptap-html <filePath>`
+   The gate enforces: no raw markdown, Mermaid uses `<div data-type="mermaid" data-source="...">`, lists use `class="tiptap-bullet-list"` with `<li><p>` wrappers, images use `<figure data-image-figure>`, tables use `tiptap-table` classes, links use `class="tiptap-link"`, and the page has exactly one `<h1>` title.
+   Fix every violation before publishing. Raw markdown content will not render in the Tiptap editor.

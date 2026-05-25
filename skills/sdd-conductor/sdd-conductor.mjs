@@ -32,6 +32,7 @@
  *   no-mocks <file>        File contains no mock/stub patterns
  *   checklist <taskId>     All acceptance checklist items are checked
  *   impl-files <taskId>    Task has Implementation Files section
+ *   tiptap-html <file>     Page content uses Tiptap HTML (no raw markdown)
  */
 
 import fs from 'node:fs';
@@ -1147,8 +1148,77 @@ async function cmdGate(name, arg) {
       ok(`GATE tracker-link: trackerUrl set + dashboard planner link present`);
       break;
     }
+    case 'tiptap-html': {
+      // Gate: page content file must use Tiptap HTML — no raw markdown.
+      // Any page published to Dataspheres must pass this before create_page / update_page.
+      // Covers all skills (pages, newsletters, SDD dashboards) — not just all-dai-sdd.
+      if (!arg) die('Usage: gate tiptap-html <filePath>');
+      const fPath = path.isAbsolute(arg) ? arg : path.join(findGitRoot(), arg);
+      if (!fs.existsSync(fPath)) die(`File not found: ${fPath}`);
+      const html = fs.readFileSync(fPath, 'utf-8');
+
+      const violations = [];
+
+      // 1. No markdown headings
+      if (/^#{1,6}\s/m.test(html))
+        violations.push('Markdown headings (##) found — use <h1>/<h2>/<h3> instead');
+
+      // 2. No markdown bold/italic
+      if (/\*\*[^*\n]+\*\*/.test(html))
+        violations.push('Markdown bold (**text**) found — use <strong>text</strong>');
+      if (/(?<!\*)\*(?!\*)([^*\n]+)\*(?!\*)/.test(html))
+        violations.push('Markdown italic (*text*) found — use <em>text</em>');
+
+      // 3. No fenced code blocks
+      if (/^```/m.test(html))
+        violations.push('Markdown fenced code blocks (```) found — use <pre><code>...</code></pre> or <div data-type="mermaid"> for diagrams');
+
+      // 4. No markdown image syntax
+      if (/!\[[^\]]*\]\([^)]+\)/.test(html))
+        violations.push('Markdown image syntax (![alt](url)) found — use <figure data-image-figure ...><img src="..." alt="..."><figcaption>...</figcaption></figure>');
+
+      // 5. Mermaid must use data-type block, not code fence
+      if (/```mermaid/.test(html))
+        violations.push('Mermaid code fence (```mermaid) found — use <div data-type="mermaid" data-source="..."></div>');
+
+      // 6. <ul> must carry tiptap-bullet-list class (allow data-type="taskList" from SDD tasks)
+      const bareUls = (html.match(/<ul(?![^>]*(?:class="tiptap-bullet-list"|data-type="taskList"))[^>]*>/g) || []);
+      if (bareUls.length > 0)
+        violations.push(`${bareUls.length} plain <ul> without class="tiptap-bullet-list" — add the class (see skills/pages/SKILL.md)`);
+
+      // 7. <ol> must carry tiptap-ordered-list class
+      const bareOls = (html.match(/<ol(?![^>]*class="tiptap-ordered-list")[^>]*>/g) || []);
+      if (bareOls.length > 0)
+        violations.push(`${bareOls.length} plain <ol> without class="tiptap-ordered-list" — add the class`);
+
+      // 8. <li> items must wrap content in <p>
+      if (/<li>(?!\s*<(?:p|ul|ol))/.test(html))
+        violations.push('<li> without <p> wrapper — list items must be <li><p>...</p></li>');
+
+      // 9. Tables must use tiptap-table classes
+      if (/<table(?![^>]*class="tiptap-table")[^>]*>/.test(html))
+        violations.push('Table without class="tiptap-table" — use tiptap-table, tiptap-table-row, tiptap-table-cell, tiptap-table-header classes');
+
+      // 10. Links must use tiptap-link class
+      if (/<a\s(?![^>]*class="tiptap-link")[^>]*href=/.test(html))
+        violations.push('<a href> without class="tiptap-link" — add class="tiptap-link" target="_blank" rel="noopener"');
+
+      // 11. Page must have at least one <h1> title
+      if (!/<h1[^>]*>/.test(html))
+        violations.push('No <h1> found — page must have exactly one <h1> as the title');
+
+      if (violations.length > 0) {
+        gate(
+          `Tiptap HTML gate FAILED for ${path.basename(arg)}:\n` +
+          violations.map(v => `  ✗ ${v}`).join('\n') +
+          `\n\nAll pages published to Dataspheres must use Tiptap HTML.\nSee skills/pages/SKILL.md for the full node catalogue.`
+        );
+      }
+      ok(`GATE tiptap-html: ${path.basename(arg)} passes all Tiptap format checks (${html.length} chars)`);
+      break;
+    }
     default:
-      die(`Unknown gate: ${name}. Valid: deps-done, research-done, no-mocks, checklist, impl-files, hierarchy, checklist-format, title-prefix, tracker-link`);
+      die(`Unknown gate: ${name}. Valid: deps-done, research-done, no-mocks, checklist, impl-files, hierarchy, checklist-format, title-prefix, tracker-link, tiptap-html`);
   }
 }
 
@@ -2339,7 +2409,7 @@ Commands:
 Global flag (any command):
   --initiative <slug>                   Target a specific initiative instead of currentInitiative
 
-Gate names: deps-done, research-done, no-mocks, checklist, impl-files, hierarchy
+Gate names: deps-done, research-done, no-mocks, checklist, impl-files, hierarchy, checklist-format, title-prefix, tracker-link, tiptap-html
 
 Exit codes: 0=pass  1=gate blocked / loop continues  2=hard error
 
