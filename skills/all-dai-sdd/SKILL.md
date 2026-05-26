@@ -15,7 +15,7 @@ Every SDD project uses exactly these six columns, in this order. When you create
 
 **The Research column is the origin gate.** Nothing enters North Stars without a corresponding Research task that has passed Validation. This is not optional and cannot be waived.
 
-**Gate rules are SMT-verified.** After task publish (Step 9), Z3 formally checks all 8 gate invariants. UNSAT = proven correct. SAT = counterexample with exact task ID and rule violated. No task advances on a SAT result.
+**Gate rules are SMT-verified.** After task publish (Step 9), Z3 formally checks all 12 gate invariants. UNSAT = proven correct. SAT = counterexample with exact task ID and rule violated. No task advances on a SAT result.
 
 ---
 
@@ -31,6 +31,8 @@ Every Research task (`RS-NNN · <title>`) must contain ALL of the following sect
 <h3>Origin Prompts <!-- #origin --></h3>
 <h3>Problem Statement <!-- #problem --></h3>
 <h3>Approach Under Evaluation <!-- #approach --></h3>
+<h3>Search Results <!-- #search-results --></h3>
+<h3>Codebase Context <!-- #codebase --></h3>
 <h3>Sources <!-- #sources --></h3>
 <h3>Feasibility Evidence <!-- #feasibility --></h3>
 <h3>Recommendation <!-- #rec --></h3>
@@ -57,6 +59,68 @@ The `Origin Prompts` section must contain the **verbatim, quoted text** of every
 ```
 
 A paraphrase is not an origin prompt. The verbatim text is the audit trail. Gate check at Step 9 scans for `<blockquote>` inside the Origin Prompts section — its absence is a gate failure.
+
+#### Search Results — verbatim excerpts required (hardened)
+
+The `Search Results` section must contain the **actual returned search result excerpts** from `start_research` or `web_search` — not a summary of what was found. Each result must be quoted verbatim with its source cited.
+
+**Correct:**
+```html
+<h3>Search Results <!-- #search-results --></h3>
+<blockquote>
+  <p>"GATK HaplotypeCaller is not designed for use on bisulfite-converted reads. For WGBS data, tools such as BisSNP or Bismark's SNP calling module should be used instead."</p>
+  <cite><a href="https://gatk.broadinstitute.org/hc/en-us/articles/360035531672">GATK HaplotypeCaller overview</a></cite>
+</blockquote>
+<blockquote>
+  <p>"BisSNP achieves F1=0.97 on GIAB NA12878 chr22 WGBS data with bisulfite-aware realignment..."</p>
+  <cite><a href="https://doi.org/10.1093/bioinformatics/btu395">Liu et al., 2012</a></cite>
+</blockquote>
+```
+
+**Wrong (gate fails):**
+```html
+<h3>Search Results <!-- #search-results --></h3>
+<p>Search results confirmed that GATK is not suitable and BisSNP is the recommended tool.</p>
+```
+
+A paraphrase of search results is not evidence — it is an opinion. Gate check at Step 9 scans for `<blockquote>` inside the Search Results section — its absence is a gate failure.
+
+#### Codebase Context — existing code paths + snippets required (hardened)
+
+The `Codebase Context` section must reference the **actual existing source files** in the codebase that are relevant to the approach being evaluated, with at least one verbatim code snippet. If no existing code is relevant, declare it explicitly.
+
+**Correct (existing code present):**
+```html
+<h3>Codebase Context <!-- #codebase --></h3>
+<p>Relevant existing files:</p>
+<ul>
+  <li><code>src/pipeline/variant_caller.py</code> — current HaplotypeCaller wrapper</li>
+  <li><code>src/pipeline/bwa_aligner.py</code> — alignment step this task replaces</li>
+</ul>
+<pre><code class="language-python">
+# src/pipeline/variant_caller.py:42
+def call_variants(bam_path: str, reference: str) -> str:
+    return subprocess.run([
+        "gatk", "HaplotypeCaller",
+        "-I", bam_path, "-R", reference, "-O", "output.vcf.gz"
+    ], check=True)
+</code></pre>
+<p>This is the function we are replacing — BisSNP requires a different invocation pattern.</p>
+```
+
+**Correct (no existing code):**
+```html
+<h3>Codebase Context <!-- #codebase --></h3>
+<p>N/A — no existing code. This is a greenfield pipeline component with no prior implementation in this repo.</p>
+```
+
+**Wrong (gate fails):**
+```html
+<h3>Codebase Context <!-- #codebase --></h3>
+<p>We will need to look at the existing pipeline code before implementing.</p>
+```
+
+Gate check at Step 9 requires: either a `src/` path reference + `<pre><code>` block, or the exact declaration `N/A — no existing code`. Vague intentions are not accepted.
 
 #### Sources — citation requirement (hardened)
 
@@ -558,15 +622,18 @@ curl -X POST "$DATASPHERES_BASE_URL/api/v2/dataspheres/<dsId>/tasks/status-group
 **Pre-publish Research task validation (mandatory, runs before North Star check):**
 
 For every `type: research` task in tasks.yaml, verify:
-1. Content contains ALL seven required section headings: `Origin Prompts`, `Problem Statement`, `Approach Under Evaluation`, `Sources`, `Feasibility Evidence`, `Recommendation`, `Validation Criteria`
+1. Content contains ALL nine required section headings: `Origin Prompts`, `Problem Statement`, `Approach Under Evaluation`, `Search Results`, `Codebase Context`, `Sources`, `Feasibility Evidence`, `Recommendation`, `Validation Criteria`
 2. `Origin Prompts` section contains a `<blockquote>` with verbatim user text
-3. `Sources` section contains at least two `<a href=` links
-4. Front matter `spec_type: research`
+3. `Search Results` section contains at least one `<blockquote>` with a quoted excerpt
+4. `Codebase Context` section contains `src/` paths + `<pre><code>` snippet, OR the explicit declaration `N/A — no existing code`
+5. `Sources` section contains at least two `<a href=` links
+6. Front matter `spec_type: research`
 
 If any check fails:
 ```
 🚫 GATE [9/14] BLOCKED — RS-XXX missing required content: [list failures]
-Required: Origin Prompts must contain verbatim blockquote. Sources must have ≥2 URLs.
+Required: Origin Prompts must contain verbatim blockquote. Search Results must have ≥1 blockquote excerpt.
+Codebase Context must have src/ paths + snippet or N/A declaration. Sources must have ≥2 URLs.
 ```
 
 **Pre-publish North Star validation (mandatory before any POST):**
@@ -574,26 +641,31 @@ Required: Origin Prompts must contain verbatim blockquote. Sources must have ≥
 For every `type: north-star` task in tasks.yaml, verify its `content` field contains ALL six required section headings AND the front matter `research_ref` field:
 
 ```
-<h3>Origin Prompts</h3>       ← must contain <blockquote> with verbatim prompt text
-<h3>Codebase Context</h3>
-<h3>Architecture Constraints</h3>
-<h3>Vision</h3>
-<h3>North Star Checklist</h3>
-<h3>Success Criteria</h3>
+<h3>Origin Prompts <!-- #origin --></h3>       ← must contain <blockquote> with verbatim prompt text
+<h3>Codebase Context <!-- #codebase --></h3>   ← must contain src/ paths + <pre><code> OR "N/A — no existing code"
+<h3>Architecture Constraints <!-- #arch --></h3>
+<h3>Vision <!-- #vision --></h3>
+<h3>North Star Checklist <!-- #checklist --></h3>
+<h3>Success Criteria <!-- #sc --></h3>
 ```
 
-**Plus front matter check:**
+**Plus front matter + content checks:**
 ```python
 assert "research_ref:" in task["content"], f"{task['title']} missing research_ref in front matter"
 assert 'research_ref: null' not in task["content"], f"{task['title']} research_ref must not be null — point to RS-NNN"
 assert "<blockquote>" in origin_prompts_section, f"{task['title']} Origin Prompts must contain verbatim quoted text in <blockquote>"
+assert has_codebase_paths(task["content"]), f"{task['title']} Codebase Context must have src/ paths or 'N/A — no existing code'"
+assert has_codebase_snippet(task["content"]), f"{task['title']} Codebase Context must have <pre><code> snippet or 'N/A — no existing code'"
 ```
+
+The `Codebase Context` section in a North Star task documents the **existing code surface** that the North Star's architecture builds on top of or replaces. Same rules as the RS Codebase Context gate: real `src/` paths, at least one verbatim snippet (or explicit N/A declaration). This is not optional even for new features — if there is no existing code, say so explicitly.
 
 If any check fails:
 ```
 🚫 GATE [9/14] BLOCKED — NS-XXX missing required sections or front matter: [list missing]
-Required before continuing: Add missing sections, set research_ref to RS-NNN, and add verbatim
-prompt text in <blockquote> inside Origin Prompts.
+Required before continuing: Add missing sections, set research_ref to RS-NNN, add verbatim
+prompt in <blockquote> inside Origin Prompts, and add src/ paths + <pre><code> (or N/A declaration)
+inside Codebase Context.
 ```
 
 Do NOT proceed until all North Stars pass this check.
@@ -665,14 +737,14 @@ curl -X POST "$DATASPHERES_BASE_URL/api/v2/dataspheres/<dsId>/tasks/bulk" \
 
 If bulk returns 500, fall back to individual POSTs — but verify every task's `statusGroupId` is from step 8 before posting.
 
-**Gate evidence required:** `<N> tasks created (NS:<n> EP:<n> EX:<n>), all tagged <initiative>, all NS sections verified, all tasks have spec front matter + impl files (EX) + heading anchors`
+**Gate evidence required:** `<N> tasks created (RS:<n> NS:<n> EP:<n> EX:<n>), all tagged <initiative>, all RS sections verified (incl. Search Results + Codebase Context), all NS sections verified (incl. Codebase Context), all tasks have spec front matter + impl files (EX) + heading anchors`
 
 ---
 
 ### Step 9.5 of 14 — Z3 gate verification
 
 Run the SMT constraint checker against the published tasks BEFORE applying CodeApplications.
-This formally verifies all 8 gate rules are satisfied for every task in the initiative.
+This formally verifies all 12 gate rules are satisfied for every task in the initiative.
 
 **Install z3-solver if needed:**
 ```bash
@@ -688,7 +760,7 @@ python3 skills/all-dai-sdd/verify_gates.py --tasks <project-dir>/tasks.yaml
 python3 skills/all-dai-sdd/verify_gates.py --json '<tasks-json>'
 ```
 
-**Rules checked (8 total):**
+**Rules checked (12 total):**
 
 | Rule | Description | Z3 encoding |
 |---|---|---|
@@ -700,10 +772,14 @@ python3 skills/all-dai-sdd/verify_gates.py --json '<tasks-json>'
 | RULE-6 | Trace-complete: Done tasks have unbroken Research→NS→EP chain | reachability check |
 | RULE-7 | Research-ref-valid: NS tasks have non-null research_ref that exists | `ns.research_ref ∈ task_set` |
 | RULE-8 | Source-count: RS tasks have ≥2 source citations in content | `count_sources(rs) ≥ 2` |
+| RULE-9 | Origin-blockquote: RS+NS Origin Prompts section has `<blockquote>` | `has_blockquote(origin_section(t))` |
+| RULE-10 | Search-results: RS tasks have Search Results section with `<blockquote>` | `has_blockquote(search_results_section(rs))` |
+| RULE-11 | Codebase-paths: RS+NS Codebase Context has src/ paths or N/A decl | `has_paths(codebase_section(t)) ∨ na_declared(t)` |
+| RULE-12 | Codebase-snippet: RS+NS Codebase Context has `<pre><code>` or N/A decl | `has_snippet(codebase_section(t)) ∨ na_declared(t)` |
 
 **If UNSAT (all rules hold):**
 ```
-✅ GATE [9.5/14] z3-verify | <ISO-timestamp> | 8 rules UNSAT, 0 violations, N tasks
+✅ GATE [9.5/14] z3-verify | <ISO-timestamp> | 12 rules UNSAT, 0 violations, N tasks
 ```
 
 **If SAT (violation found) → STOP:**

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Z3 gate verifier for all-dai-sdd.
-Encodes all 8 gate rules as SMT constraints. UNSAT = all rules hold.
+Encodes all 12 gate rules as SMT constraints. UNSAT = all rules hold.
 SAT + model = counterexample showing exactly which task violates which rule.
 
 Usage:
@@ -87,6 +87,59 @@ def _count_source_citations(content: str) -> int:
     hrefs = len(re.findall(r'<a\s+[^>]*href=', section, re.IGNORECASE))
     dois = len(re.findall(r'\bdoi\.org\b', section, re.IGNORECASE))
     return max(hrefs, dois)
+
+
+def _extract_section(content: str, anchor: str) -> Optional[str]:
+    """Extract HTML from a heading with <!-- #anchor --> to the next h2/h3 or end."""
+    pat = re.compile(
+        r'<h[23][^>]*>[^<]*<!--\s*#' + re.escape(anchor) + r'\s*-->.*?(?=<h[23]|$)',
+        re.IGNORECASE | re.DOTALL,
+    )
+    m = pat.search(content)
+    return m.group(0) if m else None
+
+
+def _has_origin_blockquote(content: str) -> bool:
+    section = _extract_section(content, 'origin')
+    if section is None:
+        return False
+    return bool(re.search(r'<blockquote', section, re.IGNORECASE))
+
+
+def _has_search_results_section(content: str) -> bool:
+    return _extract_section(content, 'search-results') is not None
+
+
+def _has_search_results_blockquote(content: str) -> bool:
+    section = _extract_section(content, 'search-results')
+    if section is None:
+        return False
+    return bool(re.search(r'<blockquote', section, re.IGNORECASE))
+
+
+_NA_CODEBASE_PAT = re.compile(r'N/A\s*[—\-]\s*no\s+existing\s+code', re.IGNORECASE)
+
+
+def _codebase_context_section(content: str) -> Optional[str]:
+    return _extract_section(content, 'codebase')
+
+
+def _has_codebase_paths(content: str) -> bool:
+    section = _codebase_context_section(content)
+    if section is None:
+        return False
+    if _NA_CODEBASE_PAT.search(section):
+        return True
+    return bool(re.search(r'\bsrc/', section))
+
+
+def _has_codebase_snippet(content: str) -> bool:
+    section = _codebase_context_section(content)
+    if section is None:
+        return False
+    if _NA_CODEBASE_PAT.search(section):
+        return True
+    return bool(re.search(r'<pre[^>]*>\s*<code', section, re.IGNORECASE))
 
 
 # ---------------------------------------------------------------------------
@@ -331,6 +384,82 @@ def _check_rule(
             )
         return False, None
 
+    if rule_id == 'RULE-9':
+        # ORIGIN-BLOCKQUOTE: spec_type in {research, architecture} →
+        # Origin Prompts section must contain ≥1 <blockquote> (verbatim user prompt)
+        RS_NS_TYPES = {'research', 'architecture'}
+        if task.spec_type not in RS_NS_TYPES:
+            return False, None
+        ok = _has_origin_blockquote(task.content)
+        s = Solver()
+        s.add(Not(BoolVal(ok)))
+        if s.check() == sat:
+            return True, (
+                f'RULE-9 ORIGIN-BLOCKQUOTE: {task.spec_id} (spec_type={task.spec_type}) '
+                f'Origin Prompts section is missing a <blockquote> with the verbatim user prompt'
+            )
+        return False, None
+
+    if rule_id == 'RULE-10':
+        # SEARCH-RESULTS: spec_type=research →
+        # "Search Results <!-- #search-results -->" section must exist with ≥1 <blockquote>
+        if task.spec_type != 'research':
+            return False, None
+        has_section = _has_search_results_section(task.content)
+        has_quote = _has_search_results_blockquote(task.content)
+        s = Solver()
+        s.add(Not(BoolVal(has_section and has_quote)))
+        if s.check() == sat:
+            if not has_section:
+                return True, (
+                    f'RULE-10 SEARCH-RESULTS: {task.spec_id} is spec_type=research '
+                    f'but missing "Search Results <!-- #search-results -->" section'
+                )
+            return True, (
+                f'RULE-10 SEARCH-RESULTS: {task.spec_id} Search Results section '
+                f'has no <blockquote> excerpts — paste actual search result snippets'
+            )
+        return False, None
+
+    if rule_id == 'RULE-11':
+        # CODEBASE-PATHS: spec_type in {research, architecture} →
+        # Codebase Context section contains ≥1 src/ path OR explicit N/A declaration
+        RS_NS_TYPES = {'research', 'architecture'}
+        if task.spec_type not in RS_NS_TYPES:
+            return False, None
+        ok = _has_codebase_paths(task.content)
+        s = Solver()
+        s.add(Not(BoolVal(ok)))
+        if s.check() == sat:
+            section = _codebase_context_section(task.content)
+            if section is None:
+                return True, (
+                    f'RULE-11 CODEBASE-PATHS: {task.spec_id} (spec_type={task.spec_type}) '
+                    f'missing "Codebase Context <!-- #codebase -->" section entirely'
+                )
+            return True, (
+                f'RULE-11 CODEBASE-PATHS: {task.spec_id} Codebase Context section '
+                f'has no src/ file paths and no "N/A — no existing code" declaration'
+            )
+        return False, None
+
+    if rule_id == 'RULE-12':
+        # CODEBASE-SNIPPET: spec_type in {research, architecture} →
+        # Codebase Context section contains ≥1 <pre><code> block OR explicit N/A declaration
+        RS_NS_TYPES = {'research', 'architecture'}
+        if task.spec_type not in RS_NS_TYPES:
+            return False, None
+        ok = _has_codebase_snippet(task.content)
+        s = Solver()
+        s.add(Not(BoolVal(ok)))
+        if s.check() == sat:
+            return True, (
+                f'RULE-12 CODEBASE-SNIPPET: {task.spec_id} (spec_type={task.spec_type}) '
+                f'Codebase Context section has no <pre><code> snippet '
+                f'and no "N/A — no existing code" declaration'
+            )
+        return False, None
+
     raise ValueError(f'Unknown rule_id: {rule_id}')
 
 
@@ -347,12 +476,16 @@ RULES = [
     ('RULE-6', 'TRACE-COMPLETE'),
     ('RULE-7', 'RESEARCH-REF-VALID'),
     ('RULE-8', 'SOURCE-COUNT'),
+    ('RULE-9', 'ORIGIN-BLOCKQUOTE'),
+    ('RULE-10', 'SEARCH-RESULTS'),
+    ('RULE-11', 'CODEBASE-PATHS'),
+    ('RULE-12', 'CODEBASE-SNIPPET'),
 ]
 
 
 def verify(tasks: list[SddTask], *, verbose: bool = False) -> tuple[bool, list[str]]:
     """
-    Run all 8 gate rules against the given task list.
+    Run all 12 gate rules against the given task list.
 
     Returns:
         (ok, violations)
