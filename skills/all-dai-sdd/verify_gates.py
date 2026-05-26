@@ -117,7 +117,22 @@ def _has_search_results_blockquote(content: str) -> bool:
     return bool(re.search(r'<blockquote', section, re.IGNORECASE))
 
 
-_NA_CODEBASE_PAT = re.compile(r'N/A\s*[—\-]\s*no\s+existing\s+code', re.IGNORECASE)
+# Matches any free-form N/A explanation the agent might write in a section.
+# Agents may write their own explanation (e.g. "No search run — internal decision");
+# the gate just checks that some N/A declaration is present rather than enforcing the exact wording.
+_NA_EXPLANATION_PAT = re.compile(
+    r'\bN/?A\b|not\s+applicable|does\s+not\s+apply|no\s+existing\s+code|'
+    r'not\s+relevant|no\s+prior\s+(code|impl)|greenfield',
+    re.IGNORECASE,
+)
+
+
+def _section_na_declared(content: str, anchor: str) -> bool:
+    """Return True if the named section contains any N/A / not-applicable explanation."""
+    section = _extract_section(content, anchor)
+    if section is None:
+        return False
+    return bool(_NA_EXPLANATION_PAT.search(section))
 
 
 def _codebase_context_section(content: str) -> Optional[str]:
@@ -125,20 +140,18 @@ def _codebase_context_section(content: str) -> Optional[str]:
 
 
 def _has_codebase_paths(content: str) -> bool:
+    """True if Codebase Context section references any src/ path (N/A check is separate)."""
     section = _codebase_context_section(content)
     if section is None:
         return False
-    if _NA_CODEBASE_PAT.search(section):
-        return True
     return bool(re.search(r'\bsrc/', section))
 
 
 def _has_codebase_snippet(content: str) -> bool:
+    """True if Codebase Context section contains a <pre><code> block (N/A check is separate)."""
     section = _codebase_context_section(content)
     if section is None:
         return False
-    if _NA_CODEBASE_PAT.search(section):
-        return True
     return bool(re.search(r'<pre[^>]*>\s*<code', section, re.IGNORECASE))
 
 
@@ -387,28 +400,32 @@ def _check_rule(
     if rule_id == 'RULE-9':
         # ORIGIN-BLOCKQUOTE: spec_type in {research, architecture} →
         # Origin Prompts section must contain ≥1 <blockquote> (verbatim user prompt)
+        # OR an N/A explanation when no verbatim prompt exists (e.g. self-initiated research).
         RS_NS_TYPES = {'research', 'architecture'}
         if task.spec_type not in RS_NS_TYPES:
             return False, None
-        ok = _has_origin_blockquote(task.content)
+        ok = _has_origin_blockquote(task.content) or _section_na_declared(task.content, 'origin')
         s = Solver()
         s.add(Not(BoolVal(ok)))
         if s.check() == sat:
             return True, (
                 f'RULE-9 ORIGIN-BLOCKQUOTE: {task.spec_id} (spec_type={task.spec_type}) '
-                f'Origin Prompts section is missing a <blockquote> with the verbatim user prompt'
+                f'Origin Prompts section needs either a <blockquote> with the verbatim user prompt '
+                f'or a note explaining why no direct prompt exists (e.g. "N/A — self-initiated")'
             )
         return False, None
 
     if rule_id == 'RULE-10':
         # SEARCH-RESULTS: spec_type=research →
-        # "Search Results <!-- #search-results -->" section must exist with ≥1 <blockquote>
+        # "Search Results <!-- #search-results -->" section must exist with ≥1 <blockquote> excerpt
+        # OR an N/A explanation when no external search was run (e.g. internal/architectural decision).
         if task.spec_type != 'research':
             return False, None
         has_section = _has_search_results_section(task.content)
         has_quote = _has_search_results_blockquote(task.content)
+        na = _section_na_declared(task.content, 'search-results')
         s = Solver()
-        s.add(Not(BoolVal(has_section and has_quote)))
+        s.add(Not(BoolVal(has_section and (has_quote or na))))
         if s.check() == sat:
             if not has_section:
                 return True, (
@@ -417,17 +434,19 @@ def _check_rule(
                 )
             return True, (
                 f'RULE-10 SEARCH-RESULTS: {task.spec_id} Search Results section '
-                f'has no <blockquote> excerpts — paste actual search result snippets'
+                f'needs either <blockquote> excerpts or a note explaining why no search applies '
+                f'(e.g. "N/A — purely internal architectural decision")'
             )
         return False, None
 
     if rule_id == 'RULE-11':
         # CODEBASE-PATHS: spec_type in {research, architecture} →
-        # Codebase Context section contains ≥1 src/ path OR explicit N/A declaration
+        # Codebase Context section contains ≥1 src/ path OR any N/A explanation.
         RS_NS_TYPES = {'research', 'architecture'}
         if task.spec_type not in RS_NS_TYPES:
             return False, None
-        ok = _has_codebase_paths(task.content)
+        na = _section_na_declared(task.content, 'codebase')
+        ok = _has_codebase_paths(task.content) or na
         s = Solver()
         s.add(Not(BoolVal(ok)))
         if s.check() == sat:
@@ -439,24 +458,26 @@ def _check_rule(
                 )
             return True, (
                 f'RULE-11 CODEBASE-PATHS: {task.spec_id} Codebase Context section '
-                f'has no src/ file paths and no "N/A — no existing code" declaration'
+                f'needs src/ file paths or a note explaining why none apply '
+                f'(e.g. "N/A — greenfield, no prior code in this repo")'
             )
         return False, None
 
     if rule_id == 'RULE-12':
         # CODEBASE-SNIPPET: spec_type in {research, architecture} →
-        # Codebase Context section contains ≥1 <pre><code> block OR explicit N/A declaration
+        # Codebase Context section contains ≥1 <pre><code> block OR any N/A explanation.
         RS_NS_TYPES = {'research', 'architecture'}
         if task.spec_type not in RS_NS_TYPES:
             return False, None
-        ok = _has_codebase_snippet(task.content)
+        na = _section_na_declared(task.content, 'codebase')
+        ok = _has_codebase_snippet(task.content) or na
         s = Solver()
         s.add(Not(BoolVal(ok)))
         if s.check() == sat:
             return True, (
                 f'RULE-12 CODEBASE-SNIPPET: {task.spec_id} (spec_type={task.spec_type}) '
-                f'Codebase Context section has no <pre><code> snippet '
-                f'and no "N/A — no existing code" declaration'
+                f'Codebase Context section needs a <pre><code> snippet or a note explaining '
+                f'why none applies (e.g. "N/A — no existing code to reference")'
             )
         return False, None
 

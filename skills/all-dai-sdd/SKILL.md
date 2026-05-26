@@ -52,13 +52,19 @@ The `Origin Prompts` section must contain the **verbatim, quoted text** of every
 </blockquote>
 ```
 
+**Acceptable when no direct prompt exists:**
+```html
+<h3>Origin Prompts <!-- #origin --></h3>
+<p>N/A — self-initiated research; no explicit user prompt. Triggered by failed HaplotypeCaller run on WGBS data (see RS-001 Feasibility Evidence).</p>
+```
+
 **Wrong (gate fails):**
 ```html
 <h3>Origin Prompts <!-- #origin --></h3>
 <p>The user wants a variant calling pipeline.</p>
 ```
 
-A paraphrase is not an origin prompt. The verbatim text is the audit trail. Gate check at Step 9 scans for `<blockquote>` inside the Origin Prompts section — its absence is a gate failure.
+A paraphrase is not an origin prompt. The gate accepts: a `<blockquote>` with verbatim text, OR a note explaining why no direct prompt exists. A vague summary with neither is a gate failure.
 
 #### Search Results — verbatim excerpts required (hardened)
 
@@ -77,13 +83,19 @@ The `Search Results` section must contain the **actual returned search result ex
 </blockquote>
 ```
 
+**Acceptable when no external search was run:**
+```html
+<h3>Search Results <!-- #search-results --></h3>
+<p>N/A — purely internal architectural decision based on existing team knowledge. No external search conducted; see Codebase Context for the prior code this builds on.</p>
+```
+
 **Wrong (gate fails):**
 ```html
 <h3>Search Results <!-- #search-results --></h3>
 <p>Search results confirmed that GATK is not suitable and BisSNP is the recommended tool.</p>
 ```
 
-A paraphrase of search results is not evidence — it is an opinion. Gate check at Step 9 scans for `<blockquote>` inside the Search Results section — its absence is a gate failure.
+The gate accepts: `<blockquote>` excerpts from actual search results, OR a note explaining why no external search applies. A summary with neither is a gate failure.
 
 #### Codebase Context — existing code paths + snippets required (hardened)
 
@@ -108,10 +120,16 @@ def call_variants(bam_path: str, reference: str) -> str:
 <p>This is the function we are replacing — BisSNP requires a different invocation pattern.</p>
 ```
 
-**Correct (no existing code):**
+**Acceptable when no existing code applies:**
 ```html
 <h3>Codebase Context <!-- #codebase --></h3>
-<p>N/A — no existing code. This is a greenfield pipeline component with no prior implementation in this repo.</p>
+<p>Not applicable — this is a greenfield pipeline component. No prior implementation exists in this repo for WGBS variant calling.</p>
+```
+
+Or even just:
+```html
+<h3>Codebase Context <!-- #codebase --></h3>
+<p>N/A — no existing code in this area.</p>
 ```
 
 **Wrong (gate fails):**
@@ -120,7 +138,7 @@ def call_variants(bam_path: str, reference: str) -> str:
 <p>We will need to look at the existing pipeline code before implementing.</p>
 ```
 
-Gate check at Step 9 requires: either a `src/` path reference + `<pre><code>` block, or the exact declaration `N/A — no existing code`. Vague intentions are not accepted.
+The gate accepts: `src/` paths + `<pre><code>` snippet showing relevant existing code, OR a note explaining why none applies. A vague intention to look later is a gate failure — the agent must make the call at research time, not defer it.
 
 #### Sources — citation requirement (hardened)
 
@@ -654,8 +672,10 @@ For every `type: north-star` task in tasks.yaml, verify its `content` field cont
 assert "research_ref:" in task["content"], f"{task['title']} missing research_ref in front matter"
 assert 'research_ref: null' not in task["content"], f"{task['title']} research_ref must not be null — point to RS-NNN"
 assert "<blockquote>" in origin_prompts_section, f"{task['title']} Origin Prompts must contain verbatim quoted text in <blockquote>"
-assert has_codebase_paths(task["content"]), f"{task['title']} Codebase Context must have src/ paths or 'N/A — no existing code'"
-assert has_codebase_snippet(task["content"]), f"{task['title']} Codebase Context must have <pre><code> snippet or 'N/A — no existing code'"
+assert has_codebase_paths(task["content"]) or na_declared(task["content"], "codebase"), \
+    f"{task['title']} Codebase Context must have src/ paths or a note explaining why none apply"
+assert has_codebase_snippet(task["content"]) or na_declared(task["content"], "codebase"), \
+    f"{task['title']} Codebase Context must have <pre><code> snippet or a note explaining why none apply"
 ```
 
 The `Codebase Context` section in a North Star task documents the **existing code surface** that the North Star's architecture builds on top of or replaces. Same rules as the RS Codebase Context gate: real `src/` paths, at least one verbatim snippet (or explicit N/A declaration). This is not optional even for new features — if there is no existing code, say so explicitly.
