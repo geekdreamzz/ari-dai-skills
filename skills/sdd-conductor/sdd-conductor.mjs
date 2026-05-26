@@ -265,7 +265,13 @@ function extractFrontMatterField(content, fieldName) {
 function hasMockPatterns(content) {
   const patterns = [
     /\bmock\b/i, /\bstub\b/i, /\bMagicMock\b/, /unittest\.mock/,
-    /generate_mock/i, /fake_result/i, /TODO:\s*replace/i, /placeholder/i,
+    /generate_mock/i, /fake_result/i, /TODO:\s*replace/i,
+    // `placeholder` as a code-intent marker (comment, function name, variable),
+    // NOT as an HTML attribute (`placeholder="…"`) or as part of a larger word
+    // like `setPlaceholderImage`. Requires either a leading comment marker
+    // (// or /*) or whitespace and a code-intent keyword after.
+    /(?:\/\/|\/\*)\s*placeholder\b/i,
+    /\bplaceholder\s+(code|impl|implementation|function|content)\b/i,
   ];
   return patterns.filter(p => p.test(content)).map(p => p.toString());
 }

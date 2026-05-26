@@ -1006,23 +1006,49 @@ Setting only `statusGroupId` moves the card visually but leaves `status=TODO` in
 
 ## Trace Graph Linking — Hard Requirements
 
-The trace graph widget builds edges by parsing task titles and content HTML. **Two rules are non-negotiable** — violating either produces a spaghetti graph (all-to-all fallback edges instead of surgical parent→child links).
+The trace graph widget builds edges by parsing task titles, task content HTML, and front-matter refs. **Three rules are non-negotiable** — violating any of them produces a spaghetti graph (all-to-all fallback edges instead of surgical parent→child links) or orphan nodes that never connect.
 
 ### Rule 1 — Task titles MUST start with the SDD ID prefix
+
+**Canonical (readable) form — recommended for new initiatives:**
 
 | Task type | Title format | Example |
 |---|---|---|
 | Research | `RS-001 · <title>` | `RS-001 · Validate variant caller for WGBS data` |
 | North Star | `NS-001 · <title>` | `NS-001 · Subscriber journey vision` |
-| Epic | `E-001 · <title>` | `E-001 · Engagement data layer` |
-| Execution | `T-001 · <title>` | `T-001 · Engagement scoring service` |
-| Validation | `V-T-001 · <title>` | `V-T-001 · Engagement scoring service` |
+| Epic | `EP-001 · <title>` | `EP-001 · Engagement data layer` |
+| Execution | `EX-001 · <title>` | `EX-001 · Engagement scoring service` |
+| Validation | `VA-001 · <title>` | `VA-001 · Validate EX-001 engagement scoring` |
 
-The graph's `extractSddId()` recognises `RS-`, `NS-`, `E-`, `T-`, `V-T-` prefixes. Using a requirement ID (`R-001 · ...`) as the title prefix means the node gets no SDD ID — every edge falls back to "connect all nodes in this tier." Requirement IDs belong in task **content** (in the `### Requirement` blockquote), not in task **titles**.
+**Legacy short form — still accepted for backward compatibility:**
+
+| Task type | Legacy title format |
+|---|---|
+| Epic | `E-001 · ...` |
+| Execution | `T-001 · ...` |
+| Validation | `V-T-001 · ...` |
+
+`extractSddId()` recognises both forms: `RS-`, `NS-`, `EP-` / `E-`, `EX-` / `T-`, `VA-` / `V-T-` (with optional `-rwN` suffix for Ralph-loop iterations). Pick one convention per initiative and stick to it. Using a non-SDD ID like `R-001` or `Bug-7` as the title prefix means the node gets no SDD ID — every edge falls back to "connect all nodes in this tier."
 
 ### Rule 2 — Checklists MUST use `data-type="taskList"` format
 
 The graph's `findChecklistRefs()` parser reads `<li data-type="taskItem">` elements to discover Epic→Execution and NS→Epic edges. HTML entities like `&#9744;` (☐) inside plain `<ul><li>` are **not** parsed — the entity stays as a raw string in stored HTML and matches neither the TipTap parser nor the `☐` regex fallback. Always use the format shown in [§ Checklist Format](#checklist-format--tiptap-tasklist) below.
+
+### Rule 3 — Front-matter `*_ref:` fields drive cross-tier edges
+
+The graph walks edges in two passes: first via front-matter refs, then via checklist refs as a fallback. Every task tier (except RS) must declare its parent ref in the YAML front-matter block at the top of `content`:
+
+| Task type | Required front-matter ref | Edge it produces |
+|---|---|---|
+| Research (RS) | none | (RS is the origin tier) |
+| North Star (NS) | `research_ref: RS-NNN` | RS → NS |
+| Epic (EP) | `north_star_ref: NS-NNN` | NS → EP (also via NS's checklist) |
+| Execution (EX) | `epic_ref: EP-NNN` + `north_star_ref: NS-NNN` | EP → EX (also via EP's checklist) |
+| Validation (VA) | `execution_ref: EX-NNN` + `epic_ref` + `north_star_ref` | EX → VA |
+
+Omitting a `*_ref` field doesn't fail publish, but it leaves an orphan node in the trace graph. The conductor's `gate hierarchy <id>` checks all four refs and exits 1 if any are missing.
+
+**Why both refs AND checklists?** Refs guarantee a single canonical parent (no ambiguity). Checklists let an Epic explicitly enumerate which EX tasks it owns (useful when an EX serves multiple Epics in the same initiative). The graph prefers refs when present, falls back to checklist parsing otherwise.
 
 ---
 
@@ -1502,22 +1528,28 @@ Always set BOTH `statusGroupId` and `status` — setting only `statusGroupId` mo
 
 ---
 
-## Trace Graph — 5-Tier Layout
+## Trace Graph — 6-Tier Layout
 
-The planner trace graph renders: **North Stars &rarr; Epics &rarr; Execution &rarr; Validation &rarr; Code Files**.
+The planner trace graph renders: **Research &rarr; North Stars &rarr; Epics &rarr; Execution &rarr; Validation &rarr; Code Files**.
 
 | Tier | Detected by | Content |
 |---|---|---|
-| North Stars | `NS-` prefix or North Stars statusGroup | Vision + success criteria |
-| Epics | `E-` prefix or Epics statusGroup | Phase spec + execution checklist |
-| Execution | `T-` prefix or Execution statusGroup | User story + acceptance criteria |
-| Validation | `V-T-` prefix, `validation-artifact` tag, or Validation statusGroup | Code snippets, test results, schema diffs |
+| Research | `RS-` prefix or Research statusGroup | Origin prompt + sources + feasibility + recommendation |
+| North Stars | `NS-` prefix or North Stars statusGroup | Vision + success criteria + `research_ref: RS-NNN` front matter |
+| Epics | `EP-` / `E-` prefix or Epics statusGroup | Phase spec + execution checklist (`EX-` or `T-` items) + `north_star_ref` |
+| Execution | `EX-` / `T-` prefix or Execution statusGroup | User story + acceptance criteria + `epic_ref` + `Implementation Files` |
+| Validation | `VA-` / `V-T-` prefix, `validation-artifact` tag, or Validation statusGroup | Code snippets, test results + `execution_ref: EX-NNN` |
 | Code Files | Parsed from `Implementation Files` section | Live file trace via `/api/v2/code-trace` |
 
-**Edges:**
-- Execution &rarr; Validation: `V-T-001` naming links to `T-001`
+**Edges (in walk-order — the graph tries front-matter refs first, then checklists, then statusGroup fallback):**
+- Research &rarr; North Star: `research_ref: RS-NNN` in the NS task's front matter
+- North Star &rarr; Epic: NS task's `North Star Checklist` items list `EP-NNN` / `E-NNN`, OR each EP carries `north_star_ref: NS-NNN`
+- Epic &rarr; Execution: EP task's `Execution Checklist` items list `EX-NNN` / `T-NNN`, OR each EX carries `epic_ref: EP-NNN`
+- Execution &rarr; Validation: VA task's `execution_ref: EX-NNN` front matter (or `V-T-001` ↔ `T-001` naming convention)
 - Validation &rarr; Code: `Implementation Files` section in artifact content
 - Clicking a Validation node opens the full artifact (code evidence + test output + schema changes)
+
+**Cross-project caveat (known platform limitation):** the `/api/v2/code-trace?file=...` endpoint reads files from the dataspheres-ai server's `process.cwd()`. For initiatives whose code lives in a separate repo (e.g. dai-desktop hosted on dataspheres.ai SaaS), impl-file paths won't resolve to code nodes — the Artifacts tier renders empty. Workarounds: (a) run dataspheres-ai locally with the target repo in cwd, (b) propose a GitHub URL fallback for `code-trace` upstream, or (c) embed code snippets directly in the VA task's `Code Evidence` section as inline `<pre><code>` blocks.
 
 ---
 
@@ -1606,8 +1638,8 @@ tasks:
       <p>One paragraph — the aspirational outcome from the user&apos;s perspective.</p>
       <h3>North Star Checklist</h3>
       <ul data-type="taskList">
-        <li data-type="taskItem" data-checked="false"><p>E-001 &middot; Phase 1 name - Epic complete</p></li>
-        <li data-type="taskItem" data-checked="false"><p>E-002 &middot; Phase 2 name - Epic complete</p></li>
+        <li data-type="taskItem" data-checked="false"><p>EP-001 &middot; Phase 1 name - Epic complete</p></li>
+        <li data-type="taskItem" data-checked="false"><p>EP-002 &middot; Phase 2 name - Epic complete</p></li>
       </ul>
       <h3>Success Criteria</h3>
       <ul>
@@ -1628,18 +1660,18 @@ tasks:
         <li data-type="taskItem" data-checked="false"><p>NFR-1: Initiative-level quality bar (benchmark target, SLA, etc.)</p></li>
       </ul>
 
-  - id: E-001
+  - id: EP-001
     type: epic
-    title: "Phase 1: ..."
+    title: "EP-001 · Phase 1 short title"
     statusGroup: "Epics"
     priority: HIGH
     tags: [epic, my-feature, phase-1]
     parentNorthStar: NS-001
     north_star_ref: NS-001
-    children: [T-001, T-002]
+    children: [EX-001, EX-002]
     content: |
       <pre><code class="language-yaml">
-      spec_id: E-001
+      spec_id: SPEC-{DOMAIN}-EP-001
       title: Phase 1 short title
       version: 1.0.0
       status: ACTIVE
@@ -1650,8 +1682,8 @@ tasks:
       <p>What this Epic delivers and why it matters to the North Star.</p>
       <h2>Execution Checklist</h2>
       <ul data-type="taskList">
-        <li data-type="taskItem" data-checked="false"><p>T-001 &middot; short task title</p></li>
-        <li data-type="taskItem" data-checked="false"><p>T-002 &middot; short task title</p></li>
+        <li data-type="taskItem" data-checked="false"><p>EX-001 &middot; short task title</p></li>
+        <li data-type="taskItem" data-checked="false"><p>EX-002 &middot; short task title</p></li>
       </ul>
       <h2>Acceptance Criteria <!-- #ac --></h2>
       <ul data-type="taskList">
@@ -1667,16 +1699,16 @@ tasks:
         <li data-type="taskItem" data-checked="false"><p>NFR-1: Phase-level performance or reliability target</p></li>
       </ul>
 
-  - id: T-001
+  - id: EX-001
     type: execution
-    title: "T-001 · short title"
+    title: "EX-001 · short title"
     statusGroup: "Execution"
     priority: HIGH | MEDIUM | LOW
     tags: [my-feature, sdd, phase-1]
     initiative: my-feature
-    parentEpic: E-001
+    parentEpic: EP-001
     depends_on: []
-    spec_id: SPEC-{DOMAIN}-001        # assigned by Ari at publish time
+    spec_id: SPEC-{DOMAIN}-EX-001     # assigned by Ari at publish time
     context_refs:                      # optional — carried into front matter block
       - type: legacy_code
         ref: src/path/to/old/file.py
@@ -1686,14 +1718,14 @@ tasks:
     userApproved: yes | no
     content: |
       <pre><code class="language-yaml">
-      spec_id: SPEC-{DOMAIN}-001
-      title: T-001 short title
+      spec_id: SPEC-{DOMAIN}-EX-001
+      title: EX-001 short title
       version: 1.0.0
       status: ACTIVE
       column: execution
-      epic_ref: E-001
+      epic_ref: EP-001
       north_star_ref: NS-001
-      validation_ref: VA-T-001
+      validation_ref: VA-001
       context_refs: []
       superseded_by: null
       created: YYYY-MM-DD
@@ -1721,40 +1753,40 @@ tasks:
       <h3>Implementation Scope <!-- #td-scope --></h3>
       <p>Files to touch + what to do in each.</p>
 
-  - id: VA-T-001
+  - id: VA-001
     type: validation
-    title: "VA-T-001 · Validate T-001 short title"
+    title: "VA-001 · Validate EX-001 short title"
     statusGroup: "Validation"
     priority: HIGH
     tags: [my-feature, sdd, validation]
-    parentExecution: T-001
-    parentEpic: E-001
+    parentExecution: EX-001
+    parentEpic: EP-001
     parentNorthStar: NS-001
     content: |
       <pre><code class="language-yaml">
-      spec_id: VA-T-001
-      title: Validate T-001 short title
+      spec_id: SPEC-{DOMAIN}-VA-001
+      title: Validate EX-001 short title
       version: 1.0.0
       status: ACTIVE
       column: validation
-      execution_ref: T-001
-      epic_ref: E-001
+      execution_ref: EX-001
+      epic_ref: EP-001
       north_star_ref: NS-001
       created: YYYY-MM-DD
       updated: YYYY-MM-DD
       author: your-handle
       </code></pre>
       <h2>Validation Scope <!-- #vs --></h2>
-      <p>Verifies: <strong>T-001 &middot; short title</strong> — all acceptance criteria, functional requirements, and non-functional requirements.</p>
+      <p>Verifies: <strong>EX-001 &middot; short title</strong> — all acceptance criteria, functional requirements, and non-functional requirements.</p>
       <h2>Acceptance Criteria <!-- #ac --></h2>
       <ul data-type="taskList">
-        <li data-type="taskItem" data-checked="false"><p>Observable criterion 1 (mirrored from T-001 AC)</p></li>
+        <li data-type="taskItem" data-checked="false"><p>Observable criterion 1 (mirrored from EX-001 AC)</p></li>
         <li data-type="taskItem" data-checked="false"><p>Observable criterion 2</p></li>
         <li data-type="taskItem" data-checked="false"><p>Test suite green with evidence attached</p></li>
       </ul>
       <h2>Functional Requirements <!-- #fr --></h2>
       <ul data-type="taskList">
-        <li data-type="taskItem" data-checked="false"><p>FR-1: System behavior verified (mirrored from T-001 FR)</p></li>
+        <li data-type="taskItem" data-checked="false"><p>FR-1: System behavior verified (mirrored from EX-001 FR)</p></li>
         <li data-type="taskItem" data-checked="false"><p>FR-2: Input/output contract verified</p></li>
       </ul>
       <h2>Non-Functional Requirements <!-- #nfr --></h2>
