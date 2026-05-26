@@ -22,6 +22,7 @@
  *   node sdd-conductor.mjs update-dashboard <dsUri> <slug> Generate/refresh Current Focus hierarchy section.
  *   node sdd-conductor.mjs check-file-hook           Read stdin (Claude PostToolUse JSON), warn on mismatch.
  *   node sdd-conductor.mjs session-start             Read .sdd-state.json, reconcile with live API.
+ *   node sdd-conductor.mjs audit [--fix]            Scan board for compliance drift; --fix auto-remediates.
  *   node sdd-conductor.mjs install [project-dir]     Inject hooks into project's .claude/settings.json.
  *
  * All commands accept --initiative <slug> to target a specific initiative.
@@ -2070,7 +2071,180 @@ async function cmdSessionStart() {
   if (!anyActive) {
     info(`No active tasks across ${initiatives.length} initiative(s).`);
   }
+
+  // Silent compliance audit on every session start — warns without exiting
+  try {
+    const { violations } = await cmdAudit(false);
+    if (violations && violations.length > 0) {
+      const fixable = violations.filter(v => v.fixable).length;
+      warn(`Board audit: ${violations.length} violation(s) (${fixable} auto-fixable). Run: node sdd-conductor.mjs audit --fix`);
+    }
+  } catch (e) {
+    // Don't block session start on audit failure
+  }
   console.log('');
+}
+
+async function cmdAudit(fixMode = false) {
+  const { state, slug, iState } = requireInitiativeState();
+  const client = makeClient();
+
+  console.log(`\n🔍 SDD-CONDUCTOR AUDIT  [${slug}]${fixMode ? ' --fix' : ''}`);
+
+  const allTasks = await client.get(
+    `/api/v2/dataspheres/${iState.dsId}/tasks?planModeId=${iState.planModeId}&limit=500`
+  );
+  const taskList = allTasks.tasks || allTasks || [];
+
+  // Build lookup maps
+  const byTitlePrefix = {};
+  for (const t of taskList) {
+    const prefix = t.title?.match(/^([A-Z]+-\d+)/)?.[1];
+    if (prefix) byTitlePrefix[prefix] = t;
+  }
+
+  // Normalize known ref drift patterns: EP-NNN → E-NNN
+  function normalizeRef(ref) {
+    if (!ref || ref === 'null' || ref === '~') return null;
+    const ep = ref.match(/^EP-(\d+)$/);
+    if (ep) return `E-${ep[1]}`;
+    const exT = ref.match(/^EX-T\d+-(\d+)$/);
+    if (exT) return `T-${exT[1]}`;
+    return ref;
+  }
+
+  const violations = [];
+
+  const activeTasks = taskList.filter(t => !isDone(t));
+  for (const t of activeTasks) {
+    const content = t.content || '';
+    const specId = extractSpecId(content) || t.title?.match(/^[A-Z]+-\d+/)?.[0] || t.id;
+    const col = getColumnName(t).toLowerCase();
+
+    // 1. Front matter presence
+    if (!/spec_id:/.test(content)) {
+      violations.push({ taskId: t.id, specId, col, content,
+        issue: 'Missing front matter (no spec_id:)', fixable: false });
+      continue; // no point checking refs without front matter
+    }
+
+    // 2. Ref resolution
+    for (const field of ['epic_ref', 'north_star_ref', 'execution_ref']) {
+      const raw = extractFrontMatterField(content, field);
+      if (!raw || raw === 'null' || raw === '~') continue;
+      if (byTitlePrefix[raw]) continue; // resolves fine
+
+      const normalized = normalizeRef(raw);
+      const resolves = normalized && normalized !== raw && !!byTitlePrefix[normalized];
+      violations.push({
+        taskId: t.id, specId, col, content, field, raw, normalized,
+        issue: `${field}: "${raw}" unresolvable${resolves ? ` → auto-fix to "${normalized}"` : ' (no matching task found)'}`,
+        fixable: resolves,
+        fixType: 'ref',
+      });
+    }
+
+    // 3. Impl files required for Execution column tasks
+    if (col === 'execution' && /^T-/.test(specId)) {
+      const hasImpl = /impl_files:/i.test(content) || /Implementation Files/i.test(content);
+      if (!hasImpl) {
+        violations.push({ taskId: t.id, specId, col, content,
+          issue: 'EX task missing Implementation Files section', fixable: false });
+      }
+    }
+
+    // 4. Checklist required for EX and VA tasks
+    if (col === 'execution' || col === 'validation') {
+      if (!/data-type="taskItem"/.test(content) && content.length > 100) {
+        violations.push({ taskId: t.id, specId, col, content,
+          issue: `${col} task has no acceptance checklist (no taskItem elements)`, fixable: false });
+      }
+    }
+
+    // 5. Bare <ul> without tiptap class
+    const bareUls = (content.match(/<ul(?![^>]*(?:class="tiptap-bullet-list"|data-type="taskList"))[^>]*>/g) || []).length;
+    if (bareUls > 0) {
+      violations.push({ taskId: t.id, specId, col, content,
+        issue: `${bareUls} bare <ul> without class="tiptap-bullet-list"`,
+        fixable: true, fixType: 'bare-ul' });
+    }
+  }
+
+  // Apply fixes
+  let fixedCount = 0;
+  const resolvedKeys = new Set(); // taskId:issue to suppress from final report
+  if (fixMode && violations.some(v => v.fixable)) {
+    const byTask = {};
+    for (const v of violations.filter(v => v.fixable)) {
+      byTask[v.taskId] = byTask[v.taskId] || { specId: v.specId, violations: [], content: v.content };
+      byTask[v.taskId].violations.push(v);
+    }
+
+    for (const [taskId, { specId, violations: tvs, content: origContent }] of Object.entries(byTask)) {
+      let content = origContent;
+      const taskFixed = [];
+
+      for (const v of tvs) {
+        if (v.fixType === 'ref' && v.field && v.normalized && v.raw) {
+          const before = content;
+          content = content.replace(
+            new RegExp(`(${escapeRegex(v.field)}:\\s*)${escapeRegex(v.raw)}`, 'g'),
+            `$1${v.normalized}`
+          );
+          if (content !== before) {
+            info(`  Fixed ${specId}: ${v.field} "${v.raw}" → "${v.normalized}"`);
+            taskFixed.push(v);
+            fixedCount++;
+          }
+        } else if (v.fixType === 'bare-ul') {
+          const before = content;
+          content = content.replace(
+            /<ul(?![^>]*(?:class="tiptap-bullet-list"|data-type="taskList"))((?:[^>]*)?)>/g,
+            '<ul class="tiptap-bullet-list"$1>'
+          );
+          if (content !== before) {
+            info(`  Fixed ${specId}: added class="tiptap-bullet-list" to bare <ul>`);
+            taskFixed.push(v);
+            fixedCount++;
+          }
+        }
+      }
+
+      if (taskFixed.length > 0) {
+        await client.patch(`/api/v2/dataspheres/${iState.dsId}/tasks/${taskId}`, { content });
+        for (const v of taskFixed) resolvedKeys.add(`${taskId}:${v.issue}`);
+      }
+    }
+  }
+
+  // Filter out successfully resolved violations from the report
+  const remaining = violations.filter(v => !resolvedKeys.has(`${v.taskId}:${v.issue}`));
+
+  // Report
+  if (remaining.length === 0) {
+    if (fixedCount > 0) ok(`AUDIT CLEAN — fixed ${fixedCount} violation(s), board is compliant`);
+    else ok(`AUDIT CLEAN — ${activeTasks.length} active tasks, 0 violations`);
+    return { clean: true, violations: [] };
+  }
+
+  console.log(`\n  VIOLATIONS (${remaining.length} across ${activeTasks.length} active tasks):`);
+  for (const v of remaining) {
+    warn(`  ${v.specId} [${v.col}]: ${v.issue}${v.fixable ? ' ✦ auto-fixable' : ''}`);
+  }
+
+  const fixable = remaining.filter(v => v.fixable).length;
+  const manual = remaining.filter(v => !v.fixable).length;
+
+  if (fixMode) {
+    console.log(`\n  Fixed: ${fixedCount} | Remaining manual: ${manual}`);
+    if (manual === 0) ok('All fixable violations resolved.');
+    else warn(`${manual} violation(s) require manual review.`);
+  } else {
+    console.log(`\n  Auto-fixable: ${fixable} | Manual: ${manual}`);
+    if (fixable > 0) info(`  Run: node sdd-conductor.mjs audit --fix  to auto-remediate`);
+  }
+
+  return { clean: false, violations: remaining, fixedCount };
 }
 
 async function cmdInstall(projectDir) {
@@ -2142,6 +2316,22 @@ async function cmdDrive() {
 
   console.log(`\n🚀 SDD-CONDUCTOR DRIVE  [${slug}]`);
   info(`Datasphere: ${iState.dsUri}`);
+
+  // Inline compliance check — surface violations at the top of every drive
+  try {
+    const { clean, violations } = await cmdAudit(false);
+    if (!clean && violations.length > 0) {
+      const fixable = violations.filter(v => v.fixable).length;
+      console.log(`\n  ⚠️  BOARD DRIFT (${violations.length} violation${violations.length > 1 ? 's' : ''}, ${fixable} auto-fixable):`);
+      for (const v of violations.slice(0, 5)) {
+        warn(`    ${v.specId}: ${v.issue}`);
+      }
+      if (violations.length > 5) warn(`    ...and ${violations.length - 5} more. Run: audit --fix`);
+      if (fixable > 0) info(`  Fix: node sdd-conductor.mjs audit --fix`);
+      console.log('');
+    }
+  } catch {}
+
 
   // Show other initiatives if multiple exist
   const allSlugs = Object.keys(state.initiatives || {});
@@ -2403,7 +2593,8 @@ Commands:
   dashboard-check <dsUri> <slug>        Verify dashboard page has all 5 required sections.
   check-file-hook                       PostToolUse(Write|Edit) hook — file guard.
   progress-hook                         PostToolUse(Bash) hook — auto-post test results.
-  session-start                         SessionStart hook — reconcile state.
+  session-start                         SessionStart hook — reconcile state + run silent audit.
+  audit [--fix]                         Scan board for compliance drift; --fix auto-remediates.
   install [project-dir]                 Inject all hooks into .claude/settings.json.
 
 Global flag (any command):
@@ -2442,6 +2633,7 @@ try {
     case 'check-file-hook':   await cmdCheckFileHook(); break;
     case 'progress-hook':   await cmdProgressHook(); break;
     case 'session-start':   await cmdSessionStart(); break;
+    case 'audit':           await cmdAudit(args.includes('--fix')); break;
     case 'install':         await cmdInstall(args[0]); break;
     default:                die(`Unknown command: ${command}. Run with --help.`);
   }
