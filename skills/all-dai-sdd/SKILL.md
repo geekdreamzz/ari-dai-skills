@@ -3553,3 +3553,133 @@ return { block: false };
 - `active: false` + `hotfixReason` = legitimate hotfix → **allow + stderr warning**
 - `active: true` + `activeTaskId` = task in-progress → **allow**
 - `active: true` + no `activeTaskId` = SDD active but no task claimed → **block**
+
+---
+
+## Known API Gotchas
+
+Collected from production pipeline failures. Each one costs real time when hit cold.
+
+### Task comment payload: `"content"` not `"body"`
+
+**Endpoint:** `POST /api/v2/dataspheres/<dsId>/tasks/<taskId>/comments`
+
+The comment payload must use `"content"` as the field name. Using `"body"` returns HTTP 400 with `{"error":"Comment content is required"}` — silently on every call if you don't surface the status code.
+
+```python
+# WRONG — returns 400 every time
+payload = {"body": "<h3>Gate: PASS</h3><p>...</p>"}
+
+# CORRECT
+payload = {"content": "<h3>Gate: PASS</h3><p>...</p>"}
+
+# With screenshot attachments
+payload = {
+    "content": "<h3>Gate: PASS</h3><p>...</p>",
+    "screenshots": ["https://comfy.dataspheres.ai/vb006/studio/scene/outputs/img_123.png"],
+}
+```
+
+This applies to all comment endpoints: task comments, plan-mode comments, page comments. The field is always `"content"`.
+
+### Spec field regex — one field per line
+
+When embedding hidden metadata in task content using a regex scanner (`re.search(rf"{field}:\s*(.+)", content)`), the field value must be **alone on its line**. Anything after the value (including HTML like `-->`) gets captured into the match group.
+
+```html
+<!-- WRONG — regex captures "cmpq0bycw1bl4pb4wohzvtyn5 -->" -->
+<!-- research_ref: cmpq0bycw1bl4pb4wohzvtyn5 -->
+
+<!-- CORRECT — hidden div, one field per line -->
+<div style="display:none">
+research_ref: cmpq0bycw1bl4pb4wohzvtyn5
+north_star_ref: cmpq0csg11blmpb4w0dkfq1tt
+</div>
+```
+
+### `datasphereId` vs datasphere `uri`
+
+The v2 task API (`/api/v2/dataspheres/<dsId>/tasks`) takes the **database ID** (e.g. `cmpev5pvc0fewo54wjkh90fh4`), not the human-readable URI (e.g. `dai-desktop`). The v1 page API uses the URI. Getting these backwards gives a 404 with no helpful message.
+
+---
+
+## Gate Briefing Pattern — Multi-Session Pipelines
+
+For long-running generation pipelines (image sequences, video frames, batch transcoding), each Claude session should leave **gate briefings** embedded in the next pending task so the following session has full context without re-reading board state.
+
+### The Problem
+
+Long pipelines span dozens of sessions. Each session must:
+1. Know which frame/item to generate
+2. Know the exact generation command and parameters
+3. Know the previous artifact URL for visual comparison
+4. Know the gate acceptance criteria
+
+Without embedded briefings, each new session has to reconstruct this from scratch — slow and error-prone.
+
+### The Pattern
+
+After completing any gate, post a `<!-- #gate-brief -->` section to the **next pending Execution task's content**:
+
+```python
+def build_briefing(frame_num, task_id, prev_filename):
+    return (
+        f"<h3>Gate Briefing <!-- #gate-brief --> (auto-generated)</h3>"
+        f"<p><strong>This task is queued for generation + gate review.</strong></p>"
+        f"<table>"
+        f"<tr><td><strong>Frame</strong></td><td>{frame_num:03d}/048</td></tr>"
+        f"<tr><td><strong>Task ID</strong></td><td><code>{task_id}</code></td></tr>"
+        f"<tr><td><strong>Generator</strong></td><td>"
+        f"<code>python gen_pipeline.py --frame {frame_num}</code></td></tr>"
+        f"<tr><td><strong>Prompt</strong></td><td>{build_prompt(frame_num)}</td></tr>"
+        f"<tr><td><strong>Prev frame</strong></td><td>"
+        f"<a href='{prev_url}'>Frame {frame_num - 1:03d}</a></td></tr>"
+        f"</table>"
+        f"<h4>Gate Protocol</h4>"
+        f"<ol>"
+        f"<li>Generate: run gen_pipeline.py, wait for FRAME_READY line</li>"
+        f"<li>Read the output image at the URL in FRAME_READY</li>"
+        f"<li>Read previous frame image for visual comparison</li>"
+        f"<li>Score on: character/scene consistency, motion continuity, no hallucinations</li>"
+        f"<li>PASS (score ≥80): gate_pass(frame_num, task_id, filename, score)</li>"
+        f"<li>FAIL (score &lt;80): gate_fail(frame_num, task_id, filename, score, reason)</li>"
+        f"</ol>"
+    )
+
+# Update or append to the pending task
+existing = task["content"]
+marker = "<!-- #gate-brief -->"
+if marker in existing:
+    existing = re.sub(
+        r"<h3>Gate Briefing <!-- #gate-brief -->.*?(?=<h[123]|$)",
+        briefing + "\n", existing, flags=re.DOTALL
+    )
+else:
+    existing += "\n" + briefing
+
+api("PATCH", f"/api/v2/dataspheres/{DS_ID}/tasks/{task_id}", {"content": existing})
+```
+
+### When to Run
+
+Run the briefing updater:
+- After completing any gate (PASS or FAIL)
+- At session end if frames are still pending
+- After any param change that affects upcoming frames (guidance, IPA weight, etc.)
+
+### The Next Session
+
+The next session reads the pending task's Gate Briefing section and executes exactly what it says — no board archaeology required.
+
+```python
+# Next session: fetch the task and read the briefing
+task = api("GET", f"/api/v2/dataspheres/{DS_ID}/tasks/{task_id}")["task"]
+briefing_match = re.search(r"<!-- #gate-brief -->.*?(?=<h[123]|$)", task["content"], re.DOTALL)
+if briefing_match:
+    # Parse frame, command, prev URL from the HTML table
+    ...
+```
+
+### Reference Implementation
+
+`post_gate_briefings.py` in the samurai-flipbook project demonstrates this pattern for a 48-frame animation pipeline. It auto-discovers Done task artifacts for previous-frame URLs and posts structured briefings to all pending Execution tasks in one pass.
