@@ -42,7 +42,7 @@ import os from 'node:os';
 import { execSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
-const VERSION = '1.2.1';
+const VERSION = '1.2.2';
 const STATE_FILE = '.sdd-state.json';
 const WORKSPACE_FILE = path.join(os.homedir(), '.sdd-workspace.json');
 const CONDUCTOR_RAW_URL = 'https://raw.githubusercontent.com/geekdreamzz/ari-dai-skills/main/skills/sdd-conductor/sdd-conductor.mjs';
@@ -1181,7 +1181,7 @@ async function cmdStatus() {
 
       try {
         const client = makeClient();
-        const live = await client.get(`/api/v2/dataspheres/${iState.dsId}/tasks/${t.taskId}`);
+        const live = unwrapTask(await client.get(`/api/v2/dataspheres/${iState.dsId}/tasks/${t.taskId}`));
         info(`  Live status: ${live.status} / ${getColumnName(live)}`);
       } catch {
         info(`  Live status: (could not fetch)`);
@@ -2260,7 +2260,7 @@ async function cmdSessionStart() {
 
     try {
       const client = makeClient();
-      const live = await client.get(`/api/v2/dataspheres/${iState.dsId}/tasks/${iState.activeTask.taskId}`);
+      const live = unwrapTask(await client.get(`/api/v2/dataspheres/${iState.dsId}/tasks/${iState.activeTask.taskId}`));
 
       if (isDone(live)) {
         warn(
