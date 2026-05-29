@@ -42,9 +42,11 @@ import os from 'node:os';
 import { execSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
-const VERSION = '1.2.0';
+const VERSION = '1.2.1';
 const STATE_FILE = '.sdd-state.json';
 const WORKSPACE_FILE = path.join(os.homedir(), '.sdd-workspace.json');
+const CONDUCTOR_RAW_URL = 'https://raw.githubusercontent.com/geekdreamzz/ari-dai-skills/main/skills/sdd-conductor/sdd-conductor.mjs';
+const SKILL_RAW_URL     = 'https://raw.githubusercontent.com/geekdreamzz/ari-dai-skills/main/skills/all-dai-sdd/SKILL.md';
 
 // ---------------------------------------------------------------------------
 // Global --initiative override (parsed before command dispatch)
@@ -2289,6 +2291,9 @@ async function cmdSessionStart() {
     info(`No active tasks across ${initiatives.length} initiative(s).`);
   }
 
+  // Silent self-update check on every session start
+  try { await checkForUpdates(true); } catch {}
+
   // Silent compliance audit on every session start — warns without exiting
   try {
     const { violations } = await cmdAudit(false);
@@ -2464,6 +2469,72 @@ async function cmdAudit(fixMode = false) {
   return { clean: false, violations: remaining, fixedCount };
 }
 
+// ---------------------------------------------------------------------------
+// Self-update
+// ---------------------------------------------------------------------------
+
+function semverGt(a, b) {
+  const pa = a.split('.').map(Number);
+  const pb = b.split('.').map(Number);
+  for (let i = 0; i < 3; i++) {
+    if ((pa[i] || 0) > (pb[i] || 0)) return true;
+    if ((pa[i] || 0) < (pb[i] || 0)) return false;
+  }
+  return false;
+}
+
+async function checkForUpdates(silent = true) {
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 5000);
+    const res = await fetch(CONDUCTOR_RAW_URL, { signal: controller.signal });
+    clearTimeout(timer);
+    if (!res.ok) return null;
+    const remote = await res.text();
+    const m = remote.match(/^const VERSION = '([^']+)'/m);
+    if (!m) return null;
+    const remoteVersion = m[1];
+    if (!semverGt(remoteVersion, VERSION)) return null;
+
+    fs.writeFileSync(fileURLToPath(import.meta.url), remote, 'utf-8');
+    const msg = `Updated sdd-conductor ${VERSION} → ${remoteVersion}`;
+    silent ? console.log(`   ${msg}`) : ok(msg);
+    return remoteVersion;
+  } catch {
+    return null;
+  }
+}
+
+async function cmdUpdate() {
+  console.log('\n⬆️  SDD-CONDUCTOR UPDATE');
+
+  const newVersion = await checkForUpdates(false);
+  if (!newVersion) {
+    ok(`sdd-conductor v${VERSION} is already up to date.`);
+  }
+
+  try {
+    const conductorDir = path.dirname(fileURLToPath(import.meta.url));
+    const skillPath    = path.resolve(conductorDir, '..', 'all-dai-sdd', 'SKILL.md');
+    if (fs.existsSync(skillPath)) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 10000);
+      const res = await fetch(SKILL_RAW_URL, { signal: controller.signal });
+      clearTimeout(timer);
+      if (res.ok) {
+        fs.writeFileSync(skillPath, await res.text(), 'utf-8');
+        info(`SKILL.md updated ✓`);
+      }
+    }
+  } catch (e) {
+    warn(`Could not update SKILL.md: ${e.message}`);
+  }
+
+  if (newVersion) {
+    info(`Restart your Claude session to pick up the new version.`);
+  }
+}
+
 async function cmdInstall(projectDir) {
   const target = projectDir ? path.resolve(projectDir) : findGitRoot();
   const settingsDir = path.join(target, '.claude');
@@ -2523,8 +2594,15 @@ async function cmdInstall(projectDir) {
   ok(`Hooks installed in ${settingsPath}`);
   info(`File guard:      PostToolUse(Write|Edit) → check-file-hook`);
   info(`Progress hook:   PostToolUse(Bash)        → progress-hook  (auto-posts test results)`);
-  info(`Session start:   SessionStart              → session-start`);
-  info(`\nNext: node sdd-conductor.mjs init  (to set up .sdd-state.json)`);
+  info(`Session start:   SessionStart              → session-start  (auto-updates + audit on every session)`);
+  info(`Conductor path:  ${conductorPath}`);
+
+  // Pull latest version immediately after installing
+  info(`\nChecking for updates...`);
+  const updated = await checkForUpdates(false);
+  if (!updated) info(`sdd-conductor v${VERSION} — already up to date.`);
+
+  info(`\nNext: node sdd-conductor.mjs init  (to set up .sdd-state.json for this project)`);
 }
 
 async function cmdDrive() {
@@ -2816,6 +2894,7 @@ Commands:
   resume                                Show stuck tasks + exact recovery commands.
   brief                                 Inject session briefings into pending Execution tasks.
   recover <taskId>                      Force stuck Validation/Execution task to Done (gate_status: PASS).
+  update                                Pull latest sdd-conductor.mjs + SKILL.md from GitHub.
 
 Global flag (any command):
   --initiative <slug>                   Target a specific initiative instead of currentInitiative
@@ -2858,6 +2937,7 @@ try {
     case 'resume':          await cmdResume(); break;
     case 'brief':           await cmdBrief(); break;
     case 'recover':         await cmdRecover(args[0]); break;
+    case 'update':          await cmdUpdate(); break;
     default:                die(`Unknown command: ${command}. Run with --help.`);
   }
 } catch (e) {
