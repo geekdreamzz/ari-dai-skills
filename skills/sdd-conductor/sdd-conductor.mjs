@@ -42,7 +42,7 @@ import os from 'node:os';
 import { execSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
-const VERSION = '1.1.0';
+const VERSION = '1.2.0';
 const STATE_FILE = '.sdd-state.json';
 const WORKSPACE_FILE = path.join(os.homedir(), '.sdd-workspace.json');
 
@@ -292,6 +292,86 @@ function unwrapTask(res) {
 function isDone(task) {
   const col = getColumnName(task).toLowerCase();
   return col === 'done' || task.status === 'DONE';
+}
+
+// ---------------------------------------------------------------------------
+// Gate state — cross-session persistence via task description hidden div
+// ---------------------------------------------------------------------------
+
+const GATE_STATE_OPEN  = "<div data-gate-state style='display:none'>";
+const GATE_STATE_CLOSE = "</div><!-- /gate-state -->";
+
+function gateStateRead(content) {
+  if (!content) return {};
+  const m = content.match(/<div data-gate-state[^>]*>([\s\S]*?)<\/div><!--\s*\/gate-state\s*-->/);
+  if (!m) return {};
+  const out = {};
+  for (const line of m[1].split('\n')) {
+    const kv = line.match(/^\s*(\w+):\s*(.+?)\s*$/);
+    if (kv) out[kv[1]] = kv[2];
+  }
+  return out;
+}
+
+function gateStateWrite(content, fields) {
+  const existing = gateStateRead(content);
+  const merged   = { ...existing, ...fields };
+  const lines    = Object.entries(merged).map(([k, v]) => `${k}: ${v}`).join('\n');
+  const block    = `${GATE_STATE_OPEN}\n${lines}\n${GATE_STATE_CLOSE}`;
+  if (content.includes(GATE_STATE_OPEN)) {
+    return content.replace(/<div data-gate-state[^>]*>[\s\S]*?<\/div><!--\s*\/gate-state\s*-->/, block);
+  }
+  return content.trimEnd() + '\n' + block;
+}
+
+function buildBriefingBlock(specId, title, prevSpecId, prevTitle, completedAt) {
+  return [
+    `<div data-gate-brief style='background:#f0f4ff;border-left:4px solid #4f6ef7;padding:12px 16px;margin:8px 0;border-radius:4px;'>`,
+    `<p><strong>Session Briefing</strong> — injected by sdd-conductor at ${completedAt}</p>`,
+    `<p>Previous task completed: <strong>${prevSpecId || '(none)'}</strong>${prevTitle ? ` — ${prevTitle}` : ''}</p>`,
+    `<p>This task: <strong>${specId}</strong>${title ? ` — ${title}` : ''}</p>`,
+    `<ul class="tiptap-bullet-list">`,
+    `<li><p>Review acceptance checklist below</p></li>`,
+    `<li><p>Run: <code>node sdd-conductor.mjs start &lt;taskId&gt;</code></p></li>`,
+    `<li><p>Implement per impl_files list</p></li>`,
+    `<li><p>Post completion comment with verified criteria + evidence</p></li>`,
+    `<li><p>Run: <code>node sdd-conductor.mjs complete &lt;taskId&gt;</code></p></li>`,
+    `</ul>`,
+    `</div><!-- /gate-brief -->`,
+  ].join('\n');
+}
+
+async function injectNextBriefing(client, iState, completedSpecId, completedTitle, completedAt) {
+  try {
+    const all = await client.get(
+      `/api/v2/dataspheres/${iState.dsId}/tasks?planModeId=${iState.planModeId}&limit=200`
+    );
+    const candidates = (all.tasks || all || []).filter(t => {
+      const col = getColumnName(t).toLowerCase();
+      const gs  = gateStateRead(t.content || '');
+      return col === 'execution' && gs.gate_status !== 'IN_PROGRESS' && !isDone(t);
+    });
+    if (candidates.length === 0) { info(`No pending Execution tasks to brief.`); return; }
+
+    candidates.sort((a, b) => {
+      const na = parseInt((extractSpecId(a.content) || '').replace(/\D+/g, '') || '0', 10);
+      const nb = parseInt((extractSpecId(b.content) || '').replace(/\D+/g, '') || '0', 10);
+      return na - nb;
+    });
+
+    const next       = candidates[0];
+    const nextSpecId = extractSpecId(next.content) || next.title?.match(/^[A-Z]+-\d+/)?.[0] || next.id;
+    const briefing   = buildBriefingBlock(nextSpecId, next.title, completedSpecId, completedTitle, completedAt);
+
+    let content = (next.content || '').replace(/<div data-gate-brief[\s\S]*?<\/div><!-- \/gate-brief -->/g, '').trimEnd();
+    content = content + '\n' + briefing;
+    content = gateStateWrite(content, { gate_status: 'PENDING', briefed_at: completedAt, prev_spec_id: completedSpecId });
+
+    await client.patch(`/api/v2/dataspheres/${iState.dsId}/tasks/${next.id}`, { content });
+    info(`Briefing injected into next task: ${nextSpecId}`);
+  } catch (e) {
+    warn(`injectNextBriefing failed (non-fatal): ${e.message}`);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -592,9 +672,15 @@ async function cmdStart(taskId) {
     }
   }
 
-  // PATCH task to IN_PROGRESS
+  // PATCH task to IN_PROGRESS + write gate state to description
+  const startedAt = new Date().toISOString();
   await client.patch(`/api/v2/dataspheres/${iState.dsId}/tasks/${taskId}`, {
-    status: 'IN_PROGRESS',
+    status:  'IN_PROGRESS',
+    content: gateStateWrite(task.content || '', {
+      gate_status: 'IN_PROGRESS',
+      started_at:  startedAt,
+      spec_id:     specId,
+    }),
   });
 
   // Post start comment
@@ -721,10 +807,32 @@ async function cmdComplete(taskId) {
   }
   if (implFiles.length > 0) info(`Mock scan: clean ✓`);
 
-  // PATCH task to Done
+  const completedAt = new Date().toISOString();
+  let currentContent = task.content || '';
+
+  // Step 1: Move to Validation column (atomic pass-through — gate checks already passed above)
+  if (iState.validationGroupId) {
+    currentContent = gateStateWrite(currentContent, {
+      gate_status:   'IN_VALIDATION',
+      validation_at: completedAt,
+      spec_id:       specId,
+    });
+    await client.patch(`/api/v2/dataspheres/${iState.dsId}/tasks/${taskId}`, {
+      statusGroupId: iState.validationGroupId,
+      content:       currentContent,
+    });
+    info(`Task moved to Validation column ✓`);
+  }
+
+  // Step 2: Move to Done + write PASS gate state
+  currentContent = gateStateWrite(currentContent, {
+    gate_status:  'PASS',
+    completed_at: completedAt,
+  });
   await client.patch(`/api/v2/dataspheres/${iState.dsId}/tasks/${taskId}`, {
     statusGroupId: iState.doneGroupId,
-    status: 'DONE',
+    status:        'DONE',
+    content:       currentContent,
   });
   info(`Task PATCH: status=DONE, statusGroupId=${iState.doneGroupId} ✓`);
 
@@ -733,17 +841,120 @@ async function cmdComplete(taskId) {
     await propagateEpicChecklist(client, iState, task.parentId, specId, task.title);
   }
 
-  // Clear active task from initiative state
+  // Clear active task, save state, inject briefing into next pending task
   iState.activeTask = null;
-  iState.lastCompleted = {
-    taskId,
-    specId,
-    title: task.title,
-    completedAt: new Date().toISOString(),
-  };
+  iState.lastCompleted = { taskId, specId, title: task.title, completedAt };
   saveInitiative(state, slug, iState);
 
-  ok(`${specId} marked Done. Checklist propagated to Epic.`);
+  await injectNextBriefing(client, iState, specId, task.title, completedAt);
+
+  ok(`${specId} marked Done via Validation. Next task briefed.`);
+}
+
+// ---------------------------------------------------------------------------
+// resume / brief / recover — cross-session recovery commands
+// ---------------------------------------------------------------------------
+
+async function cmdResume() {
+  const { state, slug, iState } = requireInitiativeState();
+  const client = makeClient();
+
+  console.log(`\n🔍 SDD-CONDUCTOR RESUME  [${slug}]`);
+
+  const all   = await client.get(`/api/v2/dataspheres/${iState.dsId}/tasks?planModeId=${iState.planModeId}&limit=500`);
+  const tasks = all.tasks || all || [];
+
+  const stuck = [];
+  for (const t of tasks) {
+    const col    = getColumnName(t).toLowerCase();
+    const gs     = gateStateRead(t.content || '');
+    const specId = extractSpecId(t.content) || t.title?.match(/^[A-Z]+-\d+/)?.[0] || t.id;
+    if (col === 'validation' && gs.gate_status !== 'PASS') {
+      stuck.push({ specId, taskId: t.id, col, gate: gs.gate_status || '(none)', title: t.title });
+    } else if (col === 'execution' && gs.gate_status === 'IN_PROGRESS') {
+      stuck.push({ specId, taskId: t.id, col, gate: gs.gate_status, title: t.title });
+    }
+  }
+
+  if (stuck.length === 0) {
+    ok(`No stuck tasks found. Board is clean.`);
+    if (iState.activeTask) {
+      info(`Active task: ${iState.activeTask.specId} — ${iState.activeTask.title}`);
+      info(`  Continue:  node sdd-conductor.mjs complete ${iState.activeTask.taskId}`);
+    }
+    return;
+  }
+
+  warn(`Found ${stuck.length} stuck task(s):\n`);
+  for (const { specId, taskId, col, gate, title } of stuck) {
+    console.log(`   ${specId}  [${col}]  gate_status=${gate}`);
+    console.log(`   ${title}`);
+    if (col === 'validation') {
+      console.log(`   → Fix:  node sdd-conductor.mjs recover ${taskId}`);
+    } else {
+      console.log(`   → Fix:  node sdd-conductor.mjs complete ${taskId}`);
+    }
+    console.log('');
+  }
+}
+
+async function cmdBrief() {
+  const { state, slug, iState } = requireInitiativeState();
+  const client = makeClient();
+
+  console.log(`\n📋 SDD-CONDUCTOR BRIEF  [${slug}]`);
+
+  const last        = iState.lastCompleted;
+  const completedAt = last?.completedAt || new Date().toISOString();
+
+  await injectNextBriefing(client, iState, last?.specId || '(none)', last?.title || '', completedAt);
+
+  ok(`Session briefings refreshed for pending Execution tasks.`);
+}
+
+async function cmdRecover(taskId) {
+  if (!taskId) die('Usage: recover <taskId>');
+  const { state, slug, iState } = requireInitiativeState();
+  const client = makeClient();
+
+  const task   = unwrapTask(await client.get(`/api/v2/dataspheres/${iState.dsId}/tasks/${taskId}`));
+  const specId = extractSpecId(task.content) || task.title?.match(/^[A-Z]+-\d+/)?.[0] || taskId;
+  const col    = getColumnName(task).toLowerCase();
+
+  console.log(`\n🔧 SDD-CONDUCTOR RECOVER  [${slug}]`);
+  info(`Task: ${task.title}  (${specId})`);
+  info(`Column: ${col}`);
+
+  if (col === 'done') {
+    ok(`${specId} is already Done. Nothing to recover.`);
+    return;
+  }
+
+  const completedAt  = new Date().toISOString();
+  const doneContent  = gateStateWrite(task.content || '', {
+    gate_status:  'PASS',
+    completed_at: completedAt,
+    recovered_by: 'sdd-conductor recover',
+    spec_id:      specId,
+  });
+
+  await client.patch(`/api/v2/dataspheres/${iState.dsId}/tasks/${taskId}`, {
+    statusGroupId: iState.doneGroupId,
+    status:        'DONE',
+    content:       doneContent,
+  });
+
+  await client.post(`/api/v2/dataspheres/${iState.dsId}/tasks/${taskId}/comments`, {
+    content: `[all-dai-sdd-system-message]\n\n**RECOVERED** — ${specId} moved to Done by sdd-conductor recover at ${completedAt}.\nRecovered from: ${col} column. Gate state set to PASS.`,
+  });
+
+  if (iState.activeTask?.taskId === taskId) iState.activeTask = null;
+  iState.lastCompleted = { taskId, specId, title: task.title, completedAt };
+  saveInitiative(state, slug, iState);
+
+  await injectNextBriefing(client, iState, specId, task.title, completedAt);
+
+  ok(`${specId} recovered to Done. Next task briefed.`);
 }
 
 // ---------------------------------------------------------------------------
@@ -2602,6 +2813,9 @@ Commands:
   session-start                         SessionStart hook — reconcile state + run silent audit.
   audit [--fix]                         Scan board for compliance drift; --fix auto-remediates.
   install [project-dir]                 Inject all hooks into .claude/settings.json.
+  resume                                Show stuck tasks + exact recovery commands.
+  brief                                 Inject session briefings into pending Execution tasks.
+  recover <taskId>                      Force stuck Validation/Execution task to Done (gate_status: PASS).
 
 Global flag (any command):
   --initiative <slug>                   Target a specific initiative instead of currentInitiative
@@ -2641,6 +2855,9 @@ try {
     case 'session-start':   await cmdSessionStart(); break;
     case 'audit':           await cmdAudit(args.includes('--fix')); break;
     case 'install':         await cmdInstall(args[0]); break;
+    case 'resume':          await cmdResume(); break;
+    case 'brief':           await cmdBrief(); break;
+    case 'recover':         await cmdRecover(args[0]); break;
     default:                die(`Unknown command: ${command}. Run with --help.`);
   }
 } catch (e) {

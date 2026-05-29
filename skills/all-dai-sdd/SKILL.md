@@ -3683,3 +3683,84 @@ if briefing_match:
 ### Reference Implementation
 
 `post_gate_briefings.py` in the samurai-flipbook project demonstrates this pattern for a 48-frame animation pipeline. It auto-discovers Done task artifacts for previous-frame URLs and posts structured briefings to all pending Execution tasks in one pass.
+
+---
+
+## Task State Protocol — sdd-conductor Gate State
+
+`sdd-conductor.mjs` v1.2+ embeds a hidden `<div data-gate-state>` block in every task description. This block is the authoritative cross-session state — it survives context resets, browser refreshes, and tool restarts. Any session can read the current gate status without polling `.sdd-state.json` or reconstructing history from comments.
+
+### Format
+
+```html
+<div data-gate-state style='display:none'>
+gate_status: IN_PROGRESS
+started_at: 2026-05-28T21:35:00Z
+spec_id: EX-003
+</div><!-- /gate-state -->
+```
+
+The div is always hidden and always at the end of the task content. The conductor writes it atomically — a PATCH that updates `statusGroupId` also updates `content` in the same call, so the board state and the embedded state never diverge.
+
+### Gate Status Values
+
+| `gate_status` | Meaning | Written by |
+|---|---|---|
+| `PENDING` | Task exists, waiting for execution to start | `complete` on previous task (via `injectNextBriefing`) |
+| `IN_PROGRESS` | `start` was called, execution underway | `cmdStart` |
+| `IN_VALIDATION` | Gate checks passed, moving through Validation column | `cmdComplete` (atomic) |
+| `PASS` | Completed, in Done column | `cmdComplete` / `cmdRecover` |
+
+### Lifecycle Sequence
+
+```
+PENDING → (start) → IN_PROGRESS → (complete, gate checks pass) → IN_VALIDATION → PASS
+```
+
+The transition from `IN_VALIDATION` → `PASS` happens in a single `cmdComplete` call — Execution tasks atomically route through the Validation column before landing in Done. This ensures the 6-column lifecycle is always traversed in order, and the trace graph has no gaps.
+
+### Cross-Session Recovery
+
+When a session crashes mid-gate, the task is stuck with an intermediate `gate_status`. Three recovery commands handle this:
+
+**`node sdd-conductor.mjs resume`**
+Scans the board for tasks in anomalous states:
+- Execution column with `gate_status: IN_PROGRESS` (crashed mid-complete)
+- Validation column with `gate_status` not `PASS` (stuck in pass-through)
+
+Prints the exact `recover` command for each stuck task.
+
+**`node sdd-conductor.mjs brief`**
+Re-injects session briefings into all pending Execution tasks. Use this when starting a new session on a stalled pipeline — each pending task will have the previous-task context embedded in its description.
+
+**`node sdd-conductor.mjs recover <taskId>`**
+Forces a stuck task to Done: writes `gate_status: PASS`, patches `statusGroupId` to the Done column, posts a recovery comment, and calls `injectNextBriefing` to prime the next task.
+
+### Session Briefing Injection
+
+After every `complete` or `recover`, the conductor finds the next pending Execution task and injects a `<div data-gate-brief>` block into its description. This block contains:
+
+- Which task was just completed (with timestamp)
+- This task's spec ID and title
+- The exact CLI commands to run next
+
+The briefing is always replaced (never duplicated) — the conductor removes the old `<!-- /gate-brief -->` block before writing a new one.
+
+This means any Claude session resuming work can read the active task's description and immediately know:
+1. What was completed before
+2. What to do now
+3. The exact commands to run
+
+No board archaeology. No re-reading SKILL.md from scratch. The context is in the ticket.
+
+### Why Validation Column Cannot Be Skipped
+
+The 6-column SDD lifecycle is `Research → North Stars → Epics → Execution → Validation → Done`. Every task must appear in every column — not just the final one. Before v1.2, `cmdComplete` patched directly to Done, leaving the Validation column empty and breaking the trace graph.
+
+In v1.2+, `cmdComplete` atomically:
+1. Patches `statusGroupId` to `validationGroupId` + writes `gate_status: IN_VALIDATION`
+2. Immediately patches `statusGroupId` to `doneGroupId` + writes `gate_status: PASS`
+
+Both writes happen in the same `cmdComplete` call. The task is visible in Validation for the duration of the API round-trip — long enough for the trace graph to record it, short enough that no human action is needed.
+
+If `validationGroupId` is null (old `init` pre-v1.2), the conductor falls back to the direct Done path. Re-run `node sdd-conductor.mjs init` to pick up the Validation group ID.
