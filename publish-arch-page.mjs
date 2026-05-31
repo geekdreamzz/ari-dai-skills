@@ -17,13 +17,18 @@ for (const line of fs.readFileSync(envFile, 'utf-8').split('\n')) {
   if (eq === -1) continue;
   env[t.slice(0, eq).trim()] = t.slice(eq + 1).trim().replace(/^['"]|['"]$/g, '');
 }
+// Let process.env override file values — enables per-invocation key swap
+// e.g. `DATASPHERES_API_KEY=$BO_PROD_API_KEY node publish-arch-page.mjs`
+for (const k of Object.keys(env)) {
+  if (process.env[k]) env[k] = process.env[k];
+}
 
-const API_KEY = isProd ? process.env.PROD_API_KEY : env.DATASPHERES_API_KEY;
-const BASE    = isProd ? (process.env.PROD_BASE_URL || 'https://dataspheres.ai') : (env.DATASPHERES_BASE_URL || 'http://localhost:5173');
+const API_KEY = isProd ? (process.env.PROD_API_KEY || env.DATASPHERES_PROD_API_KEY) : env.DATASPHERES_API_KEY;
+const BASE    = isProd ? (process.env.PROD_BASE_URL || env.DATASPHERES_PROD_BASE_URL || 'https://dataspheres.ai') : (env.DATASPHERES_BASE_URL || 'http://localhost:5173');
 const PUBLIC  = isProd ? 'https://dataspheres.ai' : (env.DATASPHERES_PUBLIC_URL || 'https://dataspheres.ai');
 const DS_URI  = isProd ? (process.env.PROD_DS_URI || 'dataspheres-ai') : 'dataspheres-ai';
 
-if (!API_KEY) { console.error('No API key — set DATASPHERES_API_KEY or pass --prod with PROD_API_KEY env var'); process.exit(1); }
+if (!API_KEY) { console.error('No API key — set DATASPHERES_API_KEY (or DATASPHERES_PROD_API_KEY / PROD_API_KEY for --prod)'); process.exit(1); }
 
 // Helper: wrap mermaid code as the native TipTap node
 function mermaid(code) {

@@ -17,6 +17,15 @@ Format: [Semantic Versioning](https://semver.org). Breaking changes are marked *
 - **Mock-scan false positive on `placeholder`.** `sdd-conductor.mjs` was treating every occurrence of `placeholder` in implementation files as a mock-pattern violation, including HTML attribute uses (`placeholder="Type a message…"` on a chat textarea). The pattern is tightened to require a comment marker (`//`/`/*`) or one of `code|impl|implementation|function|content` immediately after, so HTML attributes and identifier names like `setPlaceholderImage` no longer trigger the gate.
 
 ### Added
+- **Runtime API-key override (`sdd-conductor` v1.2.3).** `loadEnv()` now lets `process.env` values override the same-named keys read from `~/.dataspheres.env` / repo `.env`. Lets you swap the active key per invocation without editing the file or disturbing parallel processes:
+  ```bash
+  # save bo's key once as a named variable in ~/.dataspheres.env
+  BO_PROD_API_KEY=dsk_...
+  # then per-call, run any sdd-conductor command as bo without changing the default
+  DATASPHERES_API_KEY="$BO_PROD_API_KEY" DATASPHERES_BASE_URL=https://dataspheres.ai \
+    node skills/sdd-conductor/sdd-conductor.mjs <cmd>
+  ```
+  Same convention applied to `publish-arch-page.mjs` — its `--prod` path also gained a fallback to `env.DATASPHERES_PROD_API_KEY` / `env.DATASPHERES_PROD_BASE_URL` so it works with file-based keys instead of requiring `PROD_API_KEY` to be exported.
 - **`findFrontMatterRef()`** in the trace graph — pulls `research_ref:`, `execution_ref:`, etc. out of YAML front-matter blocks in task content. Used in coordinated platform updates to `TaskTraceGraphView.tsx` (separate dataspheres-ai PR).
 
 - **macOS `git clone` no longer breaks.** `.cursorrules` and `.github/copilot-instructions.md` were stored as git symlinks whose target paths were ~12KB of markdown content, exceeding macOS's symlink-target limit and aborting checkout with `File name too long`. Replaced with a real `CLAUDE.md` at the repo root plus short relative symlinks (`.cursorrules → CLAUDE.md`, `.github/copilot-instructions.md → ../CLAUDE.md`).

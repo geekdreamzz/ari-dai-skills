@@ -42,7 +42,7 @@ import os from 'node:os';
 import { execSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
-const VERSION = '1.2.2';
+const VERSION = '1.2.3';
 const STATE_FILE = '.sdd-state.json';
 const WORKSPACE_FILE = path.join(os.homedir(), '.sdd-workspace.json');
 const CONDUCTOR_RAW_URL = 'https://raw.githubusercontent.com/geekdreamzz/ari-dai-skills/main/skills/sdd-conductor/sdd-conductor.mjs';
@@ -83,6 +83,11 @@ function loadEnv() {
       const v = trimmed.slice(eq + 1).trim().replace(/^['"]|['"]$/g, '');
       env[k] = v;
     }
+  }
+  // Let process.env override file values — enables per-invocation key swap
+  // e.g. `DATASPHERES_API_KEY=$BO_PROD_API_KEY node sdd-conductor.mjs ...`
+  for (const k of Object.keys(env)) {
+    if (process.env[k]) env[k] = process.env[k];
   }
   return env;
 }
