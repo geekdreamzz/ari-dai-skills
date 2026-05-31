@@ -6,7 +6,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-[Architecture Overview](https://dev.dataspheres.ai/pages/dataspheres-ai/all-dai-sdd-architecture) · [dataspheres.ai](https://dataspheres.ai)
+[Architecture Overview](https://dataspheres.ai/pages/dataspheres-ai/all-dai-sdd-architecture) · [dataspheres.ai](https://dataspheres.ai)
 
 </div>
 
@@ -91,7 +91,7 @@ Save it:
 
 ```bash
 echo "DATASPHERES_API_KEY=dsk_your_key_here" >> ~/.dataspheres.env
-echo "DATASPHERES_BASE_URL=https://dataspheres-ai.onrender.com" >> ~/.dataspheres.env
+echo "DATASPHERES_BASE_URL=https://dataspheres.ai" >> ~/.dataspheres.env
 echo "DATASPHERES_PUBLIC_URL=https://dataspheres.ai" >> ~/.dataspheres.env
 ```
 
@@ -216,7 +216,7 @@ Loop continues until the gate passes or a hard blocker is hit. Machine-driven �
 
 ### Full architecture diagram
 
-→ [all-dai-sdd System Architecture](https://dev.dataspheres.ai/pages/dataspheres-ai/all-dai-sdd-architecture)
+→ [all-dai-sdd System Architecture](https://dataspheres.ai/pages/dataspheres-ai/all-dai-sdd-architecture)
 
 ---
 

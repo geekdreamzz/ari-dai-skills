@@ -1675,14 +1675,14 @@ This applies everywhere a string passes through a terminal or shell before reach
 ```bash
 cat > ~/.dataspheres.env << 'EOF'
 DATASPHERES_API_KEY=dsk_...
-DATASPHERES_BASE_URL=http://localhost:5173
-DATASPHERES_PUBLIC_URL=https://dev.dataspheres.ai
+DATASPHERES_BASE_URL=https://dataspheres.ai
+DATASPHERES_PUBLIC_URL=https://dataspheres.ai
 DATASPHERES_DEFAULT_URI=dataspheres-ai
 EOF
 ```
 
-`DATASPHERES_BASE_URL` — where API calls go (always local or tunnel).
-`DATASPHERES_PUBLIC_URL` — base for links shown to users (the public/tunnel URL).
+`DATASPHERES_BASE_URL` — where API calls go. Production is `https://dataspheres.ai`; override to `http://localhost:5173` only when running a local dev server.
+`DATASPHERES_PUBLIC_URL` — base for user-facing links (planner, dashboard). Same host as `BASE_URL` in production.
 
 ---
 

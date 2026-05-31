@@ -182,7 +182,7 @@ function registerWorkspace(projectPath) {
 function makeClient() {
   const env = loadEnv();
   const apiKey = env.DATASPHERES_API_KEY;
-  const baseUrl = env.DATASPHERES_BASE_URL || 'http://localhost:3000';
+  const baseUrl = env.DATASPHERES_BASE_URL || 'https://dataspheres.ai';
   if (!apiKey) die('DATASPHERES_API_KEY not set. Check ~/.dataspheres.env');
 
   async function req(method, path, body) {
@@ -408,7 +408,7 @@ function info(msg) {
 
 async function cmdInit() {
   const env = loadEnv();
-  const baseUrl = env.DATASPHERES_BASE_URL || 'http://localhost:3000';
+  const baseUrl = env.DATASPHERES_BASE_URL || 'https://dataspheres.ai';
   const apiKey = env.DATASPHERES_API_KEY;
   if (!apiKey) die('DATASPHERES_API_KEY not set. Check ~/.dataspheres.env');
 
@@ -1333,7 +1333,7 @@ async function cmdGate(name, arg) {
       if (!arg) die('Usage: gate tracker-link <dsUri>');
       const { iState: ist } = requireInitiativeState();
       const env = loadEnv();
-      const bUrl = env.DATASPHERES_BASE_URL || 'http://localhost:3000';
+      const bUrl = env.DATASPHERES_BASE_URL || 'https://dataspheres.ai';
       const aKey = env.DATASPHERES_API_KEY;
       const fails = [];
       // Check 1: trackerUrl on plan mode
@@ -1926,7 +1926,7 @@ async function cmdValidate(vaTaskId, extraArgs) {
 async function cmdDashboardCheck(dsUri, pageSlug) {
   if (!dsUri || !pageSlug) die('Usage: dashboard-check <dsUri> <page-slug>');
   const env = loadEnv();
-  const baseUrl = env.DATASPHERES_BASE_URL || 'http://localhost:3000';
+  const baseUrl = env.DATASPHERES_BASE_URL || 'https://dataspheres.ai';
   const apiKey = env.DATASPHERES_API_KEY;
   if (!apiKey) die('DATASPHERES_API_KEY not set');
 
@@ -2045,7 +2045,7 @@ async function cmdDashboardCheck(dsUri, pageSlug) {
 async function cmdUpdateDashboard(dsUri, pageSlug) {
   if (!dsUri || !pageSlug) die('Usage: update-dashboard <dsUri> <page-slug>');
   const env = loadEnv();
-  const baseUrl = env.DATASPHERES_BASE_URL || 'http://localhost:3000';
+  const baseUrl = env.DATASPHERES_BASE_URL || 'https://dataspheres.ai';
   const apiKey = env.DATASPHERES_API_KEY;
   if (!apiKey) die('DATASPHERES_API_KEY not set');
 
