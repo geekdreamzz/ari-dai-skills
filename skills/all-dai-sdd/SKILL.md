@@ -21,6 +21,31 @@ Every SDD project uses exactly these seven columns, in this order. When you crea
 
 ---
 
+## Anti-Rubber-Stamping Rule — Non-Negotiable
+
+**The most expensive SDD failure is not a spec error — it is a rubber-stamp: marking a task Done without real verification.**
+
+A rubber-stamp looks like:
+- Ticking all AC checkboxes without running the commands
+- Marking EX tasks Done when the referenced files don't exist on disk
+- Posting "PASS" gate comments based on regex checks alone
+- Treating task content length or section headers as evidence of completion
+- Running `loop.mjs` and walking away without checking the filesystem
+
+**Before any task can advance to Done, Claude must:**
+
+1. **Read** the task content in full — not a summary, the actual HTML
+2. **Check** that referenced file paths exist (run `Test-Path`, `ls`, `where`, `conda info --envs`, etc.)
+3. **Verify** at least one AC item by actually running the described command or check
+4. **Write** what was found into the task — concrete observations, not boilerplate
+5. **Block** if anything is missing, truncated, or references non-existent files
+
+**The board represents spec quality, not implementation completeness.** "Done" means "this implementation exists and has been verified." It does NOT mean "someone wrote a spec describing what should be built." If none of the implementation files exist on disk, the task is NOT Done regardless of what the board says.
+
+**If the board reaches 100% Done but the filesystem shows nothing installed, the loop has failed.** Start over from EX-001.
+
+---
+
 ## Research Column — Hard Rules
 
 The Research column exists to prevent the most expensive category of SDD failure: **running Execution against an unvalidated approach**. A 153-minute HaplotypeCaller run producing F1=0.005 because the tool was wrong for the data type is the canonical example of what Research gates prevent.
@@ -310,36 +335,59 @@ The answers determine the mode:
 5. Apply delta — create missing, update drifted, report orphans
 6. Always run `node sdd-conductor.mjs verify-gates` after sync to confirm CLEAN
 
-### Mode: LOOP
-Triggered automatically when: (a) a VA task in the Validation column has at least one failed iteration, or (b) the user says "keep going", "run continuously", "drive to done", "loop until 100%", or similar.
+### Mode: LOOP — Claude-Driven Verification (mandatory)
 
-**Programmatic runner — always prefer this over manual iteration:**
+Triggered automatically when: (a) a VA task in the Validation column has at least one failed iteration comment, or (b) the user says "keep going", "run continuously", "drive to done", "loop until 100%", or similar.
+
+**YOU (Claude Code) are the verification engine. A script cannot reason — you must.**
+
+`loop.mjs` handles API calls (fetch/patch/comment). You handle intelligence: read each task, reason about it, run shell commands to verify, update with your findings, and only advance when genuinely satisfied.
+
+#### Step-by-step LOOP protocol
+
+For each incomplete task in lifecycle order (RS → NS → EX → VA → EP → AR):
+
+**Step 1 — Read the task in full.** Use `node loop.mjs get-task <id>` or the Dataspheres API. Do not skim.
+
+**Step 2 — Reason about correctness.** Ask yourself:
+- EX tasks: Are the implementation steps correct for this specific system (OS, GPU, Python version)? Are the file paths real Windows paths? Are there ≥2 testable, measurable AC items? Could a developer follow these steps without guessing?
+- VA tasks: Does every AC item reference an observable outcome? Is it possible to run or test? Is there a specific pass threshold?
+- AR tasks: Do the delivered file paths actually exist on disk right now?
+- All tasks: Are there any stubs, placeholders, or "TBD" items that haven't been filled in?
+
+**Step 3 — Verify on the filesystem.** For EVERY EX, VA, and AR task, run actual system commands before advancing:
 ```bash
-node skills/all-dai-sdd/loop.mjs                      # active initiative from .sdd-state.json
-node skills/all-dai-sdd/loop.mjs --initiative <slug>  # specific initiative
-node skills/all-dai-sdd/loop.mjs --dry-run            # preview only, no writes
+# Check if referenced paths exist
+powershell -Command "Test-Path 'C:\path\from\spec'"
+# Check installed tools
+where conda; conda info --envs
+# Run the validation command from the spec (on a subset if compute-heavy)
+```
+If the spec says a file exists and it doesn't: the task is BLOCKED, not Done. If the spec says a command works and it doesn't: fix the spec or mark BLOCKED.
+
+**Step 4 — Update the task with findings.** PATCH the task content with what you actually found — not what you assumed. A gate comment without real verification is rubber-stamping.
+
+**Step 5 — Advance or Block:**
+- **PASS**: implementation verified to exist or spec is genuinely complete → post gate comment with specific evidence → advance
+- **FAIL / spec wrong**: found issue → post detailed finding → mark BLOCKED, fix spec, or escalate to user
+- **STUB detected**: content has placeholder or truncated text → rebuild from scratch, do NOT advance
+
+**Never tick all checkboxes mechanically.** Each checkbox represents a claim. Verify the claim before checking it.
+
+#### CLI helper (API operations only)
+
+```bash
+node skills/all-dai-sdd/loop.mjs                        # advance next incomplete task
+node skills/all-dai-sdd/loop.mjs --initiative <slug>    # target specific initiative
+node skills/all-dai-sdd/loop.mjs --dry-run              # preview only, no writes
+node skills/all-dai-sdd/loop.mjs --backfill-artifacts   # create AR for Done VA tasks
 ```
 
-`loop.mjs` (lives in `skills/all-dai-sdd/`):
-- Reads board config from `.sdd-state.json` (created by `sdd-conductor.mjs init`)
-- Reads API key from `~/.dataspheres.env` or `.env`
-- Re-reads live board state every iteration — fully adaptive to external changes
-- Lifecycle order: RS → NS (all RS done) → per-epic: EX → VA → EP close
-- Discovers EX→Epic mapping dynamically from `epic_ref:` in task content
-- Ticks checklists, posts `[all-dai-sdd-system-message]` gate comment, moves to Done
-- Exits only when 100% Done or a hard blocker is hit (500-iteration safety cap)
+`loop.mjs` reads `.sdd-state.json` for board config and `~/.dataspheres.env` for API key. It handles the mechanics of board traversal and task advancement. It does NOT replace your reasoning — it exposes the board state so you can reason about it.
 
-For manual AI-driven Ralph loop (failing VA tasks):
-1. Fetch the VA task and read iteration history from comments
-2. Identify the current best result and the gap to the gate threshold
-3. Run the next iteration (apply last-known best fix, re-measure, check gate)
-4. Post iteration comment (see Ralph Loop Protocol section)
-5. If gate passes → mark VA task Done, propagate checklist ticks
-6. If North Star hit → post North Star comment, mark Done, exit loop
-7. If BLOCKED condition met → post blocker comment, mark task BLOCKED, stop
-8. Otherwise → loop (go to step 3, no user input needed)
+**When the pipeline has never been executed** (no files on disk): loop.mjs will advance everything mechanically and the board will reach 100% — but that is wrong. The board reflects spec quality, not implementation completeness. Claude must check the filesystem and block tasks that reference non-existent implementations.
 
-**LOOP mode is the default behavior — not an exception.** Not waiting for the user is the rule, not the exception.
+**LOOP mode is the default behavior — not an exception.** Not waiting for the user is the rule. Catching issues is the job.
 
 ### Mode: REFACTOR
 Triggered when user says "refactor", "restructure", or "reorganize":

@@ -434,8 +434,11 @@ function tickAll(content) {
 
 async function patchContent(cfg, id, content) {
   try {
+    // WAF note: send content and statusGroupId in SEPARATE PATCH calls when content > ~1600 chars.
+    // The WAF blocks requests that combine large content bodies with statusGroupId in a single call.
+    // Also: python -c "..." with literal double quotes in HTML triggers the WAF — use &quot; instead.
     await api('PATCH', `/api/v2/dataspheres/${cfg.dsId}/tasks/${id}`, { content });
-  } catch { /* WAF may block content with pip install patterns — non-fatal */ }
+  } catch { /* WAF may block content — non-fatal */ }
 }
 
 async function postComment(cfg, id, text) {
