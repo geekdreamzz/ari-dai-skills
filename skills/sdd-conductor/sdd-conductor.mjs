@@ -11,6 +11,7 @@
  *   node sdd-conductor.mjs switch <slug>             Switch current initiative
  *   node sdd-conductor.mjs workspace                 Cross-project view of all registered initiatives
  *   node sdd-conductor.mjs drive                     Ordered mission brief — what to do next end-to-end
+ *   node loop.mjs                                    LOOP mode: read board → advance → repeat until 100% Done
  *   node sdd-conductor.mjs sync                      Mid-plan reconcile: diff tasks.yaml vs live board
  *   node sdd-conductor.mjs start <taskId>            Mark task IN_PROGRESS. Exits 1 if deps not Done.
  *   node sdd-conductor.mjs complete <taskId>         Verify checklist → comment → PATCH Done → propagate.
@@ -58,7 +59,6 @@ const STATE_FILE = '.sdd-state.json';
 const WORKSPACE_FILE = path.join(os.homedir(), '.sdd-workspace.json');
 const CONDUCTOR_RAW_URL = 'https://raw.githubusercontent.com/geekdreamzz/ari-dai-skills/main/skills/sdd-conductor/sdd-conductor.mjs';
 const SKILL_RAW_URL     = 'https://raw.githubusercontent.com/geekdreamzz/ari-dai-skills/main/skills/all-dai-sdd/SKILL.md';
-const LOOP_RAW_URL      = 'https://raw.githubusercontent.com/geekdreamzz/ari-dai-skills/main/skills/all-dai-sdd/loop.mjs';
 
 // ---------------------------------------------------------------------------
 // Global --initiative override (parsed before command dispatch)
@@ -2470,8 +2470,70 @@ async function cmdGate(name, arg) {
       ok(`GATE tiptap-html: ${path.basename(arg)} passes all Tiptap format checks (${html.length} chars)`);
       break;
     }
+    case 'evidence-quality': {
+      // Gate: the last [all-dai-sdd-system-message] comment on a task must contain
+      // real substantiation — not the mechanical loop's boilerplate.
+      // This enforces that Claude actually ran something before advancing.
+      if (!arg) die('Usage: gate evidence-quality <taskId>');
+      const task = unwrapTask(await client.get(`/api/v2/dataspheres/${iState.dsId}/tasks/${arg}`));
+      const sid = extractSpecId(task.content) || task.title?.match(/^[A-Z]+-\d+/)?.[0] || arg;
+
+      // Fetch comments
+      let comments = [];
+      try {
+        const cr = await client.get(`/api/v2/dataspheres/${iState.dsId}/tasks/${arg}/comments?limit=20`);
+        comments = cr.comments || cr || [];
+      } catch { /* non-fatal */ }
+
+      const sysComments = comments
+        .filter(c => (c.content || '').includes('[all-dai-sdd-system-message]'))
+        .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+
+      if (sysComments.length === 0) {
+        gate(
+          `${sid}: no [all-dai-sdd-system-message] gate comment found.\n` +
+          `Claude must post substantiation before advancing a task.\n` +
+          `Use: node loop.mjs --advance ${arg} --evidence "..."`
+        );
+      }
+
+      const last = sysComments[0].content || '';
+
+      // Reject known boilerplate from the mechanical loop
+      const BOILERPLATE = [
+        /spec validation = PASS \(gate: all AC\/FR\/NFR items have observable, testable thresholds\)/,
+        /No rubber-stamping — each criterion is measurable/,
+        /first iteration passed/,
+        /All checklist items ticked\. Implementation files documented\. Spec ready for validation pass/,
+        /Vision, success criteria, and architecture constraints documented\. All Epics defined/,
+        /Research complete → gate cleared for NS advancement/,
+      ];
+      for (const pattern of BOILERPLATE) {
+        if (pattern.test(last)) {
+          gate(
+            `${sid}: gate comment is mechanical boilerplate — task was not substantiated by an AI.\n\n` +
+            `The comment matches a known rubber-stamp pattern:\n  "${last.slice(0, 120)}..."\n\n` +
+            `Required: re-run with real evidence (command output, file paths, measured results).\n` +
+            `Use: node loop.mjs --advance ${arg} --evidence "[EXECUTED] ... [OUTPUT] ... [VERDICT] ..."`
+          );
+        }
+      }
+
+      // Require minimum substance
+      const MIN_LEN = 200;
+      const evidenceBody = last.replace('[all-dai-sdd-system-message]', '').trim();
+      if (evidenceBody.length < MIN_LEN) {
+        gate(
+          `${sid}: gate comment too short (${evidenceBody.length} chars, min ${MIN_LEN}).\n` +
+          `Post real evidence — command output, file confirmation, or measured test results.`
+        );
+      }
+
+      ok(`GATE evidence-quality: ${sid} has substantive gate comment (${evidenceBody.length} chars, non-boilerplate) ✓`);
+      break;
+    }
     default:
-      die(`Unknown gate: ${name}. Valid: deps-done, research-done, no-mocks, checklist, impl-files, hierarchy, trace-graph, content-structure, checklist-format, title-prefix, tracker-link, tiptap-html`);
+      die(`Unknown gate: ${name}. Valid: deps-done, research-done, no-mocks, checklist, impl-files, hierarchy, trace-graph, content-structure, checklist-format, title-prefix, tracker-link, tiptap-html, evidence-quality`);
   }
 }
 
@@ -3850,12 +3912,10 @@ async function cmdUpdate() {
     ok(`sdd-conductor v${VERSION} is already up to date.`);
   }
 
-  const conductorDir = path.dirname(fileURLToPath(import.meta.url));
-
-  // Update all-dai-sdd/SKILL.md
   try {
-    const skillPath = path.resolve(conductorDir, '..', 'all-dai-sdd', 'SKILL.md');
-    if (fs.existsSync(path.dirname(skillPath))) {
+    const conductorDir = path.dirname(fileURLToPath(import.meta.url));
+    const skillPath    = path.resolve(conductorDir, '..', 'all-dai-sdd', 'SKILL.md');
+    if (fs.existsSync(skillPath)) {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 10000);
       const res = await fetch(SKILL_RAW_URL, { signal: controller.signal });
@@ -3867,21 +3927,6 @@ async function cmdUpdate() {
     }
   } catch (e) {
     warn(`Could not update SKILL.md: ${e.message}`);
-  }
-
-  // Update all-dai-sdd/loop.mjs
-  try {
-    const loopPath = path.resolve(conductorDir, '..', 'all-dai-sdd', 'loop.mjs');
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 10000);
-    const res = await fetch(LOOP_RAW_URL, { signal: controller.signal });
-    clearTimeout(timer);
-    if (res.ok) {
-      fs.writeFileSync(loopPath, await res.text(), 'utf-8');
-      info(`loop.mjs updated ✓`);
-    }
-  } catch (e) {
-    warn(`Could not update loop.mjs: ${e.message}`);
   }
 
   if (newVersion) {
