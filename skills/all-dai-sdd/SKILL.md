@@ -311,35 +311,98 @@ The answers determine the mode:
 6. Always run `node sdd-conductor.mjs verify-gates` after sync to confirm CLEAN
 
 ### Mode: LOOP
+
 Triggered automatically when: (a) a VA task in the Validation column has at least one failed iteration, or (b) the user says "keep going", "run continuously", "drive to done", "loop until 100%", or similar.
 
-**Programmatic runner — always prefer this over manual iteration:**
+---
+
+#### ⚠️ CRITICAL: Claude IS the executor — never rubber-stamp
+
+The worst failure mode in SDD is an AI marking tasks Done without doing the work. Ticking all checkboxes and posting a boilerplate "PASS" comment while the implementation is untested or broken is **worse than leaving the task in Execution** — it creates false confidence.
+
+**Claude must:**
+- READ each task's full content before advancing it
+- EXECUTE the implementation (run commands, write files, call APIs)
+- ANALYZE outputs — real results vs the AC thresholds, not assumed
+- UPDATE tasks with learnings — bugs found, approaches tried, fixes applied
+- Only ADVANCE when the evidence is real and traceable
+
+**Claude must NOT:**
+- Tick all checkboxes without verifying each criterion
+- Post a gate comment before running anything
+- Mark a VA task Done without actually testing the acceptance criteria
+- Assume an EX task is complete because the spec says it should work
+- Use `node loop.mjs` (bare, no flags) when Claude is in the conversation — that path rubber-stamps
+
+---
+
+#### AI-Driven Loop Protocol (mandatory when Claude is active)
+
 ```bash
-node skills/all-dai-sdd/loop.mjs                      # active initiative from .sdd-state.json
-node skills/all-dai-sdd/loop.mjs --initiative <slug>  # specific initiative
-node skills/all-dai-sdd/loop.mjs --dry-run            # preview only, no writes
+# Step 1 — read the next task
+node skills/all-dai-sdd/loop.mjs --next
+# → outputs JSON: { status, done, total, pct, task: { id, title, key, type, content } }
+
+# Step 2 — Claude reads the task content and does the actual work:
+#   EX task: reads Implementation Files, verifies files exist, runs smoke test
+#   VA task: runs each AC criterion, measures actual results vs thresholds
+#   EP task: confirms all child EX+VA are Done, reads and validates epic AC
+#   RS task: runs start_research, populates findings, cites real URLs
+
+# Step 3 — advance with REAL evidence (not boilerplate)
+node skills/all-dai-sdd/loop.mjs --advance <taskId> --evidence "
+[EXECUTED]
+<command or test that was run>
+
+[OUTPUT]
+<actual output — file paths, numbers, error messages, screenshots>
+
+[VERDICT]
+<what passed, what failed, what was fixed>
+"
+# Evidence is validated — min 200 chars, boilerplate patterns are rejected
 ```
 
-`loop.mjs` (lives in `skills/all-dai-sdd/`):
-- Reads board config from `.sdd-state.json` (created by `sdd-conductor.mjs init`)
-- Reads API key from `~/.dataspheres.env` or `.env`
-- Re-reads live board state every iteration — fully adaptive to external changes
-- Lifecycle order: RS → NS (all RS done) → per-epic: EX → VA → EP close
-- Discovers EX→Epic mapping dynamically from `epic_ref:` in task content
-- Ticks checklists, posts `[all-dai-sdd-system-message]` gate comment, moves to Done
-- Exits only when 100% Done or a hard blocker is hit (500-iteration safety cap)
+**Evidence must contain real substance:**
 
-For manual AI-driven Ralph loop (failing VA tasks):
-1. Fetch the VA task and read iteration history from comments
-2. Identify the current best result and the gap to the gate threshold
-3. Run the next iteration (apply last-known best fix, re-measure, check gate)
-4. Post iteration comment (see Ralph Loop Protocol section)
-5. If gate passes → mark VA task Done, propagate checklist ticks
-6. If North Star hit → post North Star comment, mark Done, exit loop
-7. If BLOCKED condition met → post blocker comment, mark task BLOCKED, stop
-8. Otherwise → loop (go to step 3, no user input needed)
+| Task type | Evidence must include |
+|---|---|
+| EX | File existence check (`ls -la path/to/file`), import or smoke test output |
+| VA | Actual measured value vs AC threshold (e.g. `denoise=0.90 → output saved at outputs/test.png`) |
+| EP | List of child task keys confirmed Done + epic AC cross-check |
+| RS | At least 2 real URLs from search results + feasibility finding |
+| AR | Real file paths with sizes or line counts from the implementation |
 
-**LOOP mode is the default behavior — not an exception.** Not waiting for the user is the rule, not the exception.
+**What to do when a task fails:**
+1. Post a comment on the task documenting what failed and why
+2. Fix the issue (edit code, install dependency, change approach)
+3. Re-run and verify the fix works
+4. Advance with evidence that includes the failure → fix → re-run trace
+5. If unfixable: mark task BLOCKED with a detailed blocker comment
+
+---
+
+#### Mechanical Loop (headless / no AI in context)
+
+The bare mechanical loop is for CI/CD or unattended runs where no AI is present. It ticks checklists and moves tasks but posts only structural gate comments — **it does not test, execute, or verify anything**.
+
+```bash
+node skills/all-dai-sdd/loop.mjs                      # active initiative
+node skills/all-dai-sdd/loop.mjs --initiative <slug>  # specific initiative
+node skills/all-dai-sdd/loop.mjs --dry-run            # preview only
+```
+
+**When Claude is in the conversation, this mode is BANNED.** If you see the bare loop suggested, override it with the AI-driven protocol above.
+
+---
+
+#### Utility modes
+
+```bash
+node loop.mjs --backfill-artifacts   # create AR tasks for Done VA tasks retroactively
+```
+
+**LOOP mode is the default behavior — not an exception.** Not waiting for the user is the rule. But not waiting does not mean not verifying.
 
 ### Mode: REFACTOR
 Triggered when user says "refactor", "restructure", or "reorganize":

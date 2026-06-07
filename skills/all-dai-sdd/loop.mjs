@@ -8,10 +8,18 @@
  * Loops autonomously until 100% Done. No user input between iterations.
  *
  * Usage:
- *   node loop.mjs                          # uses active initiative from .sdd-state.json
- *   node loop.mjs --initiative <slug>      # target a specific initiative
- *   node loop.mjs --dry-run               # print what would advance, don't write
- *   node loop.mjs --backfill-artifacts     # create AR tasks for all Done VA tasks retroactively
+ *   node loop.mjs --next                         # output next incomplete task as JSON (no writes)
+ *   node loop.mjs --advance <taskId>             # advance task to Done (requires --evidence)
+ *     --evidence "..."                           # REQUIRED: real test output, file paths, measured results
+ *   node loop.mjs --backfill-artifacts           # create AR tasks for all Done VA tasks retroactively
+ *   node loop.mjs --initiative <slug>            # target a specific initiative
+ *   node loop.mjs --dry-run                      # print what would advance, don't write
+ *
+ * IMPORTANT — AI-DRIVEN MODE:
+ *   When Claude (or any AI) is active in the conversation, use --next + --advance.
+ *   The bare `node loop.mjs` (mechanical loop) MUST NOT be used — it rubber-stamps
+ *   tasks without substantiation. Claude must READ each task, RUN the code or tests,
+ *   VERIFY outputs, and only then call --advance with real evidence.
  *
  * Requires one of:
  *   - ~/.dataspheres.env  with  DATASPHERES_API_KEY=...
@@ -33,6 +41,10 @@ const MAX_ITERATIONS = 500;
 let initiativeOverride = null;
 let dryRun = false;
 let backfillMode = false;
+let nextMode = false;
+let advanceTaskId = null;
+let evidenceText = null;
+
 for (let i = 2; i < process.argv.length; i++) {
   if (process.argv[i] === '--initiative' && process.argv[i + 1]) {
     initiativeOverride = process.argv[++i];
@@ -40,6 +52,12 @@ for (let i = 2; i < process.argv.length; i++) {
     dryRun = true;
   } else if (process.argv[i] === '--backfill-artifacts') {
     backfillMode = true;
+  } else if (process.argv[i] === '--next') {
+    nextMode = true;
+  } else if (process.argv[i] === '--advance' && process.argv[i + 1]) {
+    advanceTaskId = process.argv[++i];
+  } else if (process.argv[i] === '--evidence' && process.argv[i + 1]) {
+    evidenceText = process.argv[++i];
   }
 }
 
@@ -500,6 +518,126 @@ async function createArtifact(cfg, vaTask, allTasks) {
   }
 }
 
+// ── AI-driven: --next ─────────────────────────────────────────────────────────
+// Outputs the next incomplete task as JSON so Claude can read, execute, and
+// substantiate it before calling --advance. No board modifications.
+async function findNextTask(cfg, iState, slug) {
+  const tasks = await readBoard(cfg);
+  const nonAR = tasks.filter(t => sddType(t.title) !== 'AR');
+  const total = nonAR.length;
+  const done = nonAR.filter(t => t.isDone).length;
+  const next = findNextIncomplete(tasks);
+
+  if (!next) {
+    process.stdout.write(JSON.stringify({
+      status: 'complete',
+      done, total,
+      pct: Math.round(done / total * 100),
+      dashboardUrl: iState.dashboardSlug
+        ? `${BASE}/pages/${cfg.dsUri || cfg.dsId}/${iState.dashboardSlug}` : null,
+      plannerUrl: `${BASE}/app/${cfg.dsUri || cfg.dsId}/planner?mode=${cfg.planModeId}`,
+    }, null, 2));
+    return;
+  }
+
+  // Include all tasks for dependency resolution context
+  const taskIndex = {};
+  tasks.forEach(t => { const k = sddKey(t.title); if (k) taskIndex[k] = { id: t.id, title: t.title, isDone: t.isDone }; });
+
+  process.stdout.write(JSON.stringify({
+    status: 'next',
+    done, total,
+    pct: Math.round(done / total * 100),
+    task: {
+      id: next.id,
+      title: next.title,
+      key: sddKey(next.title),
+      type: sddType(next.title),
+      content: next.content,
+    },
+    taskIndex,
+  }, null, 2));
+}
+
+// ── AI-driven: --advance ──────────────────────────────────────────────────────
+// Advances a task to Done after Claude has substantiated it.
+// Requires --evidence with real output — boilerplate is rejected.
+async function advanceTask(cfg, iState, slug) {
+  if (!advanceTaskId) {
+    console.error('✗ --advance requires a task ID: node loop.mjs --advance <taskId> --evidence "..."');
+    process.exit(1);
+  }
+  if (!evidenceText) {
+    console.error('✗ --evidence is required. Provide real test output, file paths, or measured results.');
+    console.error('  Do NOT advance a task without substantiation — that is the problem we are fixing.');
+    process.exit(1);
+  }
+
+  // Evidence quality gate — must be substantive, not boilerplate
+  const MIN_EVIDENCE_LEN = 200;
+  const BOILERPLATE_PATTERNS = [
+    /spec validation = PASS \(gate: all AC\/FR\/NFR items have observable/,
+    /^No rubber-stamping/,
+    /first iteration passed/,
+    /All checklist items ticked\. Implementation files documented\. Spec ready/,
+  ];
+  if (evidenceText.length < MIN_EVIDENCE_LEN) {
+    console.error(`✗ Evidence too short (${evidenceText.length} chars, min ${MIN_EVIDENCE_LEN}). Provide real output.`);
+    process.exit(1);
+  }
+  for (const pattern of BOILERPLATE_PATTERNS) {
+    if (pattern.test(evidenceText)) {
+      console.error('✗ Evidence matches known boilerplate. Replace with real command output, file paths, or measured results.');
+      process.exit(1);
+    }
+  }
+
+  const tasks = await readBoard(cfg);
+  const task = tasks.find(t => t.id === advanceTaskId);
+  if (!task) {
+    // Also try matching by key (e.g. "VA-003")
+    const byKey = tasks.find(t => sddKey(t.title) === advanceTaskId);
+    if (!byKey) {
+      console.error(`✗ Task "${advanceTaskId}" not found. Pass the task ID (cmp...) or key (VA-003).`);
+      process.exit(1);
+    }
+    advanceTaskId = byKey.id;
+    return advanceTask(cfg, iState, slug); // retry with resolved id
+  }
+
+  if (task.isDone) {
+    console.log(`[skip] ${sddKey(task.title) || task.title.slice(0,30)} is already Done.`);
+    return;
+  }
+
+  const type = sddType(task.title);
+  const key = sddKey(task.title);
+
+  process.stdout.write(`→ ${dryRun ? '[DRY] ' : ''}Advancing ${key} with AI evidence... `);
+  if (dryRun) { console.log('(skipped — dry run)'); return; }
+
+  const ticked = tickAll(task.content);
+  if (ticked !== task.content) await patchContent(cfg, task.id, ticked);
+
+  const ts = new Date().toISOString();
+  const comment = `[all-dai-sdd-system-message]\n\n**Gate: PASS — AI-substantiated** | ${ts}\n\n${evidenceText}`;
+  await postComment(cfg, task.id, comment);
+
+  if (type === 'VA') {
+    await createArtifact(cfg, task, tasks);
+  }
+
+  await moveDone(cfg, task.id);
+  console.log(`✅ ${key} Done`);
+
+  // Print updated progress
+  const updated = await readBoard(cfg);
+  const nonAR = updated.filter(t => sddType(t.title) !== 'AR');
+  const done = nonAR.filter(t => t.isDone).length;
+  const total = nonAR.length;
+  console.log(`   Progress: ${done}/${total} (${Math.round(done/total*100)}%)`);
+}
+
 // ── Backfill artifacts ────────────────────────────────────────────────────────
 async function backfillArtifacts(cfg, iState, slug) {
   console.log(`\n━━━ all-dai-sdd BACKFILL ARTIFACTS: ${slug} ━━━`);
@@ -618,6 +756,16 @@ async function main() {
   if (!cfg.dsId || !cfg.planModeId || !cfg.doneGroupId) {
     console.error('✗ .sdd-state.json missing required fields. Re-run: node sdd-conductor.mjs init');
     process.exit(1);
+  }
+
+  if (nextMode) {
+    await findNextTask(cfg, iState, slug);
+    return;
+  }
+
+  if (advanceTaskId !== null) {
+    await advanceTask(cfg, iState, slug);
+    return;
   }
 
   if (backfillMode) {
