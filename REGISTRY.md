@@ -33,12 +33,33 @@ These live only in `dataspheres-ai/.claude/skills/` and are NOT pushed to this r
 ## Sync Workflow
 
 ```
-dai-skills (source of truth)  →  push to GitHub  →  copy to dataspheres-ai/.claude/skills/
+dai-skills (source of truth)  ←→  GitHub  ←→  dataspheres-ai/.claude/skills/
 ```
+
+### Outbound — publishing changes you made locally
 
 **Never edit skills in `dataspheres-ai/.claude/skills/` first.** Always:
 1. Edit in `c:/Users/facel/Projects/dai-skills/skills/<skill>/`
 2. `cd "c:/Users/facel/Projects/dai-skills" && git add -A && git commit && git push origin main`
 3. Copy changed files back to `dataspheres-ai/.claude/skills/<skill>/`
+
+### Inbound — pulling changes from others
+
+When someone else pushes to this repo (or you pull new commits), run:
+
+```bash
+# 1. Pull the latest from GitHub
+cd "c:/Users/facel/Projects/dai-skills" && git pull origin main
+
+# 2. Let the conductor self-update all skill files it knows about
+#    (sdd-conductor.mjs, SKILL.md, loop.mjs — fetched directly from raw.githubusercontent.com)
+node "c:/Users/facel/Projects/dataspheres-ai/.claude/skills/sdd-conductor/sdd-conductor.mjs" update
+
+# 3. For any skill files NOT covered by `update`, copy manually:
+#    cp "c:/Users/facel/Projects/dai-skills/skills/<skill>/<file>" \
+#       "c:/Users/facel/Projects/dataspheres-ai/.claude/skills/<skill>/<file>"
+```
+
+`node sdd-conductor.mjs update` is the canonical way to pull the latest public skills into any project — it fetches directly from GitHub so it works on any machine, not just this one.
 
 Internal skills are only edited in `dataspheres-ai/.claude/skills/` and are never synced here.

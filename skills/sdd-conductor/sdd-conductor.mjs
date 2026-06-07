@@ -11,7 +11,6 @@
  *   node sdd-conductor.mjs switch <slug>             Switch current initiative
  *   node sdd-conductor.mjs workspace                 Cross-project view of all registered initiatives
  *   node sdd-conductor.mjs drive                     Ordered mission brief — what to do next end-to-end
- *   node loop.mjs                                    LOOP mode: read board → advance → repeat until 100% Done
  *   node sdd-conductor.mjs sync                      Mid-plan reconcile: diff tasks.yaml vs live board
  *   node sdd-conductor.mjs start <taskId>            Mark task IN_PROGRESS. Exits 1 if deps not Done.
  *   node sdd-conductor.mjs complete <taskId>         Verify checklist → comment → PATCH Done → propagate.
@@ -59,6 +58,7 @@ const STATE_FILE = '.sdd-state.json';
 const WORKSPACE_FILE = path.join(os.homedir(), '.sdd-workspace.json');
 const CONDUCTOR_RAW_URL = 'https://raw.githubusercontent.com/geekdreamzz/ari-dai-skills/main/skills/sdd-conductor/sdd-conductor.mjs';
 const SKILL_RAW_URL     = 'https://raw.githubusercontent.com/geekdreamzz/ari-dai-skills/main/skills/all-dai-sdd/SKILL.md';
+const LOOP_RAW_URL      = 'https://raw.githubusercontent.com/geekdreamzz/ari-dai-skills/main/skills/all-dai-sdd/loop.mjs';
 
 // ---------------------------------------------------------------------------
 // Global --initiative override (parsed before command dispatch)
@@ -3850,10 +3850,12 @@ async function cmdUpdate() {
     ok(`sdd-conductor v${VERSION} is already up to date.`);
   }
 
+  const conductorDir = path.dirname(fileURLToPath(import.meta.url));
+
+  // Update all-dai-sdd/SKILL.md
   try {
-    const conductorDir = path.dirname(fileURLToPath(import.meta.url));
-    const skillPath    = path.resolve(conductorDir, '..', 'all-dai-sdd', 'SKILL.md');
-    if (fs.existsSync(skillPath)) {
+    const skillPath = path.resolve(conductorDir, '..', 'all-dai-sdd', 'SKILL.md');
+    if (fs.existsSync(path.dirname(skillPath))) {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 10000);
       const res = await fetch(SKILL_RAW_URL, { signal: controller.signal });
@@ -3865,6 +3867,21 @@ async function cmdUpdate() {
     }
   } catch (e) {
     warn(`Could not update SKILL.md: ${e.message}`);
+  }
+
+  // Update all-dai-sdd/loop.mjs
+  try {
+    const loopPath = path.resolve(conductorDir, '..', 'all-dai-sdd', 'loop.mjs');
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 10000);
+    const res = await fetch(LOOP_RAW_URL, { signal: controller.signal });
+    clearTimeout(timer);
+    if (res.ok) {
+      fs.writeFileSync(loopPath, await res.text(), 'utf-8');
+      info(`loop.mjs updated ✓`);
+    }
+  } catch (e) {
+    warn(`Could not update loop.mjs: ${e.message}`);
   }
 
   if (newVersion) {
