@@ -309,7 +309,25 @@ The answers determine the mode:
 6. Always run `node sdd-conductor.mjs verify-gates` after sync to confirm CLEAN
 
 ### Mode: LOOP
-Triggered automatically when a VA task in the Validation column has at least one failed iteration (detected by scanning for `Ralph loop — iteration` in task comments). Also triggered when the user says "keep going", "resume the loop", "keep iterating", or "why did the loop stop":
+Triggered automatically when: (a) a VA task in the Validation column has at least one failed iteration, or (b) the user says "keep going", "run continuously", "drive to done", "loop until 100%", or similar.
+
+**Programmatic runner — always prefer this over manual iteration:**
+```bash
+node skills/all-dai-sdd/loop.mjs                      # active initiative from .sdd-state.json
+node skills/all-dai-sdd/loop.mjs --initiative <slug>  # specific initiative
+node skills/all-dai-sdd/loop.mjs --dry-run            # preview only, no writes
+```
+
+`loop.mjs` (lives in `skills/all-dai-sdd/`):
+- Reads board config from `.sdd-state.json` (created by `sdd-conductor.mjs init`)
+- Reads API key from `~/.dataspheres.env` or `.env`
+- Re-reads live board state every iteration — fully adaptive to external changes
+- Lifecycle order: RS → NS (all RS done) → per-epic: EX → VA → EP close
+- Discovers EX→Epic mapping dynamically from `epic_ref:` in task content
+- Ticks checklists, posts `[all-dai-sdd-system-message]` gate comment, moves to Done
+- Exits only when 100% Done or a hard blocker is hit (500-iteration safety cap)
+
+For manual AI-driven Ralph loop (failing VA tasks):
 1. Fetch the VA task and read iteration history from comments
 2. Identify the current best result and the gap to the gate threshold
 3. Run the next iteration (apply last-known best fix, re-measure, check gate)
@@ -319,7 +337,7 @@ Triggered automatically when a VA task in the Validation column has at least one
 7. If BLOCKED condition met → post blocker comment, mark task BLOCKED, stop
 8. Otherwise → loop (go to step 3, no user input needed)
 
-**LOOP mode is the default behavior for any failing VA task — not an exception.** Not waiting for the user is the rule, not the exception.
+**LOOP mode is the default behavior — not an exception.** Not waiting for the user is the rule, not the exception.
 
 ### Mode: REFACTOR
 Triggered when user says "refactor", "restructure", or "reorganize":

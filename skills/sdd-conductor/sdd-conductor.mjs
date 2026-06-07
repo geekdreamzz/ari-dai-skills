@@ -11,6 +11,7 @@
  *   node sdd-conductor.mjs switch <slug>             Switch current initiative
  *   node sdd-conductor.mjs workspace                 Cross-project view of all registered initiatives
  *   node sdd-conductor.mjs drive                     Ordered mission brief — what to do next end-to-end
+ *   node loop.mjs                                    LOOP mode: read board → advance → repeat until 100% Done
  *   node sdd-conductor.mjs sync                      Mid-plan reconcile: diff tasks.yaml vs live board
  *   node sdd-conductor.mjs start <taskId>            Mark task IN_PROGRESS. Exits 1 if deps not Done.
  *   node sdd-conductor.mjs complete <taskId>         Verify checklist → comment → PATCH Done → propagate.
