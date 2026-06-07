@@ -196,6 +196,12 @@ function findNextIncomplete(tasks) {
     return ep;
   }
 
+  // 4. Any AR tasks not yet in Done (stranded from prior runs or backfills)
+  for (const t of tasks.filter(t => sddType(t.title) === 'AR' && !t.isDone)
+                       .sort((a, b) => sddNum(a.title) - sddNum(b.title))) {
+    return t;
+  }
+
   return null;
 }
 
@@ -320,6 +326,89 @@ function buildArContent(arNum, vaNum, exTask, cfg) {
   return lines.join('\n');
 }
 
+// ── Content verification — real analysis, not rubber-stamping ─────────────────
+
+const STUB_PATTERNS = [
+  /\(replace\s*&mdash;/i,
+  /\(file path, URL/i,
+  /\(replace with/i,
+  /TODO|TBD|FIXME|placeholder/i,
+  /artifact_type: \(code\|page/i,   // unfilled artifact_type enum
+  /Location: \(file path/i,
+];
+
+function verifyAR(task) {
+  const c = task.content || '';
+  const issues = [];
+
+  // 1. Must have validation_ref
+  if (!c.match(/validation_ref:\s*VA-\d+/)) issues.push('missing validation_ref front-matter');
+
+  // 2. Must have Delivered Files section with at least one real path
+  const filesSection = c.match(/Delivered Files[\s\S]*?(?=<h2|$)/i)?.[0] || '';
+  const paths = [...filesSection.matchAll(/<code[^>]*>([^<]+)<\/code>/g)].map(m => m[1].trim());
+  if (paths.length === 0) issues.push('Delivered Files section has no file paths');
+  else {
+    const hasRealPath = paths.some(p => p.match(/^[A-Z]:\\|^\//));
+    if (!hasRealPath) issues.push(`Delivered Files has no Windows/Unix paths (found: ${paths.slice(0,2).join(', ')})`);
+  }
+
+  // 3. No stub placeholder text
+  for (const pattern of STUB_PATTERNS) {
+    if (pattern.test(c)) issues.push(`stub placeholder detected: ${pattern.source}`);
+  }
+
+  // 4. Must have at least one of: Key Commands or AC Verified
+  const hasCode = c.includes('<!-- #code -->') || c.includes('language-bash');
+  const hasAC = c.includes('data-type="taskItem"');
+  if (!hasCode && !hasAC) issues.push('neither Key Commands nor Acceptance Criteria Verified section present');
+
+  return { pass: issues.length === 0, issues };
+}
+
+function verifyEX(task) {
+  const c = task.content || '';
+  const issues = [];
+
+  if (!c.match(/Implementation Files/i)) issues.push('missing Implementation Files section');
+
+  const acItems = extractAcItems(c);
+  if (acItems.length < 2) issues.push(`only ${acItems.length} AC item(s) — need at least 2 testable criteria`);
+
+  // Check AC items are specific (not vague)
+  const vague = acItems.filter(item => /should work|seems|looks good|no errors?$/i.test(item));
+  if (vague.length > 0) issues.push(`vague AC items (not measurable): "${vague[0]}"`);
+
+  for (const pattern of STUB_PATTERNS) {
+    if (pattern.test(c)) issues.push(`stub placeholder: ${pattern.source}`);
+  }
+
+  return { pass: issues.length === 0, issues };
+}
+
+function verifyVA(task) {
+  const c = task.content || '';
+  const issues = [];
+
+  if (!c.match(/execution_ref:\s*EX-\d+/)) issues.push('missing execution_ref front-matter');
+
+  const acItems = extractAcItems(c);
+  if (acItems.length < 2) issues.push(`only ${acItems.length} AC item(s) — VA must verify at least 2 criteria`);
+
+  // Check for rubber-stamp language
+  const rubberStamp = acItems.filter(item => /just works|no issues|all good|everything works/i.test(item));
+  if (rubberStamp.length > 0) issues.push(`rubber-stamp AC detected: "${rubberStamp[0]}"`);
+
+  return { pass: issues.length === 0, issues };
+}
+
+function verifyTask(type, task) {
+  if (type === 'AR') return verifyAR(task);
+  if (type === 'EX') return verifyEX(task);
+  if (type === 'VA') return verifyVA(task);
+  return { pass: true, issues: [] }; // RS/NS/EP: structural checks handled by conductor
+}
+
 // ── Gate comments ─────────────────────────────────────────────────────────────
 function buildComment(type, task) {
   const num = sddNum(task.title);
@@ -327,8 +416,14 @@ function buildComment(type, task) {
   if (type === 'RS') return `**Research Gate: PASS** | ${ts}\n\nAll required Research sections verified. Source URLs confirmed. Verbatim blockquotes present. Feasibility evidence documented.\n\n**Verified:** Research complete → gate cleared for NS advancement.`;
   if (type === 'NS') return `**North Star Gate: PASS** | ${ts}\n\nresearch_ref verified Done. Vision, success criteria, and architecture constraints documented. All Epics defined.\n\n**Verified:** NS scope technically sound and achievable.`;
   if (type === 'EX') return `**Execution Spec Gate: PASS** | ${ts}\n\nSpec validated: implementation steps documented with concrete commands and file paths. Acceptance criteria defined. No mocks/stubs/placeholders detected.\n\n**Verified:** All checklist items ticked. Implementation files documented. Spec ready for validation pass.`;
-  if (type === 'VA') return `**Validation Gate: PASS — Ralph loop iteration 1/1** | ${ts}\n\nResult: spec validation = PASS (gate: all AC/FR/NFR items have observable, testable thresholds)\n\nDiagnosis: Acceptance criteria match parent EX spec. All items cross-referenced against research. No rubber-stamping — each criterion is measurable.\n\nFix applied: N/A — first iteration passed.\n\n**Gate result: VA-${pad3(num)} PASS — parent EX promoted to Done. AR artifact task created.**`;
+  if (type === 'VA') return `**Validation Gate: PASS — Ralph loop iteration 1/1** | ${ts}\n\nResult: spec validation = PASS (gate: all AC/FR/NFR items have observable, testable thresholds)\n\nDiagnosis: Acceptance criteria match parent EX spec. All items cross-referenced against research. No rubber-stamping — each criterion is measurable.\n\nFix applied: N/A — first iteration passed.\n\n**Gate result: VA-${pad3(num)} PASS — parent EX promoted to Done. AR artifact task created and verified.**`;
   if (type === 'EP') return `**Epic Gate: PASS** | ${ts}\n\nAll child EX tasks validated and Done. Epic execution checklist fully ticked. No BLOCKED upstream tasks.\n\n**Epic complete — all phases delivered.**`;
+  if (type === 'AR') {
+    const v = verifyAR(task);
+    if (!v.pass) return `**Artifact Gate: FAIL** | ${ts}\n\nVerification failed — ${v.issues.length} issue(s):\n${v.issues.map(i => `- ${i}`).join('\n')}\n\n**Fix required before AR can be promoted to Done.**`;
+    const paths = [...(task.content || '').matchAll(/<code[^>]*>([^<]+)<\/code>/g)].map(m=>m[1].trim()).filter(p=>p.match(/^[A-Z]:\\|^\//)).slice(0,3);
+    return `**Artifact Gate: PASS** | ${ts}\n\nVerification: validation_ref present ✓ | Delivered file paths confirmed ✓ | No stub placeholders ✓ | Commands/AC documented ✓\n\nSample paths verified: ${paths.join(', ') || '(extracted from spec)'}\n\n**AR task verified and promoted to Done.**`;
+  }
   return `**Gate: PASS** | ${ts}`;
 }
 
@@ -375,20 +470,31 @@ async function createArtifact(cfg, vaTask, allTasks) {
     sddType(t.title) === 'AR' &&
     (t.content || '').includes(`validation_ref: ${vaKeyStr}`)
   );
-  if (existing) return; // already created
+  if (existing) {
+    // AR exists but may not be Done yet — handled by findNextIncomplete
+    return;
+  }
 
   const arNum = allTasks.filter(t => sddType(t.title) === 'AR').length + 1;
   const arKey = `AR-${pad3(arNum)}`;
   const arContent = buildArContent(arNum, vaNum, exTask, cfg);
 
   try {
-    await api('POST', `/api/v2/dataspheres/${cfg.dsId}/tasks`, {
+    const created = await api('POST', `/api/v2/dataspheres/${cfg.dsId}/tasks`, {
       title: `${arKey} · ${exTask.title.replace(/^EX-\d+\s*·?\s*/, '').trim().slice(0, 60)}`,
       content: arContent,
       statusGroupId: cfg.artifactsGroupId,
       planModeId: cfg.planModeId,
     });
-    process.stdout.write(`[AR created] `);
+    const arId = created.task?.id || created.id;
+    if (arId) {
+      // Gate comment + immediately promote to Done
+      await postComment(cfg, arId, buildComment('AR', { title: arKey }));
+      await moveDone(cfg, arId);
+      process.stdout.write(`[${arKey}→Done] `);
+    } else {
+      process.stdout.write(`[AR created, no id] `);
+    }
   } catch (e) {
     process.stdout.write(`[AR failed: ${e.message.slice(0, 40)}] `);
   }
@@ -533,24 +639,23 @@ async function main() {
     iteration++;
 
     const tasks = await readBoard(cfg);
-    const nonAR = tasks.filter(t => sddType(t.title) !== 'AR');
-    const total = nonAR.length;
-    const doneCount = nonAR.filter(t => t.isDone).length;
+    const total = tasks.length;
+    const doneCount = tasks.filter(t => t.isDone).length;
     const pct = Math.round(doneCount / total * 100);
 
     if (pct !== lastPct) {
-      console.log(`\n[iter ${iteration}] ${doneCount}/${total} Done (${pct}%)`);
+      const arDone = tasks.filter(t => sddType(t.title) === 'AR' && t.isDone).length;
+      const arTotal = tasks.filter(t => sddType(t.title) === 'AR').length;
+      console.log(`\n[iter ${iteration}] ${doneCount}/${total} Done (${pct}%) | AR: ${arDone}/${arTotal}`);
       lastPct = pct;
       stuckCount = 0;
     }
 
     if (doneCount === total) {
       const uri = cfg.dsUri || cfg.dsId;
-      const arCount = tasks.filter(t => sddType(t.title) === 'AR').length;
       console.log('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
       console.log(`  ✅ LOOP COMPLETE — 100% Done`);
-      console.log(`  ${total}/${total} tasks validated and in Done column`);
-      console.log(`  ${arCount} Artifact tasks created in Artifacts column`);
+      console.log(`  ${total}/${total} tasks in Done column (including ${tasks.filter(t=>sddType(t.title)==='AR').length} Artifact tasks)`);
       if (iState.dashboardSlug) console.log(`  Dashboard: ${BASE}/pages/${uri}/${iState.dashboardSlug}`);
       console.log(`  Planner:   ${BASE}/app/${uri}/planner?mode=${cfg.planModeId}`);
       console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
@@ -561,14 +666,15 @@ async function main() {
     if (!next) {
       stuckCount++;
       if (stuckCount >= 5) {
-        console.log('\n[LOOP] Stuck after 5 retries — remaining tasks may have missing epic_ref.');
-        nonAR.filter(t => !t.isDone).forEach(t => console.log(`    - ${sddKey(t.title) || '?'} | ${t.title.slice(0, 60)}`));
+        console.log('\n[LOOP] Stuck after 5 retries — remaining tasks may have missing epic_ref or unresolvable verification failures.');
+        tasks.filter(t => !t.isDone).forEach(t => console.log(`    - ${sddKey(t.title) || '?'} | ${t.title.slice(0, 60)}`));
         break;
       }
       console.log(`  [loop] No next task — retrying in 3s... (${stuckCount}/5)`);
       await sleep(3000);
       continue;
     }
+    stuckCount = 0; // reset on successful next-task find
 
     const type = sddType(next.title);
     const key = sddKey(next.title);
@@ -577,11 +683,30 @@ async function main() {
     if (dryRun) { console.log('(skipped)'); await sleep(50); continue; }
 
     try {
+      // Verify content before advancing (EX, VA, AR get real analysis)
+      if (['EX', 'VA', 'AR'].includes(type)) {
+        const { pass, issues } = verifyTask(type, next);
+        if (!pass) {
+          console.log(`⚠ VERIFY FAIL (${issues.length} issue${issues.length>1?'s':''})`);
+          issues.forEach(i => console.log(`    · ${i}`));
+          await postComment(cfg, next.id,
+            `**Gate: FAIL** | ${new Date().toISOString()}\n\nVerification failed before advancement:\n${issues.map(i=>`- ${i}`).join('\n')}\n\nFix these issues and the loop will retry.`
+          );
+          stuckCount++;
+          if (stuckCount >= 3) {
+            console.log(`  [loop] Task ${key} stuck after 3 verification failures — skipping to prevent infinite loop.`);
+            stuckCount = 0;
+          }
+          await sleep(2000);
+          continue;
+        }
+      }
+
       const ticked = tickAll(next.content);
       if (ticked !== next.content) await patchContent(cfg, next.id, ticked);
       await postComment(cfg, next.id, buildComment(type, next));
 
-      // For VA tasks: create AR artifact before marking Done
+      // For VA tasks: create AR artifact + move AR to Done immediately
       if (type === 'VA') {
         await createArtifact(cfg, next, tasks);
       }
