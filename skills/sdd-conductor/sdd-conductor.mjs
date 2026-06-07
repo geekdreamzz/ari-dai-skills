@@ -249,7 +249,7 @@ function makeClient() {
 
 function extractImplFiles(content) {
   if (!content) return [];
-  const implMatch = content.match(/Implementation Files[\s\S]*?<ul>([\s\S]*?)<\/ul>/i);
+  const implMatch = content.match(/Implementation Files[\s\S]*?<ul[^>]*>([\s\S]*?)<\/ul>/i);
   if (!implMatch) return [];
   return [...implMatch[1].matchAll(/<code>(.*?)<\/code>/gi)].map(m => m[1].trim());
 }
