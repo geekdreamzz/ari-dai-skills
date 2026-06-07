@@ -1,17 +1,19 @@
 <!-- dai-sync: skip -->
 # all-dai-sdd — Spec-Driven Development
 
-Drive feature implementation from a living spec hosted on Dataspheres AI. Six-column lifecycle with pre-flight research gating, sub-checklist propagation, dependency enforcement, and a live stakeholder dashboard.
+Drive feature implementation from a living spec hosted on Dataspheres AI. Seven-column lifecycle with pre-flight research gating, sub-checklist propagation, dependency enforcement, artifact tracing, and a live stakeholder dashboard.
 
 ---
 
-## Six-Column Lifecycle
+## Seven-Column Lifecycle
 
 ```
-Research  →  North Stars  →  Epics  →  Execution  →  Validation  →  Done
+Research  →  North Stars  →  Epics  →  Execution  →  Validation  →  Artifacts  →  Done
 ```
 
-Every SDD project uses exactly these six columns, in this order. When you create a plan mode for an initiative, you must create six status groups with these exact names — do NOT use the planner's default columns (To Do / In Progress / Done).
+Every SDD project uses exactly these seven columns, in this order. When you create a plan mode for an initiative, you must create seven status groups with these exact names — do NOT use the planner's default columns (To Do / In Progress / Done).
+
+**The Artifacts column is mandatory, not optional.** When a VA task passes its gate, the loop runner and conductor auto-create an AR (Artifact) task in the Artifacts column. AR tasks document what was actually produced: file paths, code snippets, config files, scripts, compiled models, generated content. Stubs with placeholder text are a gate failure — AR tasks must contain real implementation details extracted from the parent EX spec.
 
 **The Research column is the origin gate.** Nothing enters North Stars without a corresponding Research task that has passed Validation. This is not optional and cannot be waived.
 
@@ -593,7 +595,7 @@ GET existing plan modes first. If none match `tagFilter: ["<initiative>"]`, POST
 curl -X POST "$DATASPHERES_BASE_URL/api/v2/dataspheres/<dsId>/tasks/plan-modes" \
   -H "Authorization: Bearer $DATASPHERES_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"name":"<Initiative Name>","tagFilter":["<initiative-slug>"],"columns":[{"name":"Research","color":"#6366f1","isDoneState":false},{"name":"North Stars","color":"#7c3aed","isDoneState":false},{"name":"Epics","color":"#0891b2","isDoneState":false},{"name":"Execution","color":"#3b82f6","isDoneState":false},{"name":"Validation","color":"#f59e0b","isDoneState":false},{"name":"Done","color":"#22c55e","isDoneState":true}]}'
+  -d '{"name":"<Initiative Name>","tagFilter":["<initiative-slug>"],"columns":[{"name":"Research","color":"#6366f1","isDoneState":false},{"name":"North Stars","color":"#7c3aed","isDoneState":false},{"name":"Epics","color":"#0891b2","isDoneState":false},{"name":"Execution","color":"#3b82f6","isDoneState":false},{"name":"Validation","color":"#f59e0b","isDoneState":false},{"name":"Artifacts","color":"#8B5CF6","isDoneState":false},{"name":"Done","color":"#22c55e","isDoneState":true}]}'
 ```
 
 If the API does not accept `columns` on POST (older server version), omit it and clean up defaults in step 8:

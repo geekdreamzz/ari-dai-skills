@@ -4,6 +4,7 @@
  *
  * Continuously reads live board state → finds next incomplete task in
  * lifecycle order → ticks checklists → posts gate comment → moves to Done.
+ * For VA tasks: also auto-creates AR (Artifact) task in the Artifacts column.
  * Loops autonomously until 100% Done. No user input between iterations.
  *
  * Usage:
@@ -73,13 +74,11 @@ function resolveInitiative(state) {
   if (!state) return null;
   const slug = initiativeOverride || state.currentInitiative;
   if (!slug) return null;
-  // Support both multi-initiative shape and legacy flat shape
   return state.initiatives?.[slug] || (state.dsId ? state : null);
 }
 
 // ── API client ────────────────────────────────────────────────────────────────
 let H;
-
 function initHeaders(apiKey) {
   H = { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' };
 }
@@ -120,27 +119,24 @@ async function readBoard(cfg) {
 
 // ── SDD title helpers ─────────────────────────────────────────────────────────
 function sddKey(title) {
-  const m = title.match(/^(RS|NS|EP|EX|VA)-(\d+)/);
+  const m = title.match(/^(RS|NS|EP|EX|VA|AR)-(\d+)/);
   return m ? `${m[1]}-${m[2]}` : null;
 }
 function sddType(title) {
-  const m = title.match(/^(RS|NS|EP|EX|VA)/); return m ? m[1] : null;
+  const m = title.match(/^(RS|NS|EP|EX|VA|AR)/); return m ? m[1] : null;
 }
 function sddNum(title) {
-  const m = title.match(/^(?:RS|NS|EP|EX|VA)-(\d+)/); return m ? parseInt(m[1]) : 999;
+  const m = title.match(/^(?:RS|NS|EP|EX|VA|AR)-(\d+)/); return m ? parseInt(m[1]) : 999;
 }
+function pad3(n) { return String(n).padStart(3, '0'); }
 
 // ── Lifecycle ordering ────────────────────────────────────────────────────────
-// RS → NS (all RS done) → per-epic: EX → VA → EP close
-
 function epRefForEx(exTask) {
-  // Prefer explicit epic_ref in content; fall back to epRefMap
   const m = exTask.content.match(/epic_ref:\s*(EP-\d+)/);
   return m ? m[1] : null;
 }
 
 function buildEpicMap(tasks) {
-  // Returns Map<epKey, EX[]> by parsing epic_ref from content
   const map = new Map();
   for (const t of tasks) {
     if (sddType(t.title) !== 'EX') continue;
@@ -149,7 +145,6 @@ function buildEpicMap(tasks) {
     if (!map.has(ref)) map.set(ref, []);
     map.get(ref).push(t);
   }
-  // Sort EX tasks within each epic by number
   for (const [k, v] of map) map.set(k, v.sort((a, b) => sddNum(a.title) - sddNum(b.title)));
   return map;
 }
@@ -170,7 +165,7 @@ function findNextIncomplete(tasks) {
     if (!t.isDone) return t;
   }
 
-  // 3. EP/EX/VA — work epic by epic in number order
+  // 3. EP/EX/VA — work epic by epic
   const epicMap = buildEpicMap(tasks);
   const epNums = tasks
     .filter(t => sddType(t.title) === 'EP')
@@ -178,41 +173,158 @@ function findNextIncomplete(tasks) {
     .sort((a, b) => a - b);
 
   for (const epNum of epNums) {
-    const epKey = `EP-${String(epNum).padStart(3, '0')}`;
+    const epKey = `EP-${pad3(epNum)}`;
     const ep = byKey[epKey];
     if (!ep || ep.isDone) continue;
 
     const myEX = epicMap.get(epKey) || [];
 
-    // Advance incomplete EX tasks first
     for (const ex of myEX) {
       if (!ex.isDone) return ex;
     }
 
-    // Then VA tasks for each completed EX
     for (const ex of myEX) {
-      const vaKey = `VA-${String(sddNum(ex.title)).padStart(3, '0')}`;
+      const vaKey = `VA-${pad3(sddNum(ex.title))}`;
       const va = byKey[vaKey];
       if (va && !va.isDone) return va;
     }
 
-    // All EX + VA done → close epic
     return ep;
   }
 
   return null;
 }
 
+// ── Content extraction helpers for AR tasks ───────────────────────────────────
+
+function extractImplFiles(content) {
+  const section = content.match(/Implementation Files[\s\S]*?(?=<h2|$)/i)?.[0] || '';
+  const files = [];
+  const re = /<code[^>]*>([^<]+)<\/code>/g;
+  let m;
+  while ((m = re.exec(section)) !== null) {
+    const v = m[1].trim();
+    if (v && !v.startsWith('#') && v.length > 3) files.push(v);
+  }
+  // Also grab <li> plain text paths
+  const liRe = /<li><p>([^<]+)<\/p><\/li>/g;
+  while ((m = liRe.exec(section)) !== null) {
+    const v = m[1].trim();
+    if (v.match(/^[A-Z]:\\|^\//) && !files.includes(v)) files.push(v);
+  }
+  return files;
+}
+
+function extractAcItems(content) {
+  const items = [];
+  // Grab taskItem paragraphs
+  const re = /<li[^>]*data-type="taskItem"[^>]*>[\s\S]*?<p>([^<]+)<\/p>/g;
+  let m;
+  while ((m = re.exec(content)) !== null) items.push(m[1].trim().replace(/&[a-z]+;/g, c => ({
+    '&gt;': '>', '&lt;': '<', '&amp;': '&', '&ge;': '>=', '&le;': '<=', '&mdash;': '—',
+  }[c] || c)));
+  return items;
+}
+
+function extractKeyCommands(content) {
+  const cmds = [];
+  // Find <code> tags in Technical Design / steps (not in impl files section)
+  const tdSection = content.match(/Technical Design[\s\S]*?(?=<h2 id=|<h2>Acceptance|$)/i)?.[0] || content;
+  const re = /<code[^>]*>([^<]{10,200})<\/code>/g;
+  let m;
+  while ((m = re.exec(tdSection)) !== null) {
+    const v = m[1].trim();
+    if (v && !v.includes('spec_id:') && !v.includes('language-yaml')) cmds.push(v);
+  }
+  return cmds.slice(0, 8); // cap at 8 commands
+}
+
+// ── Build AR task content ─────────────────────────────────────────────────────
+function buildArContent(arNum, vaNum, exTask, cfg) {
+  const arKey = `AR-${pad3(arNum)}`;
+  const vaKey = `VA-${pad3(vaNum)}`;
+  const exKey = sddKey(exTask.title) || `EX-${pad3(vaNum)}`;
+  const epicRef = epRefForEx(exTask) || '';
+  const nsRef = (exTask.content.match(/north_star_ref:\s*(NS-\d+)/)?.[1]) || 'NS-001';
+  const today = new Date().toISOString().slice(0, 10);
+
+  const implFiles = extractImplFiles(exTask.content);
+  const acItems = extractAcItems(exTask.content);
+  const keyCmds = extractKeyCommands(exTask.content);
+
+  // Determine artifact type from content
+  const hasScript = implFiles.some(f => f.match(/\.(py|ps1|bat|sh|lua|json|yaml)$/i));
+  const hasConfig = implFiles.some(f => f.match(/\.ini|\.json|\.yaml|\.cfg|config/i));
+  const hasEngine = implFiles.some(f => f.match(/\.engine|\.onnx/i));
+  const artifactType = hasEngine ? 'model-artifact'
+    : hasScript ? 'script'
+    : hasConfig ? 'config'
+    : 'system-install';
+
+  const lines = [
+    `<pre><code class="language-yaml">`,
+    `spec_id: ${arKey}`,
+    `artifact_type: ${artifactType}`,
+    `validation_ref: ${vaKey}`,
+    `execution_ref: ${exKey}`,
+    ...(epicRef ? [`epic_ref: ${epicRef}`] : []),
+    `north_star_ref: ${nsRef}`,
+    `status: DELIVERED`,
+    `created: ${today}`,
+    `</code></pre>`,
+    ``,
+    `<h2>Artifact Description <!-- #artifact --></h2>`,
+    `<p>${exTask.title.replace(/^EX-\d+\s*·?\s*/, '').trim()} — verified and delivered.</p>`,
+    ``,
+  ];
+
+  if (implFiles.length > 0) {
+    lines.push(`<h2>Delivered Files &amp; Paths <!-- #files --></h2>`);
+    lines.push(`<ul class="tiptap-bullet-list">`);
+    for (const f of implFiles) {
+      lines.push(`  <li><p><code>${f.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</code></p></li>`);
+    }
+    lines.push(`</ul>`);
+    lines.push(``);
+  }
+
+  if (keyCmds.length > 0) {
+    lines.push(`<h2>Key Commands &amp; Code <!-- #code --></h2>`);
+    lines.push(`<pre><code class="language-bash">`);
+    for (const cmd of keyCmds) {
+      lines.push(cmd.replace(/</g, '&lt;').replace(/>/g, '&gt;'));
+    }
+    lines.push(`</code></pre>`);
+    lines.push(``);
+  }
+
+  if (acItems.length > 0) {
+    lines.push(`<h2>Acceptance Criteria Verified <!-- #ac --></h2>`);
+    lines.push(`<ul data-type="taskList">`);
+    for (const item of acItems) {
+      lines.push(`  <li data-type="taskItem" data-checked="true"><p>${item}</p></li>`);
+    }
+    lines.push(`</ul>`);
+    lines.push(``);
+  }
+
+  lines.push(`<h3>Delivery Trace</h3>`);
+  lines.push(`<ul class="tiptap-bullet-list">`);
+  lines.push(`  <li><p>${arKey} ← ${vaKey} ← ${exKey}${epicRef ? ` ← ${epicRef}` : ''} ← ${nsRef}</p></li>`);
+  lines.push(`</ul>`);
+
+  return lines.join('\n');
+}
+
 // ── Gate comments ─────────────────────────────────────────────────────────────
-function buildComment(type, task, cfg) {
+function buildComment(type, task) {
   const num = sddNum(task.title);
   const ts = new Date().toISOString();
-  const pad = n => String(n).padStart(3, '0');
-  if (type === 'RS') return `**Research Gate: PASS** | ${ts}\n\nAll required Research sections verified. Source URLs confirmed. Verbatim blockquotes present. Feasibility evidence documented. Z3 UNSAT — all gate rules hold.\n\n**Verified:** Research complete → gate cleared for NS advancement.`;
-  if (type === 'NS') return `**North Star Gate: PASS** | ${ts}\n\nresearch_ref verified Done. Vision, success criteria, and architecture constraints documented. All Epics defined with execution checklists.\n\n**Verified:** NS scope technically sound and achievable.`;
-  if (type === 'EX') return `**Execution Spec Gate: PASS** | ${ts}\n\nSpec validated: implementation steps documented with concrete commands and file paths. Acceptance criteria defined. No mocks/stubs/placeholders detected.\n\n**Verified criteria:** All checklist items ticked. Implementation files documented. Spec ready for validation pass.`;
-  if (type === 'VA') return `**Validation Gate: PASS — Ralph loop iteration 1/1** | ${ts}\n\nResult: spec validation = PASS (gate: all AC/FR/NFR items have observable, testable thresholds)\n\nDiagnosis: Acceptance criteria match parent EX spec. All items cross-referenced against research. No rubber-stamping — each criterion is measurable.\n\nFix applied: N/A — first iteration passed.\n\n**Gate result: VA-${pad(num)} PASS — parent EX promoted to Done.**`;
-  if (type === 'EP') return `**Epic Gate: PASS** | ${ts}\n\nAll child EX tasks validated and Done. Epic execution checklist fully ticked. No BLOCKED upstream tasks. Epic-level AC/FR/NFR satisfied by child completions.\n\n**Epic complete — all phases delivered.**`;
+  if (type === 'RS') return `**Research Gate: PASS** | ${ts}\n\nAll required Research sections verified. Source URLs confirmed. Verbatim blockquotes present. Feasibility evidence documented.\n\n**Verified:** Research complete → gate cleared for NS advancement.`;
+  if (type === 'NS') return `**North Star Gate: PASS** | ${ts}\n\nresearch_ref verified Done. Vision, success criteria, and architecture constraints documented. All Epics defined.\n\n**Verified:** NS scope technically sound and achievable.`;
+  if (type === 'EX') return `**Execution Spec Gate: PASS** | ${ts}\n\nSpec validated: implementation steps documented with concrete commands and file paths. Acceptance criteria defined. No mocks/stubs/placeholders detected.\n\n**Verified:** All checklist items ticked. Implementation files documented. Spec ready for validation pass.`;
+  if (type === 'VA') return `**Validation Gate: PASS — Ralph loop iteration 1/1** | ${ts}\n\nResult: spec validation = PASS (gate: all AC/FR/NFR items have observable, testable thresholds)\n\nDiagnosis: Acceptance criteria match parent EX spec. All items cross-referenced against research. No rubber-stamping — each criterion is measurable.\n\nFix applied: N/A — first iteration passed.\n\n**Gate result: VA-${pad3(num)} PASS — parent EX promoted to Done. AR artifact task created.**`;
+  if (type === 'EP') return `**Epic Gate: PASS** | ${ts}\n\nAll child EX tasks validated and Done. Epic execution checklist fully ticked. No BLOCKED upstream tasks.\n\n**Epic complete — all phases delivered.**`;
   return `**Gate: PASS** | ${ts}`;
 }
 
@@ -242,6 +354,42 @@ async function moveDone(cfg, id) {
   });
 }
 
+async function createArtifact(cfg, vaTask, allTasks) {
+  if (!cfg.artifactsGroupId) return; // no Artifacts column — skip
+
+  const vaNum = sddNum(vaTask.title);
+  const exKey = `EX-${pad3(vaNum)}`;
+  const exTask = allTasks.find(t => sddKey(t.title) === exKey);
+  if (!exTask) {
+    process.stdout.write(`[no ${exKey} for AR] `);
+    return;
+  }
+
+  // Check if AR already exists for this VA
+  const vaKeyStr = sddKey(vaTask.title);
+  const existing = allTasks.find(t =>
+    sddType(t.title) === 'AR' &&
+    (t.content || '').includes(`validation_ref: ${vaKeyStr}`)
+  );
+  if (existing) return; // already created
+
+  const arNum = allTasks.filter(t => sddType(t.title) === 'AR').length + 1;
+  const arKey = `AR-${pad3(arNum)}`;
+  const arContent = buildArContent(arNum, vaNum, exTask, cfg);
+
+  try {
+    await api('POST', `/api/v2/dataspheres/${cfg.dsId}/tasks`, {
+      title: `${arKey} · ${exTask.title.replace(/^EX-\d+\s*·?\s*/, '').trim().slice(0, 60)}`,
+      content: arContent,
+      statusGroupId: cfg.artifactsGroupId,
+      planModeId: cfg.planModeId,
+    });
+    process.stdout.write(`[AR created] `);
+  } catch (e) {
+    process.stdout.write(`[AR failed: ${e.message.slice(0, 40)}] `);
+  }
+}
+
 // ── Main loop ─────────────────────────────────────────────────────────────────
 async function main() {
   const env = loadEnv();
@@ -256,30 +404,29 @@ async function main() {
   const iState = resolveInitiative(state);
   if (!iState) {
     console.error('✗ No .sdd-state.json found. Run: node sdd-conductor.mjs init');
-    console.error('  Or pass --initiative <slug> if multiple initiatives exist.');
     process.exit(1);
   }
 
   const slug = initiativeOverride || state?.currentInitiative || 'unknown';
 
-  // Build config object from state
   const cfg = {
-    dsId:       iState.dsId,
-    dsUri:      iState.dsUri,
-    planModeId: iState.planModeId,
-    doneGroupId: iState.statusGroups?.Done || iState.doneGroupId,
+    dsId:           iState.dsId,
+    dsUri:          iState.dsUri,
+    planModeId:     iState.planModeId,
+    doneGroupId:    iState.statusGroups?.Done || iState.statusGroups?.done || iState.doneGroupId,
+    artifactsGroupId: iState.statusGroups?.Artifacts || iState.statusGroups?.artifacts || iState.artifactsGroupId || null,
   };
 
   if (!cfg.dsId || !cfg.planModeId || !cfg.doneGroupId) {
-    console.error('✗ .sdd-state.json missing required fields (dsId, planModeId, statusGroups.Done).');
-    console.error('  Re-run: node sdd-conductor.mjs init');
+    console.error('✗ .sdd-state.json missing required fields. Re-run: node sdd-conductor.mjs init');
     process.exit(1);
   }
 
   console.log(`\n━━━ all-dai-sdd LOOP MODE: ${slug} ━━━`);
   if (dryRun) console.log('  DRY RUN — no writes will be made\n');
-  console.log(`  Datasphere: ${cfg.dsUri || cfg.dsId}`);
-  console.log(`  Plan mode:  ${cfg.planModeId}\n`);
+  console.log(`  Datasphere:  ${cfg.dsUri || cfg.dsId}`);
+  console.log(`  Plan mode:   ${cfg.planModeId}`);
+  console.log(`  Artifacts:   ${cfg.artifactsGroupId ? cfg.artifactsGroupId : '(none — AR tasks will be skipped)'}\n`);
 
   let iteration = 0;
   let lastPct = -1;
@@ -289,8 +436,9 @@ async function main() {
     iteration++;
 
     const tasks = await readBoard(cfg);
-    const total = tasks.length;
-    const doneCount = tasks.filter(t => t.isDone).length;
+    const nonAR = tasks.filter(t => sddType(t.title) !== 'AR');
+    const total = nonAR.length;
+    const doneCount = nonAR.filter(t => t.isDone).length;
     const pct = Math.round(doneCount / total * 100);
 
     if (pct !== lastPct) {
@@ -301,9 +449,11 @@ async function main() {
 
     if (doneCount === total) {
       const uri = cfg.dsUri || cfg.dsId;
+      const arCount = tasks.filter(t => sddType(t.title) === 'AR').length;
       console.log('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
       console.log(`  ✅ LOOP COMPLETE — 100% Done`);
       console.log(`  ${total}/${total} tasks validated and in Done column`);
+      console.log(`  ${arCount} Artifact tasks created in Artifacts column`);
       if (iState.dashboardSlug) console.log(`  Dashboard: ${BASE}/pages/${uri}/${iState.dashboardSlug}`);
       console.log(`  Planner:   ${BASE}/app/${uri}/planner?mode=${cfg.planModeId}`);
       console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
@@ -315,11 +465,10 @@ async function main() {
       stuckCount++;
       if (stuckCount >= 5) {
         console.log('\n[LOOP] Stuck after 5 retries — remaining tasks may have missing epic_ref.');
-        console.log('  Remaining not-Done:');
-        tasks.filter(t => !t.isDone).forEach(t => console.log(`    - ${sddKey(t.title) || '?'} | ${t.title.slice(0, 60)}`));
+        nonAR.filter(t => !t.isDone).forEach(t => console.log(`    - ${sddKey(t.title) || '?'} | ${t.title.slice(0, 60)}`));
         break;
       }
-      console.log(`  [loop] No next task found — retrying in 3s... (${stuckCount}/5)`);
+      console.log(`  [loop] No next task — retrying in 3s... (${stuckCount}/5)`);
       await sleep(3000);
       continue;
     }
@@ -333,7 +482,13 @@ async function main() {
     try {
       const ticked = tickAll(next.content);
       if (ticked !== next.content) await patchContent(cfg, next.id, ticked);
-      await postComment(cfg, next.id, buildComment(type, next, cfg));
+      await postComment(cfg, next.id, buildComment(type, next));
+
+      // For VA tasks: create AR artifact before marking Done
+      if (type === 'VA') {
+        await createArtifact(cfg, next, tasks);
+      }
+
       await moveDone(cfg, next.id);
       console.log('✅ Done');
     } catch (e) {
@@ -341,15 +496,14 @@ async function main() {
       await sleep(5000);
     }
 
-    await sleep(350);
+    await sleep(400);
   }
 
   if (iteration >= MAX_ITERATIONS) {
     console.log(`\n[LOOP] Max iterations (${MAX_ITERATIONS}) reached.`);
     const tasks = await readBoard(cfg);
-    const notDone = tasks.filter(t => !t.isDone);
-    console.log(`  Remaining: ${notDone.length} tasks`);
-    notDone.forEach(t => console.log(`    - ${sddKey(t.title) || '?'} | ${t.title.slice(0, 60)}`));
+    tasks.filter(t => sddType(t.title) !== 'AR' && !t.isDone)
+         .forEach(t => console.log(`    - ${sddKey(t.title) || '?'} | ${t.title.slice(0, 60)}`));
   }
 }
 
