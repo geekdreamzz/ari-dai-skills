@@ -3494,12 +3494,15 @@ async function cmdUpdateDashboard(dsUri, pageSlug) {
     );
     content = replaced !== content ? replaced : content.replace(/<!-- #focus -->[\s\S]*$/, focusBlock);
   } else {
-    // First inject: place after progress-summary widget div, before Trace Graph
-    const inserted = content.replace(
+    // First inject: wrap the EXISTING progress-summary widget in #focus markers.
+    // Do NOT add a duplicate widget — the Initiative Summary widget is already the
+    // canonical current-focus surface. Future updates will use the replace-between-
+    // markers path above. Fallback: insert before the Trace Graph heading.
+    const wrapped = content.replace(
       /(<div[^>]*data-widget-type="progress-summary"[^>]*><\/div>)/i,
-      `$1\n${focusBlock}`
+      `<!-- #focus -->\n$1\n<!-- /focus -->`
     );
-    content = inserted !== content ? inserted : content.replace(
+    content = wrapped !== content ? wrapped : content.replace(
       /(<h2[^>]*>(?:Trace\s+Graph)[^<]*<\/h2>)/i,
       `${focusBlock}\n\n$1`
     );
