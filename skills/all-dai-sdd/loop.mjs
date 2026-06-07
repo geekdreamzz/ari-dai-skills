@@ -8,9 +8,10 @@
  * Loops autonomously until 100% Done. No user input between iterations.
  *
  * Usage:
- *   node loop.mjs                        # uses active initiative from .sdd-state.json
- *   node loop.mjs --initiative <slug>    # target a specific initiative
- *   node loop.mjs --dry-run             # print what would advance, don't write
+ *   node loop.mjs                          # uses active initiative from .sdd-state.json
+ *   node loop.mjs --initiative <slug>      # target a specific initiative
+ *   node loop.mjs --dry-run               # print what would advance, don't write
+ *   node loop.mjs --backfill-artifacts     # create AR tasks for all Done VA tasks retroactively
  *
  * Requires one of:
  *   - ~/.dataspheres.env  with  DATASPHERES_API_KEY=...
@@ -31,11 +32,14 @@ const MAX_ITERATIONS = 500;
 // ── CLI args ──────────────────────────────────────────────────────────────────
 let initiativeOverride = null;
 let dryRun = false;
+let backfillMode = false;
 for (let i = 2; i < process.argv.length; i++) {
   if (process.argv[i] === '--initiative' && process.argv[i + 1]) {
     initiativeOverride = process.argv[++i];
   } else if (process.argv[i] === '--dry-run') {
     dryRun = true;
+  } else if (process.argv[i] === '--backfill-artifacts') {
+    backfillMode = true;
   }
 }
 
@@ -390,6 +394,94 @@ async function createArtifact(cfg, vaTask, allTasks) {
   }
 }
 
+// ── Backfill artifacts ────────────────────────────────────────────────────────
+async function backfillArtifacts(cfg, iState, slug) {
+  console.log(`\n━━━ all-dai-sdd BACKFILL ARTIFACTS: ${slug} ━━━`);
+  if (dryRun) console.log('  DRY RUN — no writes will be made\n');
+  console.log(`  Datasphere:  ${cfg.dsUri || cfg.dsId}`);
+  console.log(`  Plan mode:   ${cfg.planModeId}`);
+  console.log(`  Artifacts:   ${cfg.artifactsGroupId}\n`);
+
+  if (!cfg.artifactsGroupId) {
+    console.error('✗ No artifactsGroupId configured. Add "artifacts" group to .sdd-state.json first.');
+    process.exit(1);
+  }
+
+  const tasks = await readBoard(cfg);
+  const vaTasks = tasks.filter(t => sddType(t.title) === 'VA' && t.isDone)
+                       .sort((a, b) => sddNum(a.title) - sddNum(b.title));
+
+  if (vaTasks.length === 0) {
+    console.log('  No Done VA tasks found — nothing to backfill.');
+    return;
+  }
+
+  console.log(`  Found ${vaTasks.length} Done VA task(s) to check...\n`);
+
+  let created = 0;
+  let skipped = 0;
+
+  for (const vaTask of vaTasks) {
+    const vaKey = sddKey(vaTask.title);
+    const vaNum = sddNum(vaTask.title);
+    const exKey = `EX-${pad3(vaNum)}`;
+
+    const existing = tasks.find(t =>
+      sddType(t.title) === 'AR' &&
+      (t.content || '').includes(`validation_ref: ${vaKey}`)
+    );
+    if (existing) {
+      const arKey = sddKey(existing.title) || existing.title.slice(0, 20);
+      console.log(`  ↷ ${vaKey} → ${arKey} already exists — skipping`);
+      skipped++;
+      continue;
+    }
+
+    const exTask = tasks.find(t => sddKey(t.title) === exKey);
+    if (!exTask) {
+      console.log(`  ✗ ${vaKey} → no ${exKey} found — skipping`);
+      skipped++;
+      continue;
+    }
+
+    process.stdout.write(`  → ${dryRun ? '[DRY] ' : ''}Creating AR for ${vaKey}... `);
+
+    if (dryRun) {
+      const arNum = tasks.filter(t => sddType(t.title) === 'AR').length + created + 1;
+      console.log(`(would create AR-${pad3(arNum)} · ${exTask.title.replace(/^EX-\d+\s*·?\s*/, '').trim().slice(0, 40)})`);
+      created++;
+      continue;
+    }
+
+    const arNum = tasks.filter(t => sddType(t.title) === 'AR').length + created + 1;
+    const arContent = buildArContent(arNum, vaNum, exTask, cfg);
+    const arKey = `AR-${pad3(arNum)}`;
+
+    try {
+      await api('POST', `/api/v2/dataspheres/${cfg.dsId}/tasks`, {
+        title: `${arKey} · ${exTask.title.replace(/^EX-\d+\s*·?\s*/, '').trim().slice(0, 60)}`,
+        content: arContent,
+        statusGroupId: cfg.artifactsGroupId,
+        planModeId: cfg.planModeId,
+      });
+      console.log(`✅ ${arKey}`);
+      created++;
+    } catch (e) {
+      console.log(`✗ FAILED: ${e.message.slice(0, 100)}`);
+    }
+
+    await sleep(400);
+  }
+
+  const uri = cfg.dsUri || cfg.dsId;
+  console.log('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+  console.log(`  ✅ BACKFILL COMPLETE`);
+  console.log(`  ${created} AR task(s) created, ${skipped} skipped (already exist or no matching EX)`);
+  if (iState.dashboardSlug) console.log(`  Dashboard: ${BASE}/pages/${uri}/${iState.dashboardSlug}`);
+  console.log(`  Planner:   ${BASE}/app/${uri}/planner?mode=${cfg.planModeId}`);
+  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+}
+
 // ── Main loop ─────────────────────────────────────────────────────────────────
 async function main() {
   const env = loadEnv();
@@ -420,6 +512,11 @@ async function main() {
   if (!cfg.dsId || !cfg.planModeId || !cfg.doneGroupId) {
     console.error('✗ .sdd-state.json missing required fields. Re-run: node sdd-conductor.mjs init');
     process.exit(1);
+  }
+
+  if (backfillMode) {
+    await backfillArtifacts(cfg, iState, slug);
+    return;
   }
 
   console.log(`\n━━━ all-dai-sdd LOOP MODE: ${slug} ━━━`);
