@@ -910,8 +910,8 @@ async function cmdStart(taskId) {
         ].join('\n');
         try {
           await client.post(
-            `/api/v2/dataspheres/${iState.dsId}/tasks?planModeId=${iState.planModeId}`,
-            { title: `${vaSpecId} &middot; Validate ${specId}`, content: vaContent, statusGroupId: iState.validationGroupId }
+            `/api/v2/dataspheres/${iState.dsId}/tasks`,
+            { title: `${vaSpecId} &middot; Validate ${specId}`, content: vaContent, statusGroupId: iState.validationGroupId, planModeId: iState.planModeId }
           );
           info(`VA stub ${vaSpecId} auto-created at start time (1-1 rule) ✓`);
           await patchValidationRef(vaSpecId);
@@ -1228,8 +1228,8 @@ async function cmdComplete(taskId) {
       if (iState.validationGroupId) {
         try {
           const created = await client.post(
-            `/api/v2/dataspheres/${iState.dsId}/tasks?planModeId=${iState.planModeId}`,
-            { title: `${vaSpecId} &middot; Validate ${specId}`, content: vaContent, statusGroupId: iState.validationGroupId }
+            `/api/v2/dataspheres/${iState.dsId}/tasks`,
+            { title: `${vaSpecId} &middot; Validate ${specId}`, content: vaContent, statusGroupId: iState.validationGroupId, planModeId: iState.planModeId }
           );
           newVaId = created.task?.id || created.id || null;
           info(`VA stub ${vaSpecId} auto-created in Validation column (${newVaId}) ✓`);
@@ -2943,11 +2943,12 @@ async function cmdValidate(vaTaskId, extraArgs) {
       ].join('\n');
       try {
         await client.post(
-          `/api/v2/dataspheres/${iState.dsId}/tasks?planModeId=${iState.planModeId}`,
+          `/api/v2/dataspheres/${iState.dsId}/tasks`,
           {
             title: `${arSpecId} &middot; Artifacts for ${specId}`,
             content: arContent,
             statusGroupId: arDestGroupId,
+            planModeId: iState.planModeId,
           }
         );
         const destLabel = iState.artifactsGroupId ? 'Artifacts' : 'Done';
@@ -3136,12 +3137,13 @@ async function cmdValidate(vaTaskId, extraArgs) {
       ].join('\n');
 
       const createdEx = await client.post(
-        `/api/v2/dataspheres/${iState.dsId}/tasks?planModeId=${iState.planModeId}`,
+        `/api/v2/dataspheres/${iState.dsId}/tasks`,
         {
           title: newExTitle,
           statusGroupId: iState.executionGroupId,
           content: newExContent,
           parentId: task.parentId || null,
+          planModeId: iState.planModeId,
         }
       );
       const newExId = createdEx.task?.id || createdEx.id || null;
@@ -3181,11 +3183,12 @@ async function cmdValidate(vaTaskId, extraArgs) {
             ] : []),
           ].join('\n');
           await client.post(
-            `/api/v2/dataspheres/${iState.dsId}/tasks?planModeId=${iState.planModeId}`,
+            `/api/v2/dataspheres/${iState.dsId}/tasks`,
             {
               title: `${newVaSpecId} &middot; Validate ${newExSpecId} (remediation)`,
               content: newVaContent,
               statusGroupId: iState.validationGroupId,
+              planModeId: iState.planModeId,
             }
           );
           info(`VA stub ${newVaSpecId} auto-created for ${newExSpecId} (1-1 rule) ✓`);
