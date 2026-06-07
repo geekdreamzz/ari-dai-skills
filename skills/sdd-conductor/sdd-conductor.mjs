@@ -3276,6 +3276,31 @@ async function cmdDashboardCheck(dsUri, pageSlug) {
     );
   }
 
+  // Gate: detect malformed case where <!-- #focus --> is embedded inside an <h2> tag.
+  // This causes a broken heading in the rendered page and creates an orphaned tag.
+  {
+    const malformedH2 = content.match(/<h2[^>]*>[^<]*<!--\s*#focus\s*-->/i);
+    if (malformedH2) {
+      gate(
+        `Malformed Current Focus block detected: <!-- #focus --> is embedded inside an <h2> tag.\n\n` +
+        `  This breaks the heading and leaves an orphaned tag in the rendered page.\n` +
+        `  Fix: run \`node sdd-conductor.mjs update-dashboard ${dsUri} ${pageSlug}\``
+      );
+    }
+  }
+
+  // Gate: detect duplicate progress-summary widgets (both markers + a standalone one).
+  {
+    const summaryCount = (content.match(/data-widget-type="progress-summary"/g) || []).length;
+    if (summaryCount > 1) {
+      gate(
+        `Duplicate progress-summary widgets detected (${summaryCount} found — expected 1).\n\n` +
+        `  The dashboard should have exactly one progress-summary widget (wrapped in #focus markers).\n` +
+        `  Fix: run \`node sdd-conductor.mjs update-dashboard ${dsUri} ${pageSlug}\``
+      );
+    }
+  }
+
   // Gate: the <!-- #focus --> block must exist AND contain a progress-summary plannerWidget.
   // This is separate from the general REQUIRED check so the error message is specific.
   {
@@ -3480,11 +3505,19 @@ async function cmdUpdateDashboard(dsUri, pageSlug) {
   let content = pageData.page?.content || pageData.content || '';
 
   // Injection strategy:
-  // 1. If both <!-- #focus --> and <!-- /focus --> exist: replace between them (clean update)
+  // 1. If both <!-- #focus --> and <!-- /focus --> exist: replace between them (clean update).
+  //    Also handles malformed case where <!-- #focus --> was embedded inside an <h2> tag —
+  //    the optional h2 prefix is consumed so the orphaned heading tag is removed.
   // 2. If only <!-- #focus --> exists (old h2-based format): remove the h2 heading + replace block
   // 3. Otherwise: insert after progress-summary widget div (first publish)
   if (content.includes('<!-- #focus -->') && content.includes('<!-- /focus -->')) {
-    content = content.replace(/<!-- #focus -->[\s\S]*?<!-- \/focus -->/, focusBlock);
+    // Match an optional orphaned "<h2>...</h2> prefix that was left when the marker was
+    // embedded inside the h2 opening tag, then match the full focus block.
+    const updated = content.replace(
+      /(?:<h2[^>]*>[^<]*)?<!-- #focus -->[\s\S]*?<!-- \/focus -->/i,
+      focusBlock
+    );
+    content = updated;
   } else if (content.includes('<!-- #focus -->')) {
     // Old format: h2 heading contains <!-- #focus --> comment inline, followed by content up to next h2.
     // Use [\s\S]*? to handle <-containing comments inside the heading.
