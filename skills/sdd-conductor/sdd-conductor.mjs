@@ -18,6 +18,7 @@
  *   node sdd-conductor.mjs validate <vaTaskId>       Ralph loop gate (exit 0=pass / exit 1=next iter).
  *   node sdd-conductor.mjs status                    Show all initiatives + active task status.
  *   node sdd-conductor.mjs gate <name> [args...]     Verify named gate. Exits 1 if not met.
+ *   node sdd-conductor.mjs trace-graph               Board-wide ref integrity: EP→NS, EX→EP, VA→EX chain.
  *   node sdd-conductor.mjs dashboard-check <dsUri> <slug>  Verify 6 required dashboard sections.
  *   node sdd-conductor.mjs update-dashboard <dsUri> <slug> Generate/refresh Current Focus hierarchy section.
  *   node sdd-conductor.mjs check-file-hook           Read stdin (Claude PostToolUse JSON), warn on mismatch.
@@ -28,12 +29,22 @@
  * All commands accept --initiative <slug> to target a specific initiative.
  *
  * Gate names:
- *   deps-done <taskId>     All depends_on tasks are in Done
- *   research-done <rsId>   RS task is in Done column
- *   no-mocks <file>        File contains no mock/stub patterns
- *   checklist <taskId>     All acceptance checklist items are checked
- *   impl-files <taskId>    Task has Implementation Files section
- *   tiptap-html <file>     Page content uses Tiptap HTML (no raw markdown)
+ *   deps-done <taskId>         All depends_on tasks are in Done
+ *   research-done <rsId>       RS task is in Done column
+ *   no-mocks <file>            File contains no mock/stub patterns
+ *   checklist <taskId>         All acceptance checklist items are checked
+ *   impl-files <taskId>        Task has Implementation Files section
+ *   hierarchy <taskId>         Task has correct parent refs (epic_ref, north_star_ref, etc.)
+ *   trace-graph                Board-wide RS→NS→EP→EX→VA→AR ref chain integrity
+ *   content-structure <taskId> Required sections present for task type (RS/NS/EP/EX/VA/AR)
+ *   checklist-format <taskId>  All taskList items wrapped in <ul data-type="taskList">
+ *   title-prefix <taskId>      Task title starts with correct SDD prefix for its column
+ *   tracker-link <dsUri>       trackerUrl set on plan mode + dashboard has planner link
+ *   tiptap-html <file>         Page content uses Tiptap HTML (no raw markdown)
+ *
+ * Full cascade on validation pass: VA → EX (done) → EP (done) → NS (done) → RS (done)
+ *   Each level checks its acceptance checklist before auto-promoting.
+ *   Artifact stub (AR) auto-created in Artifacts column when VA passes.
  */
 
 import fs from 'node:fs';
@@ -161,6 +172,24 @@ function requireInitiativeState() {
 function saveInitiative(state, slug, iState) {
   state.initiatives[slug] = iState;
   saveState(state);
+}
+
+// Keep .claude/sdd-active.json in sync with conductor state.
+// sdd-enforce.js (PreToolUse) reads this file; without sync it blocks on stale data.
+function syncLegacyActive(fields) {
+  try {
+    const legacyPath = path.join(findGitRoot(), '.claude', 'sdd-active.json');
+    let existing = {};
+    if (fs.existsSync(legacyPath)) {
+      try { existing = JSON.parse(fs.readFileSync(legacyPath, 'utf-8')); } catch {}
+    }
+    const merged = { ...existing, ...fields };
+    // Remove undefined keys
+    for (const k of Object.keys(merged)) { if (merged[k] === undefined) delete merged[k]; }
+    fs.writeFileSync(legacyPath, JSON.stringify(merged, null, 2), 'utf-8');
+  } catch (e) {
+    warn(`syncLegacyActive failed (non-fatal): ${e.message}`);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -478,9 +507,13 @@ async function cmdInit() {
   const sgData = await sgRes.json();
   const groups = sgData.statusGroups || sgData || [];
 
-  const doneGroup = groups.find(g => g.name?.toLowerCase() === 'done' || g.isDoneState);
-  const execGroup = groups.find(g => g.name?.toLowerCase() === 'execution');
-  const validGroup = groups.find(g => g.name?.toLowerCase() === 'validation');
+  const doneGroup       = groups.find(g => g.name?.toLowerCase() === 'done' || g.isDoneState);
+  const execGroup       = groups.find(g => g.name?.toLowerCase() === 'execution');
+  const validGroup      = groups.find(g => g.name?.toLowerCase() === 'validation');
+  const researchGroup   = groups.find(g => g.name?.toLowerCase() === 'research');
+  const artifactsGroup  = groups.find(g => /artifact/i.test(g.name || ''));
+  const northStarsGroup = groups.find(g => /north.?star/i.test(g.name || ''));
+  const epicsGroup      = groups.find(g => g.name?.toLowerCase() === 'epics' || g.name?.toLowerCase() === 'epic');
 
   if (!doneGroup) die('No "Done" status group found in plan mode');
 
@@ -490,9 +523,13 @@ async function cmdInit() {
     dsUri,
     planModeId: pm.id,
     initiative,
-    doneGroupId: doneGroup.id,
-    executionGroupId: execGroup?.id || null,
-    validationGroupId: validGroup?.id || null,
+    doneGroupId:       doneGroup.id,
+    executionGroupId:  execGroup?.id       || null,
+    validationGroupId: validGroup?.id      || null,
+    researchGroupId:   researchGroup?.id   || null,
+    artifactsGroupId:  artifactsGroup?.id  || null,
+    northStarsGroupId: northStarsGroup?.id || null,
+    epicsGroupId:      epicsGroup?.id      || null,
     statusGroups: Object.fromEntries(groups.map(g => [g.name.toLowerCase(), g.id])),
     activeTask: null,
     lastCompleted: null,
@@ -599,6 +636,138 @@ async function cmdWorkspace() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// cmdAutoTemplate — infer and patch missing front-matter refs from board context.
+// Called automatically during cmdStart; also available as a standalone command.
+// Returns the updated content string (or null if nothing changed).
+// ---------------------------------------------------------------------------
+async function cmdAutoTemplate(taskId, task, client, iState) {
+  const content = task.content || '';
+  const titleStr = task.title || '';
+  const sid = extractSpecId(content) || titleStr.match(/^[A-Z]+-\d+/)?.[0] || '';
+  const isVA = /^VA-/i.test(sid) || /^V-T-/i.test(titleStr);
+  const isEX = /^EX-/i.test(sid) || /^T-\d/i.test(titleStr);
+  const isEP = /^EP-/i.test(sid) || /^E-\d/i.test(titleStr);
+  const isNS = /^NS-/i.test(sid) || /^NS-/i.test(titleStr);
+
+  const missingFields = [];
+  if (isVA) {
+    if (!extractFrontMatterField(content, 'execution_ref'))  missingFields.push('execution_ref');
+    if (!extractFrontMatterField(content, 'epic_ref'))       missingFields.push('epic_ref');
+    if (!extractFrontMatterField(content, 'north_star_ref')) missingFields.push('north_star_ref');
+  } else if (isEX) {
+    if (!extractFrontMatterField(content, 'epic_ref'))       missingFields.push('epic_ref');
+    if (!extractFrontMatterField(content, 'north_star_ref')) missingFields.push('north_star_ref');
+  } else if (isEP) {
+    if (!extractFrontMatterField(content, 'north_star_ref')) missingFields.push('north_star_ref');
+  } else if (isNS) {
+    if (!extractFrontMatterField(content, 'research_ref'))   missingFields.push('research_ref');
+  }
+
+  if (missingFields.length === 0) return null;
+
+  // Fetch full board to infer parents
+  const allTasks = ((await client.get(
+    `/api/v2/dataspheres/${iState.dsId}/tasks?planModeId=${iState.planModeId}&limit=500`
+  )).tasks || []);
+
+  const byTypeGroup = (prefix) => allTasks.filter(t =>
+    t.title?.match(new RegExp(`^${prefix}-\\d+`, 'i')) ||
+    (t.statusGroup?.name || '').toLowerCase().includes(
+      prefix === 'RS' ? 'research' : prefix === 'NS' ? 'north' :
+      prefix === 'EP' ? 'epic' : prefix === 'EX' ? 'execut' :
+      prefix === 'VA' ? 'validat' : 'artifact'
+    )
+  );
+
+  const inferred = {};
+  const ambiguous = [];
+
+  for (const field of missingFields) {
+    if (field === 'execution_ref') {
+      // Find EX tasks sharing the same epic_ref as this VA task
+      const epicRef = extractFrontMatterField(content, 'epic_ref');
+      const candidates = epicRef
+        ? byTypeGroup('EX').filter(t => (extractFrontMatterField(t.content, 'epic_ref') || '').toUpperCase() === epicRef.toUpperCase())
+        : byTypeGroup('EX');
+      if (candidates.length === 1) {
+        inferred['execution_ref'] = candidates[0].title.match(/^([A-Z]+-\d+)/i)?.[1]?.toUpperCase();
+      } else if (candidates.length > 1) {
+        // Multiple candidates — pick the most recently completed one
+        const done = candidates.filter(t => t.statusGroup?.isDoneState);
+        if (done.length === 1) {
+          inferred['execution_ref'] = done[0].title.match(/^([A-Z]+-\d+)/i)?.[1]?.toUpperCase();
+        } else {
+          ambiguous.push(`execution_ref: ${candidates.length} EX tasks in EP${epicRef ? ` (epic_ref: ${epicRef})` : ''} — cannot auto-infer`);
+        }
+      }
+    } else if (field === 'epic_ref') {
+      const epTasks = byTypeGroup('EP');
+      if (epTasks.length === 1) {
+        inferred['epic_ref'] = epTasks[0].title.match(/^([A-Z]+-\d+)/i)?.[1]?.toUpperCase();
+      } else if (epTasks.length > 1) {
+        // Check which EP's checklist references this task
+        const taskPid = sid.toUpperCase();
+        const owner = epTasks.find(ep => (ep.content || '').includes(taskPid));
+        if (owner) {
+          inferred['epic_ref'] = owner.title.match(/^([A-Z]+-\d+)/i)?.[1]?.toUpperCase();
+        } else {
+          ambiguous.push(`epic_ref: ${epTasks.length} EP tasks — add to an epic's checklist first`);
+        }
+      }
+    } else if (field === 'north_star_ref') {
+      // Inherit from parent epic if already known
+      const epicRefVal = inferred['epic_ref'] || extractFrontMatterField(content, 'epic_ref');
+      if (epicRefVal) {
+        const ep = allTasks.find(t => (t.title?.match(/^([A-Z]+-\d+)/i)?.[1] || '').toUpperCase() === epicRefVal.toUpperCase());
+        const nsFromEp = ep ? extractFrontMatterField(ep.content, 'north_star_ref') : null;
+        if (nsFromEp) { inferred['north_star_ref'] = nsFromEp.toUpperCase(); continue; }
+      }
+      const nsTasks = byTypeGroup('NS');
+      if (nsTasks.length === 1) {
+        inferred['north_star_ref'] = nsTasks[0].title.match(/^([A-Z]+-\d+)/i)?.[1]?.toUpperCase();
+      } else if (nsTasks.length > 1) {
+        ambiguous.push(`north_star_ref: ${nsTasks.length} NS tasks — cannot auto-infer`);
+      }
+    } else if (field === 'research_ref') {
+      const rsTasks = byTypeGroup('RS');
+      if (rsTasks.length === 1) {
+        inferred['research_ref'] = rsTasks[0].title.match(/^([A-Z]+-\d+)/i)?.[1]?.toUpperCase();
+      } else if (rsTasks.length > 1) {
+        ambiguous.push(`research_ref: ${rsTasks.length} RS tasks — cannot auto-infer`);
+      }
+    }
+  }
+
+  if (ambiguous.length > 0) {
+    warn(`Auto-template: cannot infer these refs (ambiguous — add manually):\n${ambiguous.map(a => `  ⚠ ${a}`).join('\n')}`);
+  }
+
+  if (Object.keys(inferred).length === 0) return null;
+
+  // Patch the YAML front-matter code block — insert missing fields before `tags:` or at end of block
+  let updatedContent = content;
+  for (const [field, value] of Object.entries(inferred)) {
+    if (!value) continue;
+    const insertLine = `${field}: ${value}`;
+    if (updatedContent.includes('tags:')) {
+      updatedContent = updatedContent.replace(/(tags:)/, `${insertLine}\n$1`);
+    } else if (/<\/code><\/pre>/.test(updatedContent)) {
+      updatedContent = updatedContent.replace(/<\/code><\/pre>/, `${insertLine}\n</code></pre>`);
+    } else {
+      warn(`Auto-template: cannot find YAML block in ${sid} — skipping ${field}`);
+      continue;
+    }
+    info(`Auto-template: wired ${field}: ${value} into ${sid}`);
+  }
+
+  if (updatedContent === content) return null;
+
+  await client.patch(`/api/v2/dataspheres/${iState.dsId}/tasks/${taskId}`, { content: updatedContent });
+  info(`Auto-template: front-matter patched via API ✓`);
+  return updatedContent;
+}
+
 async function cmdStart(taskId) {
   if (!taskId) die('Usage: start <taskId>');
   const { state, slug, iState } = requireInitiativeState();
@@ -654,8 +823,150 @@ async function cmdStart(taskId) {
     warn(`Task has no Implementation Files section. Add one to the task content before coding.`);
   }
 
-  // Gate: hierarchy refs — VA needs execution_ref + epic_ref + north_star_ref
-  //       EX needs epic_ref + north_star_ref; Epic needs north_star_ref
+  // Gate: hierarchy refs — auto-template first, then pre-wire VA 1-1, then hard-gate.
+  // cmdAutoTemplate infers unambiguous parent refs (epic_ref, north_star_ref, execution_ref).
+  // The VA pre-wire block creates the VA stub so validation_ref can be set before the hard gate.
+  {
+    const autoPatched = await cmdAutoTemplate(taskId, task, client, iState);
+    if (autoPatched) task.content = autoPatched;
+  }
+
+  // Pre-wire: EX tasks must have a 1-1 VA stub before work starts.
+  // If no VA with execution_ref pointing here exists, auto-create one at start time
+  // so the gate below on validation_ref will pass.
+  {
+    const sid = extractSpecId(task.content) || '';
+    const isEXTask = /^EX-/i.test(sid) || /^EX-/i.test(task.title?.match(/^[A-Z]+-\d+/)?.[0] || '');
+    if (isEXTask && !extractFrontMatterField(task.content, 'validation_ref') && iState.planModeId) {
+      let boardForVa = [];
+      try {
+        boardForVa = ((await client.get(
+          `/api/v2/dataspheres/${iState.dsId}/tasks?planModeId=${iState.planModeId}&limit=500`
+        )).tasks || []);
+      } catch { /* non-fatal */ }
+
+      const linkedVa = boardForVa.find(t => {
+        const ref = extractFrontMatterField(t.content || '', 'execution_ref');
+        return ref && ref.toUpperCase() === specId.toUpperCase();
+      });
+
+      const patchValidationRef = async (vaSpecId) => {
+        const insertLine = `validation_ref: ${vaSpecId}`;
+        let updated = task.content;
+        if (updated.includes('tags:')) {
+          updated = updated.replace(/(tags:)/, `${insertLine}\n$1`);
+        } else if (/<\/code><\/pre>/.test(updated)) {
+          updated = updated.replace(/<\/code><\/pre>/, `${insertLine}\n</code></pre>`);
+        }
+        if (updated !== task.content) {
+          await client.patch(`/api/v2/dataspheres/${iState.dsId}/tasks/${taskId}`, { content: updated });
+          task.content = updated;
+          info(`EX ${specId} patched with validation_ref: ${vaSpecId} ✓`);
+        }
+      };
+
+      if (linkedVa) {
+        // VA exists — backfill the forward ref on the EX task
+        const vaSpecId = extractSpecId(linkedVa.content) || linkedVa.title?.match(/^[A-Z]+-\d+/)?.[0];
+        if (vaSpecId) await patchValidationRef(vaSpecId);
+      } else if (iState.validationGroupId) {
+        // No VA exists — auto-create stub + wire both directions
+        const epicRef = extractFrontMatterField(task.content, 'epic_ref') || '';
+        const nsRef   = extractFrontMatterField(task.content, 'north_star_ref') || '';
+        const exLabel = task.title?.replace(/^EX-\d+\s*[·•\s]+/i, '').trim() || specId;
+        const vaCount = boardForVa.filter(t => /^VA-\d+/i.test(t.title || '')).length;
+        const vaSpecId = `VA-${String(vaCount + 1).padStart(3, '0')}`;
+        const vaContent = [
+          `<pre><code class="language-yaml">`,
+          `spec_id: ${vaSpecId}`,
+          `execution_ref: ${specId}`,
+          ...(epicRef ? [`epic_ref: ${epicRef}`] : []),
+          ...(nsRef   ? [`north_star_ref: ${nsRef}`] : []),
+          `status: PENDING`,
+          `</code></pre>`,
+          ``,
+          `<h2>Validation &mdash; ${specId}</h2>`,
+          `<p>Auto-created at task start (1&ndash;1 rule). Fill in real criteria before running validate.</p>`,
+          `<p><strong>Validates:</strong> ${specId} &mdash; ${exLabel}</p>`,
+          ``,
+          `<h3>Acceptance Criteria <!-- #ac --></h3>`,
+          `<ul data-type="taskList">`,
+          `  <li data-type="taskItem" data-checked="false"><p>All functional requirements in ${specId} verified against the live implementation</p></li>`,
+          `  <li data-type="taskItem" data-checked="false"><p>Edge cases and error states exercised (unit + integration)</p></li>`,
+          `  <li data-type="taskItem" data-checked="false"><p>No regressions in adjacent features detected</p></li>`,
+          `</ul>`,
+          ``,
+          `<h3>Functional Requirements <!-- #fr --></h3>`,
+          `<ul data-type="taskList">`,
+          `  <li data-type="taskItem" data-checked="false"><p>UI/API behaviour matches ${specId} acceptance criteria verbatim</p></li>`,
+          `  <li data-type="taskItem" data-checked="false"><p>Real data, no mocks &mdash; verified via test run or manual walkthrough</p></li>`,
+          `</ul>`,
+          ``,
+          `<h3>Non-Functional Requirements <!-- #nfr --></h3>`,
+          `<ul data-type="taskList">`,
+          `  <li data-type="taskItem" data-checked="false"><p>Page / API response time within acceptable range (&lt; 500ms p95)</p></li>`,
+          `  <li data-type="taskItem" data-checked="false"><p>Mobile layout verified (no overflow, readable at 375px)</p></li>`,
+          `</ul>`,
+        ].join('\n');
+        try {
+          await client.post(
+            `/api/v2/dataspheres/${iState.dsId}/tasks?planModeId=${iState.planModeId}`,
+            { title: `${vaSpecId} &middot; Validate ${specId}`, content: vaContent, statusGroupId: iState.validationGroupId }
+          );
+          info(`VA stub ${vaSpecId} auto-created at start time (1-1 rule) ✓`);
+          await patchValidationRef(vaSpecId);
+        } catch (e) {
+          warn(`VA stub creation failed (non-fatal): ${e.message}`);
+        }
+      }
+    }
+  }
+
+  // Pre-gate: EP tasks require parent NS's Research task to be Done.
+  // Enforces: no Epics column work without validated Research.
+  {
+    const sid = extractSpecId(task.content) || '';
+    const isEPTask = /^EP-/i.test(sid) || /^EP-/i.test(task.title?.match(/^[A-Z]+-\d+/)?.[0] || '');
+    if (isEPTask) {
+      const nsRef = extractFrontMatterField(task.content, 'north_star_ref');
+      if (nsRef && iState.planModeId) {
+        try {
+          const boardForEp = ((await client.get(
+            `/api/v2/dataspheres/${iState.dsId}/tasks?planModeId=${iState.planModeId}&limit=500`
+          )).tasks || []);
+          const nsTask = boardForEp.find(t => {
+            const s = extractSpecId(t.content) || t.title?.match(/^[A-Z]+-\d+/)?.[0] || '';
+            return s.toUpperCase() === nsRef.toUpperCase();
+          });
+          if (nsTask) {
+            const rsRef = extractFrontMatterField(nsTask.content, 'research_ref');
+            if (rsRef) {
+              const rsTask = boardForEp.find(t => {
+                const s = extractSpecId(t.content) || t.title?.match(/^[A-Z]+-\d+/)?.[0] || '';
+                return s.toUpperCase() === rsRef.toUpperCase();
+              });
+              if (rsTask && !isDone(rsTask)) {
+                gate(
+                  `EP task ${specId} cannot start — Research gate not cleared.\n\n` +
+                  `  North Star: ${nsRef}\n` +
+                  `  Research task: ${rsRef} is in [${getColumnName(rsTask)}], not Done\n\n` +
+                  `  Complete ${rsRef} and move it to Done before starting Epics work.\n` +
+                  `  (The Research column exists to prevent running Execution on an unvalidated approach.)`
+                );
+              }
+              if (rsTask && isDone(rsTask)) {
+                info(`Research gate: ${rsRef} is Done ✓`);
+              }
+            }
+          }
+        } catch (e) {
+          warn(`Research gate check skipped (non-fatal): ${e.message}`);
+        }
+      }
+    }
+  }
+
+  // Hard gate: hierarchy refs must all be present after auto-template + VA pre-wire above.
   {
     const titleStr = task.title || '';
     const sid = extractSpecId(task.content) || '';
@@ -670,12 +981,57 @@ async function cmdStart(taskId) {
     } else if (isEX) {
       if (!extractFrontMatterField(task.content, 'epic_ref'))        missing.push('epic_ref');
       if (!extractFrontMatterField(task.content, 'north_star_ref'))  missing.push('north_star_ref');
-      if (!extractFrontMatterField(task.content, 'validation_ref'))  missing.push('validation_ref (child VA ticket)');
+      if (!extractFrontMatterField(task.content, 'validation_ref'))  missing.push('validation_ref (child VA — auto-create failed, check validationGroupId in .sdd-state.json)');
     } else if (isEP) {
       if (!extractFrontMatterField(task.content, 'north_star_ref')) missing.push('north_star_ref');
     }
     if (missing.length > 0) {
-      gate(`Hierarchy refs missing — trace graph edges will be broken:\n${missing.map(m => `  ✗ ${m}`).join('\n')}\n\nAdd the missing fields to the task frontmatter, then re-run start.`);
+      gate(`Hierarchy refs missing after auto-template — trace graph edges will be broken:\n${missing.map(m => `  ✗ ${m}`).join('\n')}\n\nAdd the missing fields to the task frontmatter, then re-run start.`);
+    }
+  }
+
+  // Warn: content structure check (non-fatal — lets work proceed but surfaces gaps)
+  {
+    const col = getColumnName(task).toLowerCase();
+    const tid = task.title || '';
+    const content = task.content || '';
+    const structMissing = [];
+    const isRS = /^RS-/i.test(tid) || col.includes('research');
+    const isNS = /^NS-/i.test(tid) || col.includes('north');
+    const isEP = /^EP-/i.test(tid) || /^E-\d/i.test(tid) || col.includes('epic');
+    const isEX = /^EX-/i.test(tid) || /^T-\d/i.test(tid) || col.includes('execut');
+    const isVA = /^VA-/i.test(tid) || /^V-T-/i.test(tid) || col.includes('validat');
+    const isAR = /^AR-/i.test(tid) || col.includes('artifact');
+    if (isRS) {
+      const anchors = ['#origin','#problem','#approach','#search-results','#codebase','#sources','#feasibility','#rec','#vc'];
+      anchors.filter(a => !content.includes(a)).forEach(a => structMissing.push(`RS section ${a} missing`));
+    } else if (isNS || isEP || isEX) {
+      if (!/<h[2-4][^>]*>.*?Acceptance Criteria/i.test(content)) structMissing.push('Acceptance Criteria section');
+      if (!/<h[2-4][^>]*>.*?Functional Requirements/i.test(content)) structMissing.push('Functional Requirements section');
+      if (!/<h[2-4][^>]*>.*?Non.Functional Requirements/i.test(content)) structMissing.push('Non-Functional Requirements section');
+    } else if (isVA) {
+      if (!/<h[2-4][^>]*>.*?Acceptance Criteria/i.test(content)) structMissing.push('Acceptance Criteria section');
+    } else if (isAR) {
+      if (!extractFrontMatterField(content, 'validation_ref')) structMissing.push('validation_ref front-matter field');
+    }
+    if (structMissing.length > 0) {
+      warn(`Content structure gaps in ${specId} (non-blocking — fix before complete):\n${structMissing.map(m => `  ⚠ ${m}`).join('\n')}\n  Run: node sdd-conductor.mjs gate content-structure ${taskId}`);
+    }
+  }
+
+  // Gate: board-wide trace graph integrity (EX/VA tasks only — skip for RS/NS/EP which may have no children yet)
+  {
+    const titleStr = task.title || '';
+    const sid = extractSpecId(task.content) || '';
+    const isEXorVA = /^T-\d/i.test(titleStr) || /^V-T-/i.test(titleStr) || /^EX-/i.test(sid) || /^VA-/i.test(sid);
+    if (isEXorVA) {
+      info(`\nRunning trace-graph integrity gate...`);
+      try {
+        await cmdGateTraceGraph(iState.dsId, iState.planModeId);
+      } catch (e) {
+        if (e.code === 'ERR_CONDUCTOR_GATE') throw e;
+        warn(`Trace graph check skipped (non-fatal): ${e.message}`);
+      }
     }
   }
 
@@ -706,8 +1062,12 @@ async function cmdStart(taskId) {
   };
   saveInitiative(state, slug, iState);
 
+  // Sync .claude/sdd-active.json so sdd-enforce.js (PreToolUse) sees the active task
+  syncLegacyActive({ active: true, activeTaskId: taskId, specId, project: slug, initiative: slug,
+    implFiles, title: task.title, startedAt, completedAt: undefined });
+
   ok(`Task ${specId} marked IN_PROGRESS and logged to .sdd-state.json (initiative: ${slug})`);
-  info(`File guard active. Any file write outside [${implFiles.join(', ')}] will trigger a warning.`);
+  info(`File guard active. Writes outside [${implFiles.slice(0,3).join(', ')}${implFiles.length>3?` …+${implFiles.length-3} more`:''}] are blocked by PreToolUse hook.`);
 }
 
 async function cmdComplete(taskId) {
@@ -814,6 +1174,85 @@ async function cmdComplete(taskId) {
   }
   if (implFiles.length > 0) info(`Mock scan: clean ✓`);
 
+  // Gate 4: EX tasks require a 1-1 linked VA task — cannot complete EX without VA existing
+  // Relationship model: each EX owns exactly one VA (execution_ref on VA points to this EX).
+  // If no VA exists, auto-create a stub in the Validation column and block until it runs.
+  const isExTask = /^EX-\d+/i.test(specId) || /^EX-/i.test(task.title?.match(/^[A-Z]+-\d+/)?.[0] || '');
+  if (isExTask && iState.planModeId) {
+    const allTasksForVa = ((await client.get(
+      `/api/v2/dataspheres/${iState.dsId}/tasks?planModeId=${iState.planModeId}&limit=500`
+    )).tasks || []);
+    const linkedVa = allTasksForVa.find(t => {
+      const ref = extractFrontMatterField(t.content || '', 'execution_ref');
+      return ref && ref.toUpperCase() === specId.toUpperCase();
+    });
+    if (!linkedVa) {
+      const epicRef = extractFrontMatterField(task.content, 'epic_ref') || '';
+      const nsRef   = extractFrontMatterField(task.content, 'north_star_ref') || '';
+      const exLabel = task.title?.replace(/^EX-\d+\s*[·•\s]+/i, '').trim() || specId;
+      const vaCounter = allTasksForVa.filter(t => /^VA-\d+/i.test(t.title || '')).length + 1;
+      const vaSpecId  = `VA-${String(vaCounter).padStart(3, '0')}`;
+      const vaContent = [
+        `<pre><code class="language-yaml">`,
+        `spec_id: ${vaSpecId}`,
+        `execution_ref: ${specId}`,
+        ...(epicRef ? [`epic_ref: ${epicRef}`] : []),
+        ...(nsRef   ? [`north_star_ref: ${nsRef}`] : []),
+        `status: PENDING`,
+        `</code></pre>`,
+        ``,
+        `<h2>Validation &mdash; ${specId}</h2>`,
+        `<p>Auto-created by sdd-conductor. Every EX task requires exactly one VA (1&ndash;1 map). Fill in the real criteria before running validate.</p>`,
+        `<p><strong>Validates:</strong> ${specId} &mdash; ${exLabel}</p>`,
+        ``,
+        `<h3>Acceptance Criteria <!-- #ac --></h3>`,
+        `<ul data-type="taskList">`,
+        `  <li data-type="taskItem" data-checked="false"><p>All functional requirements in ${specId} verified against the live implementation</p></li>`,
+        `  <li data-type="taskItem" data-checked="false"><p>Edge cases and error states exercised (unit + integration)</p></li>`,
+        `  <li data-type="taskItem" data-checked="false"><p>No regressions in adjacent features detected</p></li>`,
+        `</ul>`,
+        ``,
+        `<h3>Functional Requirements <!-- #fr --></h3>`,
+        `<ul data-type="taskList">`,
+        `  <li data-type="taskItem" data-checked="false"><p>UI/API behaviour matches ${specId} acceptance criteria verbatim</p></li>`,
+        `  <li data-type="taskItem" data-checked="false"><p>Real data, no mocks — verified via test run or manual walkthrough</p></li>`,
+        `</ul>`,
+        ``,
+        `<h3>Non-Functional Requirements <!-- #nfr --></h3>`,
+        `<ul data-type="taskList">`,
+        `  <li data-type="taskItem" data-checked="false"><p>Page / API response time within acceptable range (&lt; 500ms p95)</p></li>`,
+        `  <li data-type="taskItem" data-checked="false"><p>Mobile layout verified (no overflow, readable at 375px)</p></li>`,
+        `</ul>`,
+      ].join('\n');
+      let newVaId = null;
+      if (iState.validationGroupId) {
+        try {
+          const created = await client.post(
+            `/api/v2/dataspheres/${iState.dsId}/tasks?planModeId=${iState.planModeId}`,
+            { title: `${vaSpecId} &middot; Validate ${specId}`, content: vaContent, statusGroupId: iState.validationGroupId }
+          );
+          newVaId = created.task?.id || created.id || null;
+          info(`VA stub ${vaSpecId} auto-created in Validation column (${newVaId}) ✓`);
+        } catch (e) {
+          warn(`Could not auto-create VA stub: ${e.message}`);
+        }
+      }
+      gate(
+        `EX task ${specId} has no linked Validation task (1&ndash;1 rule violated).\n\n` +
+        (newVaId
+          ? `  VA stub ${vaSpecId} has been auto-created in the Validation column (id: ${newVaId}).\n`
+          : `  A VA stub must be created manually in the Validation column.\n`) +
+        `\n` +
+        `  Required before completing ${specId}:\n` +
+        `    1. Fill in real AC/FR/NFR criteria in ${vaSpecId} specific to what ${specId} built\n` +
+        `    2. Run: node sdd-conductor.mjs validate ${newVaId || '<vaTaskId>'}\n` +
+        `    3. VA pass auto-promotes ${specId} to Done — do NOT call 'complete' again\n\n` +
+        `  EX tasks are NEVER manually marked Done — only VA promotion does this.`
+      );
+    }
+    info(`VA 1&ndash;1 gate: ${linkedVa.title?.match(/^VA-\d+/)?.[0] || linkedVa.id} linked ✓`);
+  }
+
   const completedAt = new Date().toISOString();
   let currentContent = task.content || '';
 
@@ -831,7 +1270,50 @@ async function cmdComplete(taskId) {
     info(`Task moved to Validation column ✓`);
   }
 
-  // Step 2: Move to Done + write PASS gate state
+  // Step 2: Done promotion — EX tasks are EXCLUSIVELY promoted by cmdValidate passing.
+  // If the linked VA is already Done (recovery path), allow promotion here.
+  // Otherwise stop at Validation column and wait for the VA run.
+  if (isExTask) {
+    let vaIsDone = false;
+    try {
+      const boardCheck = ((await client.get(
+        `/api/v2/dataspheres/${iState.dsId}/tasks?planModeId=${iState.planModeId}&limit=500`
+      )).tasks || []);
+      const linkedVaForCheck = boardCheck.find(t => {
+        const ref = extractFrontMatterField(t.content || '', 'execution_ref');
+        return ref && ref.toUpperCase() === specId.toUpperCase();
+      });
+      if (linkedVaForCheck && isDone(linkedVaForCheck)) {
+        vaIsDone = true;
+        info(`VA already Done (recovery path) — promoting EX to Done ✓`);
+      }
+    } catch { /* non-fatal — fall through to block */ }
+
+    if (!vaIsDone) {
+      // Post a handoff comment so the developer knows what to do next
+      const vaRef = extractFrontMatterField(task.content, 'validation_ref') || '<vaTaskId>';
+      await client.post(`/api/v2/dataspheres/${iState.dsId}/tasks/${taskId}/comments`, {
+        content: [
+          `[all-dai-sdd-system-message]`,
+          ``,
+          `**${specId} ready for Validation** | ${completedAt}`,
+          ``,
+          `All gates passed. Task is in the Validation column.`,
+          `Done promotion happens ONLY when the linked VA passes.`,
+          ``,
+          `Next: run the validation gate:`,
+          `\`node sdd-conductor.mjs validate ${vaRef}\``,
+        ].join('\n'),
+      });
+      iState.activeTask = null;
+      saveInitiative(state, slug, iState);
+      syncLegacyActive({ active: false, activeTaskId: null, specId: null, completedAt,
+        lastCompletedSpecId: specId, project: slug, initiative: slug, implFiles: [] });
+      ok(`${specId} is now in Validation. Run: node sdd-conductor.mjs validate ${vaRef}`);
+      return;
+    }
+  }
+
   currentContent = gateStateWrite(currentContent, {
     gate_status:  'PASS',
     completed_at: completedAt,
@@ -853,9 +1335,23 @@ async function cmdComplete(taskId) {
   iState.lastCompleted = { taskId, specId, title: task.title, completedAt };
   saveInitiative(state, slug, iState);
 
+  // Clear .claude/sdd-active.json so sdd-enforce.js stops blocking file edits
+  syncLegacyActive({ active: false, activeTaskId: null, specId: null, completedAt,
+    lastCompletedSpecId: specId, project: slug, initiative: slug, implFiles: [] });
+
   await injectNextBriefing(client, iState, specId, task.title, completedAt);
 
   ok(`${specId} marked Done via Validation. Next task briefed.`);
+
+  // Auto-refresh the dashboard focus section so the tree reflects the completed task immediately.
+  if (iState.dashboardSlug && iState.dsUri) {
+    try {
+      await cmdUpdateDashboard(iState.dsUri, iState.dashboardSlug);
+      info(`Dashboard Current Focus refreshed ✓`);
+    } catch (e) {
+      warn(`Dashboard refresh skipped (non-fatal): ${e.message}`);
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1024,7 +1520,30 @@ async function runNsValidation(client, iState, nsTaskId) {
         `- Run /all-dai-sdd — AUDIT mode will detect all NS Done and generate the close-out page`,
       ].join('\n'),
     });
-    info(`NS ${nsSpecId}: all items verified -> moved to Done -- final research review triggered`);
+    info(`NS ${nsSpecId}: all items verified -> moved to Done`);
+
+    // Cascade: find parent RS task via research_ref and propagate
+    const rsRef = extractFrontMatterField(ns.content, 'research_ref');
+    if (rsRef) {
+      try {
+        const allTasks = (await client.get(
+          `/api/v2/dataspheres/${iState.dsId}/tasks?planModeId=${iState.planModeId}&limit=500`
+        )).tasks || [];
+        const rsTask = allTasks.find(t =>
+          extractSpecId(t.content) === rsRef ||
+          t.title?.match(/^[A-Z]+-\d+/)?.[0] === rsRef
+        );
+        if (rsTask) {
+          await propagateResearchChecklist(client, iState, rsTask.id, nsSpecId, ns.title);
+        } else {
+          info(`RS task "${rsRef}" not found on board — manual Research review required`);
+        }
+      } catch (e) {
+        warn(`Could not cascade NS → RS for ${nsSpecId}: ${e.message}`);
+      }
+    } else {
+      info(`NS ${nsSpecId} has no research_ref — add one to enable automatic RS cascade`);
+    }
   } catch (e) {
     warn(`Could not run NS validation for ${nsTaskId}: ${e.message}`);
   }
@@ -1152,6 +1671,98 @@ async function propagateNsChecklist(client, iState, nsTaskId, doneEpicSpecId, do
   }
 }
 
+// ---------------------------------------------------------------------------
+// RS cascade — fires when all NS tasks under an RS are Done
+// ---------------------------------------------------------------------------
+
+async function runResearchValidation(client, iState, rsTaskId) {
+  try {
+    const rs = await client.get(`/api/v2/dataspheres/${iState.dsId}/tasks/${rsTaskId}`);
+    if (!rs.content) return;
+    const rsSpecId = extractSpecId(rs.content) || rs.title?.match(/^[A-Z]+-\d+/)?.[0] || rsTaskId;
+
+    const acItems  = extractSectionChecklist(rs.content, 'Acceptance Criteria');
+    const frItems  = extractSectionChecklist(rs.content, 'Functional Requirements');
+    const nfrItems = extractSectionChecklist(rs.content, 'Non-Functional Requirements');
+    const allItems = [
+      ...acItems.map(i  => ({ ...i, section: 'AC'  })),
+      ...frItems.map(i  => ({ ...i, section: 'FR'  })),
+      ...nfrItems.map(i => ({ ...i, section: 'NFR' })),
+    ];
+    const unchecked = allItems.filter(i => !i.checked);
+
+    if (unchecked.length > 0) {
+      await client.post(`/api/v2/dataspheres/${iState.dsId}/tasks/${rsTaskId}/comments`, {
+        content: [
+          `[all-dai-sdd-system-message]`,
+          ``,
+          `**Research Validation Required** — ${rsSpecId} | ${new Date().toISOString()}`,
+          ``,
+          `All North Stars under this Research task are complete. Review each acceptance item:`,
+          ``,
+          ...unchecked.map(i => `- [ ] [${i.section}] ${i.text}`),
+          ``,
+          `Review origin prompts vs what was actually delivered. Verify feasibility evidence held true.`,
+          `If gaps exist: create new RS tasks for unresolved questions before closing this Research item.`,
+        ].join('\n'),
+      });
+      info(`RS ${rsSpecId}: ${unchecked.length} acceptance item(s) need review — comment posted`);
+      return;
+    }
+
+    await client.patch(`/api/v2/dataspheres/${iState.dsId}/tasks/${rsTaskId}`, {
+      statusGroupId: iState.doneGroupId,
+      status: 'DONE',
+    });
+    await client.post(`/api/v2/dataspheres/${iState.dsId}/tasks/${rsTaskId}/comments`, {
+      content: [
+        `[all-dai-sdd-system-message]`,
+        ``,
+        `**Research COMPLETE** — ${rsSpecId} | ${new Date().toISOString()}`,
+        ``,
+        `All North Stars complete and all research criteria verified.`,
+        ``,
+        `**Full delivery trace:** Research → North Stars → Epics → Execution → Validation → Artifacts`,
+        `The original prompts and research objectives have been fully addressed.`,
+        allItems.length > 0
+          ? `\n**Verified criteria:**\n${allItems.map(i => `- [${i.section}] ${i.text} ✓`).join('\n')}`
+          : '',
+      ].join('\n'),
+    });
+    info(`RS ${rsSpecId}: all North Stars done — Research moved to Done ✓`);
+  } catch (e) {
+    warn(`Could not run Research validation for ${rsTaskId}: ${e.message}`);
+  }
+}
+
+async function propagateResearchChecklist(client, iState, rsTaskId, doneNsSpecId, doneNsTitle) {
+  try {
+    const rs = await client.get(`/api/v2/dataspheres/${iState.dsId}/tasks/${rsTaskId}`);
+    if (!rs.content) return;
+
+    const idPrefix = doneNsSpecId.match(/^[A-Z]+-\d+/)?.[0] || doneNsSpecId;
+    const updated = rs.content.replace(
+      new RegExp(`(data-checked="false"><p>)(${escapeRegex(idPrefix)}[^<]*)`, 'g'),
+      `data-checked="true"><p>$2`
+    );
+
+    if (updated !== rs.content) {
+      await client.patch(`/api/v2/dataspheres/${iState.dsId}/tasks/${rsTaskId}`, { content: updated });
+      info(`RS checklist: ticked ${idPrefix} ✓`);
+    }
+
+    const remaining = countUncheckedItems(updated);
+    if (remaining === 0) {
+      info(`RS: all North Stars done — running Research acceptance validation`);
+      await runResearchValidation(client, iState, rsTaskId);
+    } else {
+      info(`RS: ${remaining} North Star(s) remaining`);
+    }
+  } catch (e) {
+    warn(`Could not propagate to RS ${rsTaskId}: ${e.message}`);
+  }
+}
+
 async function cmdStatus() {
   const state = loadState();
   if (!state) {
@@ -1199,6 +1810,320 @@ async function cmdStatus() {
     console.log(`  Cross-project: node sdd-conductor.mjs workspace`);
   }
   console.log('');
+}
+
+// ---------------------------------------------------------------------------
+// cmdGateTraceGraph — board-wide trace integrity gate
+//
+// Checks that every task's front-matter refs form a connected NS→EP→EX→VA
+// chain with no orphans, broken refs, or type mismatches.
+//
+// Called by:
+//   cmdStart     — before any EX/VA task begins
+//   gate trace-graph — standalone / CI use
+// ---------------------------------------------------------------------------
+
+async function cmdGateTraceGraph(dsId, planModeId) {
+  const client = makeClient();
+  const allRes = await client.get(
+    `/api/v2/dataspheres/${dsId}/tasks?planModeId=${planModeId}&limit=500`
+  );
+  const tasks = allRes.tasks || allRes || [];
+
+  console.log(`\n🔗 SDD-CONDUCTOR GATE trace-graph`);
+  info(`Checking ${tasks.length} tasks for trace continuity...`);
+
+  // Build prefix → task lookup  (e.g. "EP-001" → task)
+  // Also index by full spec_id from front-matter (e.g. "SPEC-PROF-EX-004") so that
+  // cross-ref lookups work regardless of whether the ref uses the short or long form.
+  const byPrefix = new Map();
+  for (const t of tasks) {
+    const pid = (t.title || '').match(/^([A-Z]+-\d+)/i)?.[1]?.toUpperCase();
+    if (pid) byPrefix.set(pid, t);
+    const fmSpecId = (extractSpecId(t.content) || '').toUpperCase();
+    if (fmSpecId && fmSpecId !== pid) byPrefix.set(fmSpecId, t);
+  }
+
+  function taskType(t) {
+    const pid = (t.title || '').match(/^([A-Z]+-\d+)/i)?.[1]?.toUpperCase() || '';
+    const col = (t.statusGroup?.name || '').toLowerCase();
+    if (pid.startsWith('RS') || col.includes('research')) return 'RS';
+    if (pid.startsWith('NS') || col.includes('north')) return 'NS';
+    if (pid.startsWith('AR') || col.includes('artifact')) return 'AR';
+    if (pid.startsWith('EP') || /^E-\d/.test(pid) || col.includes('epic')) return 'EP';
+    if (pid.startsWith('EX') || /^T-\d/.test(pid) || col.includes('execut')) return 'EX';
+    if (pid.startsWith('VA') || /^V-T/.test(pid) || col.includes('validat')) return 'VA';
+    return null;
+  }
+
+  const byType = { RS: [], NS: [], EP: [], EX: [], VA: [], AR: [] };
+  for (const t of tasks) {
+    const type = taskType(t);
+    if (type) byType[type].push(t);
+  }
+
+  const violations = [];
+
+  function taskPid(t) {
+    return (t.title || '').match(/^([A-Z]+-\d+)/i)?.[1]?.toUpperCase() || t.id;
+  }
+
+  // ── RULE 0: NS → RS ──────────────────────────────────────────────────────
+  // Every active North Star must have a research_ref pointing to a valid RS task.
+  // If research_ref exists but the RS task is not on the board → broken ref (must fix).
+  // If research_ref is absent → orphan NS — no research justification exists.
+  for (const ns of byType.NS) {
+    if (isDone(ns)) continue;
+    const pid = taskPid(ns);
+    const ref = (extractFrontMatterField(ns.content || '', 'research_ref') || '').toUpperCase();
+    if (!ref) {
+      violations.push({ task: pid, rule: 'NS-NO-RESEARCH',
+        msg: `${pid}: missing research_ref — North Star has no backing Research task` });
+    } else if (!byPrefix.has(ref)) {
+      violations.push({ task: pid, rule: 'NS-BROKEN-RESEARCH-REF',
+        msg: `${pid}: research_ref "${ref}" not found on board — create the RS task first` });
+    } else if (taskType(byPrefix.get(ref)) !== 'RS') {
+      violations.push({ task: pid, rule: 'NS-WRONG-RESEARCH-TYPE',
+        msg: `${pid}: research_ref "${ref}" resolves to a ${taskType(byPrefix.get(ref))} task, expected RS` });
+    }
+  }
+
+  // ── RULE 0.5: RS content completeness ─────────────────────────────────────
+  // Each RS task must contain the 9 required research section anchors.
+  // A missing anchor means that research evidence is absent and cannot be reviewed.
+  const RS_REQUIRED_SECTIONS = [
+    { key: '#origin',         label: 'Origin Prompts (<!-- #origin -->)' },
+    { key: '#problem',        label: 'Problem Statement (<!-- #problem -->)' },
+    { key: '#approach',       label: 'Approach Under Evaluation (<!-- #approach -->)' },
+    { key: '#search-results', label: 'Search Results (<!-- #search-results -->)' },
+    { key: '#codebase',       label: 'Codebase Context (<!-- #codebase -->)' },
+    { key: '#sources',        label: 'Sources (<!-- #sources -->)' },
+    { key: '#feasibility',    label: 'Feasibility Evidence (<!-- #feasibility -->)' },
+    { key: '#rec',            label: 'Recommendation (<!-- #rec -->)' },
+    { key: '#vc',             label: 'Validation Criteria (<!-- #vc -->)' },
+  ];
+  for (const rs of byType.RS) {
+    if (isDone(rs)) continue;
+    const pid = taskPid(rs);
+    const content = rs.content || '';
+    const missingSecs = RS_REQUIRED_SECTIONS.filter(s => !content.includes(s.key));
+    if (missingSecs.length > 3) {
+      violations.push({ task: pid, rule: 'RS-INCOMPLETE',
+        msg: `${pid}: missing ${missingSecs.length}/9 required research sections:\n${missingSecs.map(s => `      - ${s.label}`).join('\n')}` });
+    }
+  }
+
+  // ── RULE 1: EP → NS ──────────────────────────────────────────────────────
+  for (const ep of byType.EP) {
+    const pid = taskPid(ep);
+    const ref = (extractFrontMatterField(ep.content || '', 'north_star_ref') || '').toUpperCase();
+    if (!ref) {
+      violations.push({ task: pid, rule: 'EP-ORPHAN',
+        msg: `${pid}: missing north_star_ref — EP has no parent NS in trace graph` });
+    } else if (!byPrefix.has(ref)) {
+      violations.push({ task: pid, rule: 'EP-BROKEN-REF',
+        msg: `${pid}: north_star_ref "${ref}" not found on board` });
+    } else if (taskType(byPrefix.get(ref)) !== 'NS') {
+      violations.push({ task: pid, rule: 'EP-WRONG-TYPE',
+        msg: `${pid}: north_star_ref "${ref}" resolves to a ${taskType(byPrefix.get(ref))} task, expected NS` });
+    }
+  }
+
+  // ── RULE 2: EX → EP ──────────────────────────────────────────────────────
+  for (const ex of byType.EX) {
+    const pid = taskPid(ex);
+    const ref = (extractFrontMatterField(ex.content || '', 'epic_ref') || '').toUpperCase();
+    if (!ref) {
+      violations.push({ task: pid, rule: 'EX-ORPHAN',
+        msg: `${pid}: missing epic_ref — EX has no parent EP in trace graph` });
+    } else if (!byPrefix.has(ref)) {
+      violations.push({ task: pid, rule: 'EX-BROKEN-REF',
+        msg: `${pid}: epic_ref "${ref}" not found on board` });
+    } else if (taskType(byPrefix.get(ref)) !== 'EP') {
+      violations.push({ task: pid, rule: 'EX-WRONG-TYPE',
+        msg: `${pid}: epic_ref "${ref}" resolves to a ${taskType(byPrefix.get(ref))} task, expected EP` });
+    }
+  }
+
+  // ── RULE 3: VA → EX ──────────────────────────────────────────────────────
+  for (const va of byType.VA) {
+    const pid = taskPid(va);
+    const ref = (extractFrontMatterField(va.content || '', 'execution_ref') || '').toUpperCase();
+    if (!ref) {
+      violations.push({ task: pid, rule: 'VA-ORPHAN',
+        msg: `${pid}: missing execution_ref — VA has no parent EX in trace graph` });
+    } else if (!byPrefix.has(ref)) {
+      violations.push({ task: pid, rule: 'VA-BROKEN-REF',
+        msg: `${pid}: execution_ref "${ref}" not found on board` });
+    } else if (taskType(byPrefix.get(ref)) !== 'EX') {
+      violations.push({ task: pid, rule: 'VA-WRONG-TYPE',
+        msg: `${pid}: execution_ref "${ref}" resolves to a ${taskType(byPrefix.get(ref))} task, expected EX` });
+    }
+  }
+
+  // ── RULE 4: NS completeness — each active NS must have ≥1 EP child ───────
+  for (const ns of byType.NS) {
+    if (isDone(ns)) continue;
+    const pid = taskPid(ns);
+    const hasEpic = byType.EP.some(ep =>
+      (extractFrontMatterField(ep.content || '', 'north_star_ref') || '').toUpperCase() === pid
+    );
+    if (!hasEpic) {
+      violations.push({ task: pid, rule: 'NS-NO-EPICS',
+        msg: `${pid}: no EP tasks reference this NS — trace graph shows isolated North Star` });
+    }
+  }
+
+  // ── RULE 5: EP completeness — each active EP must have ≥1 EX child ───────
+  for (const ep of byType.EP) {
+    if (isDone(ep)) continue;
+    const pid = taskPid(ep);
+    const hasEx = byType.EX.some(ex =>
+      (extractFrontMatterField(ex.content || '', 'epic_ref') || '').toUpperCase() === pid
+    );
+    if (!hasEx) {
+      violations.push({ task: pid, rule: 'EP-NO-EXECUTION',
+        msg: `${pid}: no EX tasks reference this EP — Epic has no execution children` });
+    }
+  }
+
+  // ── RULE 6: EX completeness — each active EX must have ≥1 VA child ───────
+  for (const ex of byType.EX) {
+    if (isDone(ex)) continue;
+    const pid = taskPid(ex);
+    const hasVa = byType.VA.some(va =>
+      (extractFrontMatterField(va.content || '', 'execution_ref') || '').toUpperCase() === pid
+    );
+    if (!hasVa) {
+      violations.push({ task: pid, rule: 'EX-NO-VALIDATION',
+        msg: `${pid}: no VA task references this EX — execution task has no validation child` });
+    }
+  }
+
+  // ── RULE 6.5: EX 1-1 VA — each active EX must have exactly ONE VA ──────────
+  // Multiple VA tasks for the same EX violates the 1-1 mapping and creates validation ambiguity.
+  for (const ex of byType.EX) {
+    if (isDone(ex)) continue;
+    const pid = taskPid(ex);
+    const vaChildren = byType.VA.filter(va =>
+      (extractFrontMatterField(va.content || '', 'execution_ref') || '').toUpperCase() === pid
+    );
+    if (vaChildren.length > 1) {
+      violations.push({ task: pid, rule: 'EX-MULTIPLE-VA',
+        msg: `${pid}: has ${vaChildren.length} VA tasks (${vaChildren.map(v => taskPid(v)).join(', ')}) — 1-1 rule violated; exactly one VA per EX is required` });
+    }
+  }
+
+  // ── RULE 6.7: EX validation_ref forward pointer must match the actual VA ───
+  // If an EX has validation_ref: VA-NNN, that VA must have execution_ref: <this EX>.
+  // A mismatch means the bidirectional link is broken.
+  for (const ex of byType.EX) {
+    const pid = taskPid(ex);
+    const valRef = (extractFrontMatterField(ex.content || '', 'validation_ref') || '').toUpperCase();
+    if (!valRef) continue;
+    const vaTask = byPrefix.get(valRef);
+    if (!vaTask) continue;
+    const execRef = (extractFrontMatterField(vaTask.content || '', 'execution_ref') || '').toUpperCase();
+    // Normalize: the VA might use either short form ("EX-004") or full spec_id form ("SPEC-PROF-EX-004").
+    // Resolve execRef to a short-form pid using byPrefix before comparing.
+    const resolvedTask = byPrefix.get(execRef);
+    const resolvedPid  = resolvedTask ? taskPid(resolvedTask) : execRef;
+    if (resolvedPid !== pid) {
+      violations.push({ task: pid, rule: 'EX-VA-BIDIRECTIONAL-MISMATCH',
+        msg: `${pid}: validation_ref points to ${valRef} but ${valRef}.execution_ref = "${execRef}" (expected "${pid}") — bidirectional 1-1 link broken` });
+    }
+  }
+
+  // ── RULE 0.7: EP cannot be active while parent NS's RS task is not Done ────
+  // Enforces the Research gate: no Epics work on an approach that hasn't been validated.
+  for (const ep of byType.EP) {
+    if (isDone(ep)) continue;
+    const pid = taskPid(ep);
+    const nsRef = (extractFrontMatterField(ep.content || '', 'north_star_ref') || '').toUpperCase();
+    if (!nsRef) continue;
+    const nsTask = byPrefix.get(nsRef);
+    if (!nsTask) continue;
+    const rsRef = (extractFrontMatterField(nsTask.content || '', 'research_ref') || '').toUpperCase();
+    if (!rsRef) continue;
+    const rsTask = byPrefix.get(rsRef);
+    if (rsTask && !isDone(rsTask)) {
+      violations.push({ task: pid, rule: 'EP-RS-NOT-DONE',
+        msg: `${pid} is active but ${nsRef}.research_ref ${rsRef} is not Done (currently: ${getColumnName(rsTask)}) — Research must complete before Epics work begins` });
+    }
+  }
+
+  // ── RULE 7: VA completeness — each Done VA should have ≥1 AR artifact trace ─
+  // This is a WARNING-only rule (added to violations but reported separately).
+  // AR tasks get created after VA passes — they must link back via validation_ref.
+  const arWarnings = [];
+  for (const va of byType.VA) {
+    if (!isDone(va)) continue;
+    const pid = taskPid(va);
+    const hasArtifact = byType.AR.some(ar =>
+      (extractFrontMatterField(ar.content || '', 'validation_ref') || '').toUpperCase() === pid
+    );
+    if (!hasArtifact) {
+      arWarnings.push(`${pid}: no AR task references this validated VA — create an Artifact task with validation_ref: ${pid}`);
+    }
+  }
+  if (arWarnings.length > 0) {
+    warn(`Artifact trace gaps (${arWarnings.length} validated VA tasks without AR records):\n${arWarnings.map(w => `  ⚠ ${w}`).join('\n')}`);
+  }
+
+  // ── RULE 8: AR → VA ────────────────────────────────────────────────────────
+  for (const ar of byType.AR) {
+    const pid = taskPid(ar);
+    const ref = (extractFrontMatterField(ar.content || '', 'validation_ref') || '').toUpperCase();
+    if (!ref) {
+      violations.push({ task: pid, rule: 'AR-ORPHAN',
+        msg: `${pid}: missing validation_ref — Artifact has no parent VA in trace graph` });
+    } else if (!byPrefix.has(ref)) {
+      violations.push({ task: pid, rule: 'AR-BROKEN-REF',
+        msg: `${pid}: validation_ref "${ref}" not found on board` });
+    } else if (taskType(byPrefix.get(ref)) !== 'VA') {
+      violations.push({ task: pid, rule: 'AR-WRONG-TYPE',
+        msg: `${pid}: validation_ref "${ref}" resolves to a ${taskType(byPrefix.get(ref))} task, expected VA` });
+    }
+  }
+
+  // ── RULE 9: NS completeness check — must have ≥1 RS backing ──────────────
+  // (checked via RULE 0 above — if NS exists with no research_ref it's already a violation)
+  // RS completeness: each active RS must have ≥1 NS child
+  for (const rs of byType.RS) {
+    if (isDone(rs)) continue;
+    const pid = taskPid(rs);
+    const hasNs = byType.NS.some(ns =>
+      (extractFrontMatterField(ns.content || '', 'research_ref') || '').toUpperCase() === pid
+    );
+    if (!hasNs) {
+      violations.push({ task: pid, rule: 'RS-NO-NORTH-STARS',
+        msg: `${pid}: no NS tasks reference this RS — Research task has no North Star children` });
+    }
+  }
+
+  // ── USER-EXTENSIBLE: add additional trace rules here ─────────────────────
+  // Each rule pushes to violations[] with { task, rule, msg }
+  // Gate exits 1 if violations.length > 0
+
+  if (violations.length === 0) {
+    ok(`GATE trace-graph: chain intact — ${byType.RS.length} RS → ${byType.NS.length} NS → ${byType.EP.length} EP → ${byType.EX.length} EX → ${byType.VA.length} VA → ${byType.AR.length} AR ✓`);
+    return { ok: true, violations: [] };
+  }
+
+  // Group by rule for readability
+  const byRule = {};
+  for (const v of violations) {
+    (byRule[v.rule] = byRule[v.rule] || []).push(v.msg);
+  }
+  const report = Object.entries(byRule)
+    .map(([rule, msgs]) => `  [${rule}]\n${msgs.map(m => `    ✗ ${m}`).join('\n')}`)
+    .join('\n');
+
+  gate(
+    `Trace graph broken — ${violations.length} violation(s):\n\n${report}\n\n` +
+    `Fix: update front-matter refs (epic_ref / north_star_ref / execution_ref) in the affected tasks\n` +
+    `     so every task links to its correct parent in the NS → EP → EX → VA chain.`
+  );
 }
 
 async function cmdGate(name, arg) {
@@ -1297,6 +2222,11 @@ async function cmdGate(name, arg) {
       ok(`GATE hierarchy: ${specId} has correct parent refs`);
       break;
     }
+    case 'trace-graph': {
+      // Board-wide ref integrity gate — runs against all tasks, no taskId arg needed
+      await cmdGateTraceGraph(iState.dsId, iState.planModeId);
+      break;
+    }
     case 'checklist-format': {
       // Rule 2 from SKILL.md Trace Graph Linking: all checklists must use <ul data-type="taskList">
       // A bare <ul> wrapping <li data-type="taskItem"> breaks findChecklistRefs() edge detection.
@@ -1373,6 +2303,103 @@ async function cmdGate(name, arg) {
       ok(`GATE tracker-link: trackerUrl set + dashboard planner link present`);
       break;
     }
+    case 'content-structure': {
+      // Gate: each task type must have the required structural sections.
+      // RS → 9 research anchors; NS/EP/EX → AC + FR + NFR; VA → AC + Artifacts; AR → validation_ref
+      if (!arg) die('Usage: gate content-structure <taskId>');
+      const task = unwrapTask(await client.get(`/api/v2/dataspheres/${iState.dsId}/tasks/${arg}`));
+      const content = task.content || '';
+      const title = task.title || '';
+      const sid = extractSpecId(content) || title.match(/^[A-Z]+-\d+/)?.[0] || arg;
+      const col = getColumnName(task).toLowerCase();
+
+      // Classify task type
+      const isRS = /^RS-/i.test(title) || col.includes('research');
+      const isNS = /^NS-/i.test(title) || col.includes('north');
+      const isEP = /^EP-/i.test(title) || /^E-\d/i.test(title) || col.includes('epic');
+      const isEX = /^EX-/i.test(title) || /^T-\d/i.test(title) || col.includes('execut');
+      const isVA = /^VA-/i.test(title) || /^V-T-/i.test(title) || col.includes('validat');
+      const isAR = /^AR-/i.test(title) || col.includes('artifact');
+
+      const missing = [];
+
+      if (isRS) {
+        const anchors = [
+          { key: '#origin',         label: '<!-- #origin --> (Origin Prompts with verbatim user quotes)' },
+          { key: '#problem',        label: '<!-- #problem --> (Problem Statement)' },
+          { key: '#approach',       label: '<!-- #approach --> (Approach Under Evaluation)' },
+          { key: '#search-results', label: '<!-- #search-results --> (Verbatim search result excerpts)' },
+          { key: '#codebase',       label: '<!-- #codebase --> (Existing code snippets/paths)' },
+          { key: '#sources',        label: '<!-- #sources --> (≥2 URLs or DOIs)' },
+          { key: '#feasibility',    label: '<!-- #feasibility --> (Feasibility Evidence)' },
+          { key: '#rec',            label: '<!-- #rec --> (Recommendation)' },
+          { key: '#vc',             label: '<!-- #vc --> (Validation Criteria)' },
+        ];
+        for (const a of anchors) {
+          if (!content.includes(a.key)) missing.push(a.label);
+        }
+        // Check origin prompts: must have a blockquote
+        if (content.includes('#origin') && !/<blockquote/i.test(content))
+          missing.push('Origin Prompts section must contain a <blockquote> with verbatim user text');
+        // Check sources: must have ≥2 links
+        const linkCount = (content.match(/href="http/gi) || []).length;
+        if (linkCount < 2) missing.push(`Sources section must have ≥2 external URLs (found ${linkCount})`);
+      } else if (isNS || isEP || isEX) {
+        if (!/<h[2-4][^>]*>.*?Acceptance Criteria/i.test(content))
+          missing.push('Acceptance Criteria section (h2/h3/h4)');
+        if (!/<h[2-4][^>]*>.*?Functional Requirements/i.test(content))
+          missing.push('Functional Requirements section (h2/h3/h4)');
+        if (!/<h[2-4][^>]*>.*?Non.Functional Requirements/i.test(content))
+          missing.push('Non-Functional Requirements section (h2/h3/h4)');
+        if (isEP || isEX) {
+          if (!/<h[2-4][^>]*>.*?Implementation/i.test(content))
+            missing.push('Implementation Files/Scope section (h2/h3/h4)');
+        }
+        if (isEX) {
+          if (!/<h[2-4][^>]*>.*?Validation Criteria/i.test(content))
+            missing.push('Validation Criteria section (h2/h3/h4) — links to the VA ticket');
+        }
+        if (isNS) {
+          if (!extractFrontMatterField(content, 'research_ref'))
+            missing.push('research_ref front-matter field (links this NS to its parent RS task)');
+        }
+        if (isEP) {
+          if (!extractFrontMatterField(content, 'north_star_ref'))
+            missing.push('north_star_ref front-matter field');
+        }
+        if (isEX) {
+          if (!extractFrontMatterField(content, 'epic_ref'))       missing.push('epic_ref front-matter field');
+          if (!extractFrontMatterField(content, 'north_star_ref')) missing.push('north_star_ref front-matter field');
+          if (!extractFrontMatterField(content, 'validation_ref')) missing.push('validation_ref front-matter field (links to child VA ticket)');
+        }
+      } else if (isVA) {
+        if (!/<h[2-4][^>]*>.*?Acceptance Criteria/i.test(content))
+          missing.push('Acceptance Criteria section');
+        if (!/<h[2-4][^>]*>.*?(Validation Criteria|Test Plan)/i.test(content))
+          missing.push('Validation Criteria / Test Plan section');
+        if (!extractFrontMatterField(content, 'execution_ref'))  missing.push('execution_ref front-matter field');
+        if (!extractFrontMatterField(content, 'epic_ref'))       missing.push('epic_ref front-matter field');
+        if (!extractFrontMatterField(content, 'north_star_ref')) missing.push('north_star_ref front-matter field');
+      } else if (isAR) {
+        if (!extractFrontMatterField(content, 'validation_ref'))
+          missing.push('validation_ref front-matter field (links to parent VA task)');
+        if (!/<h[2-4][^>]*>.*?(Artifact|Output)/i.test(content))
+          missing.push('Artifact Description section (what was produced, type, path/URL)');
+      } else {
+        warn(`Unknown task type for ${sid} — cannot validate content structure`);
+        ok(`GATE content-structure: skipped (unknown task type "${col}")`);
+        break;
+      }
+
+      if (missing.length > 0) {
+        gate(
+          `Content structure missing for ${sid} (${col}):\n${missing.map(m => `  ✗ ${m}`).join('\n')}\n\n` +
+          `Add all required sections before starting this task. See /all-dai-sdd SKILL.md for templates.`
+        );
+      }
+      ok(`GATE content-structure: ${sid} has all required sections for ${col} task type ✓`);
+      break;
+    }
     case 'tiptap-html': {
       // Gate: page content file must use Tiptap HTML — no raw markdown.
       // Any page published to Dataspheres must pass this before create_page / update_page.
@@ -1443,7 +2470,7 @@ async function cmdGate(name, arg) {
       break;
     }
     default:
-      die(`Unknown gate: ${name}. Valid: deps-done, research-done, no-mocks, checklist, impl-files, hierarchy, checklist-format, title-prefix, tracker-link, tiptap-html`);
+      die(`Unknown gate: ${name}. Valid: deps-done, research-done, no-mocks, checklist, impl-files, hierarchy, trace-graph, content-structure, checklist-format, title-prefix, tracker-link, tiptap-html`);
   }
 }
 
@@ -1632,6 +2659,86 @@ async function cmdProgress(message) {
   ok(`Progress posted to task ${iState.activeTask.specId}`);
 }
 
+// ---------------------------------------------------------------------------
+// takeAndUploadScreenshot — Playwright screenshot helper for validation comments.
+// Runs sdd-screenshot.cjs, uploads the PNG to /api/media/upload, returns URL.
+// All errors are non-fatal — returns null so validation still proceeds.
+// ---------------------------------------------------------------------------
+async function takeAndUploadScreenshot(pageUrl, specId, env) {
+  const baseUrl = env.DATASPHERES_BASE_URL || 'https://dataspheres.ai';
+  const apiKey  = env.DATASPHERES_API_KEY;
+  const gitRoot = findGitRoot();
+  const helperScript = path.join(gitRoot, 'scripts', 'sdd-screenshot.cjs');
+
+  // Check that the helper script exists
+  if (!fs.existsSync(helperScript)) {
+    warn(`Screenshot helper not found at ${helperScript} — skipping visual proof`);
+    return null;
+  }
+
+  const tmpPath = path.join(os.tmpdir(), `sdd-screenshot-${specId}-${Date.now()}.png`);
+
+  try {
+    const { execSync } = await import('node:child_process');
+    const fullUrl = pageUrl.startsWith('http') ? pageUrl : `${baseUrl.replace('3000', '5173')}${pageUrl}`;
+    info(`Taking screenshot of ${fullUrl} …`);
+    execSync(`node "${helperScript}" "${fullUrl}" "${tmpPath}"`, { stdio: 'pipe', timeout: 40000 });
+  } catch (e) {
+    warn(`Playwright screenshot failed: ${e.message.split('\n')[0]} — skipping visual proof`);
+    return null;
+  }
+
+  if (!fs.existsSync(tmpPath)) {
+    warn(`Screenshot file not found after capture — skipping upload`);
+    return null;
+  }
+
+  // Upload via multipart FormData
+  try {
+    const fileBuffer = fs.readFileSync(tmpPath);
+    const blob = new Blob([fileBuffer], { type: 'image/png' });
+    const formData = new FormData();
+    formData.append('file', blob, `sdd-proof-${specId}.png`);
+    const uploadRes = await fetch(`${baseUrl}/api/media/upload`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${apiKey}` },
+      body: formData,
+    });
+    if (!uploadRes.ok) {
+      warn(`Screenshot upload failed (${uploadRes.status}) — skipping visual proof`);
+      return null;
+    }
+    const uploadData = await uploadRes.json();
+    const imgUrl = uploadData.url;
+    if (!imgUrl) { warn(`No URL in upload response — skipping`); return null; }
+    info(`Screenshot uploaded ✓ — ${imgUrl}`);
+    fs.unlinkSync(tmpPath); // clean up temp file
+    return imgUrl;
+  } catch (e) {
+    warn(`Screenshot upload error: ${e.message} — skipping visual proof`);
+    return null;
+  }
+}
+
+// Infer a screenshot URL from VA task context (execution_ref → impl files → page URL)
+function inferScreenshotUrl(task, allTasks) {
+  const execRef = extractFrontMatterField(task.content, 'execution_ref');
+  if (!execRef) return null;
+  const exTask = allTasks.find(t =>
+    (extractSpecId(t.content) || '').toUpperCase() === execRef.toUpperCase()
+  );
+  if (!exTask) return null;
+
+  const title = (exTask.title || '').toLowerCase();
+  // Map known impl patterns to page URLs
+  if (title.includes('visitorlding') || title.includes('visitor')) return '/app/dataspheres-ai';
+  if (title.includes('galaxybanner') || title.includes('profile') || title.includes('datasphere')) return '/app/dataspheres-ai';
+  if (title.includes('sticky') || title.includes('tab')) return '/app/dataspheres-ai';
+  if (title.includes('newsletter')) return '/app/dataspheres-ai/newsletters';
+  if (title.includes('page')) return '/app/dataspheres-ai/pages';
+  return '/app/dataspheres-ai';
+}
+
 async function cmdValidate(vaTaskId, extraArgs) {
   if (!vaTaskId) die('Usage: validate <vaTaskId> [--metric <n> --threshold <n> --iteration <n>]');
   const { state, slug, iState } = requireInitiativeState();
@@ -1745,6 +2852,11 @@ async function cmdValidate(vaTaskId, extraArgs) {
       }
     }
 
+    // Fetch all plan tasks once — used by screenshot inference AND AR gate below
+    const allTasksForAr = ((await client.get(
+      `/api/v2/dataspheres/${iState.dsId}/tasks?planModeId=${iState.planModeId}&limit=500`
+    )).tasks || []);
+
     // Post detailed verification comment — lists every item as audit trail
     const commentLines = [
       `[all-dai-sdd-system-message]`,
@@ -1767,11 +2879,92 @@ async function cmdValidate(vaTaskId, extraArgs) {
       commentLines.push(`- All acceptance checklist items verified ✓`);
     }
 
+    // Take Playwright screenshot as visual proof (non-fatal if unavailable)
+    {
+      const env = loadEnv();
+      const pageUrl = inferScreenshotUrl(task, allTasksForAr.length ? allTasksForAr : []);
+      if (pageUrl) {
+        const screenshotUrl = await takeAndUploadScreenshot(pageUrl, specId, env);
+        if (screenshotUrl) {
+          commentLines.push(``);
+          commentLines.push(`**Visual Proof:**`);
+          commentLines.push(`<img src="${screenshotUrl}" alt="Validation screenshot — ${specId}" style="max-width:100%;border-radius:8px;margin-top:8px;" />`);
+        }
+      }
+    }
+
     await client.post(`/api/v2/dataspheres/${iState.dsId}/tasks/${vaTaskId}/comments`, {
       content: commentLines.join('\n'),
     });
     info(`Verification comment posted ✓`);
 
+    // -------------------------------------------------------------------------
+    // HARD GATE (runs BEFORE VA is marked Done): AR (Artifact) task must exist
+    // or be auto-created first.  Falls back to doneGroupId when no dedicated
+    // Artifacts column is configured so boards without one still enforce it.
+    // allTasksForAr is also reused for execTask resolution below.
+    // -------------------------------------------------------------------------
+    const arDestGroupId = iState.artifactsGroupId || iState.doneGroupId;
+    const existingAr = allTasksForAr.find(t =>
+      /^AR-/i.test(t.title || '') &&
+      (extractFrontMatterField(t.content || '', 'validation_ref') || '').toUpperCase() === specId.toUpperCase()
+    );
+    if (existingAr) {
+      info(`AR task already exists for ${specId}: ${existingAr.title} ✓`);
+    } else {
+      const arEpicRef = extractFrontMatterField(task.content, 'epic_ref')       || '';
+      const arNsRef   = extractFrontMatterField(task.content, 'north_star_ref') || '';
+      const arExRef   = extractFrontMatterField(task.content, 'execution_ref')  || '';
+      const arCounter = allTasksForAr.filter(t => /^AR-\d+/i.test(t.title || '')).length + 1;
+      const arSpecId  = `AR-${String(arCounter).padStart(3, '0')}`;
+      const arContent = [
+        `<pre><code class="language-yaml">`,
+        `spec_id: ${arSpecId}`,
+        `validation_ref: ${specId}`,
+        ...(arExRef   ? [`execution_ref: ${arExRef}`]   : []),
+        ...(arEpicRef ? [`epic_ref: ${arEpicRef}`]       : []),
+        ...(arNsRef   ? [`north_star_ref: ${arNsRef}`]   : []),
+        `artifact_type: (code|page|dataset|image|video|presentation|other)`,
+        `status: PENDING`,
+        `</code></pre>`,
+        ``,
+        `<h2>Artifact Description <!-- #artifact --></h2>`,
+        `<p>Produced by: ${specId} validation pass.</p>`,
+        `<p><strong>Artifact type:</strong> (replace &mdash; code / page / dataset / image / video / presentation / other)</p>`,
+        `<p><strong>Location:</strong> (file path, URL, or datasphere page slug)</p>`,
+        ``,
+        `<h3>Trace</h3>`,
+        `<ul class="tiptap-bullet-list">`,
+        ...(arNsRef   ? [`<li><p>North Star: ${arNsRef}</p></li>`]   : []),
+        ...(arEpicRef ? [`<li><p>Epic: ${arEpicRef}</p></li>`]         : []),
+        ...(arExRef   ? [`<li><p>Execution: ${arExRef}</p></li>`]     : []),
+        `<li><p>Validated by: ${specId}</p></li>`,
+        `</ul>`,
+      ].join('\n');
+      try {
+        await client.post(
+          `/api/v2/dataspheres/${iState.dsId}/tasks?planModeId=${iState.planModeId}`,
+          {
+            title: `${arSpecId} &middot; Artifacts for ${specId}`,
+            content: arContent,
+            statusGroupId: arDestGroupId,
+          }
+        );
+        const destLabel = iState.artifactsGroupId ? 'Artifacts' : 'Done';
+        info(`Artifact task ${arSpecId} created in ${destLabel} column ✓`);
+      } catch (e) {
+        gate([
+          `VA ${specId} cannot be marked Done &mdash; Artifact task auto-creation failed: ${e.message}`,
+          ``,
+          `Create an AR task manually with front-matter:`,
+          `  validation_ref: ${specId}`,
+          `  execution_ref: ${arExRef || '(EX spec_id)'}`,
+          ``,
+          `Then re-run: node sdd-conductor.mjs validate ${vaTaskId}`,
+        ].join('\n'));
+      }
+    }
+    // AR gate passed — now safe to mark VA Done.
     await client.patch(`/api/v2/dataspheres/${iState.dsId}/tasks/${vaTaskId}`, {
       statusGroupId: iState.doneGroupId,
       status: 'DONE',
@@ -1779,25 +2972,16 @@ async function cmdValidate(vaTaskId, extraArgs) {
     info(`Task PATCH: status=DONE ✓`);
 
     // Resolve parent EX task: prefer execution_ref front-matter over parentId.
-    // Hierarchy: VA belongs to EX, EX belongs to Epic. VA must propagate through EX.
+    // Reuses allTasksForAr (fetched above) — avoids a second API round-trip.
     const execRef = extractFrontMatterField(task.content, 'execution_ref');
-    let execTask = null;
-
-    if (execRef) {
-      try {
-        const allTasks = await client.get(
-          `/api/v2/dataspheres/${iState.dsId}/tasks?planModeId=${iState.planModeId}&limit=500`
-        );
-        const taskList = allTasks.tasks || allTasks || [];
-        execTask = taskList.find(t =>
-          extractSpecId(t.content) === execRef ||
-          t.title?.match(/^[A-Z]+-\d+/)?.[0] === execRef
-        ) || null;
-      } catch { /* fall back to parentId */ }
-    }
+    let execTask = allTasksForAr.find(t =>
+      execRef && (
+        extractSpecId(t.content) === execRef ||
+        t.title?.match(/^[A-Z]+-\d+/)?.[0] === execRef
+      )
+    ) || null;
 
     if (!execTask && task.parentId) {
-      // If parentId is an EX task (in Execution column), treat it as the EX task
       try {
         const parent = await client.get(`/api/v2/dataspheres/${iState.dsId}/tasks/${task.parentId}`);
         const parentCol = getColumnName(parent).toLowerCase();
@@ -1820,7 +3004,6 @@ async function cmdValidate(vaTaskId, extraArgs) {
         await propagateEpicChecklist(client, iState, execTask.parentId, execSpecId, execTask.title);
       }
     } else if (task.parentId) {
-      // Fallback: treat parentId as Epic (pre-hierarchy behaviour)
       await propagateEpicChecklist(client, iState, task.parentId, specId, task.title);
     }
 
@@ -1828,7 +3011,7 @@ async function cmdValidate(vaTaskId, extraArgs) {
     iState.lastCompleted = { taskId: vaTaskId, specId, title: task.title, completedAt: new Date().toISOString() };
     saveInitiative(state, slug, iState);
 
-    ok(`${specId} validated and moved to Done. Hierarchical chain triggered (VA -> EX -> Epic -> NS).`);
+    ok(`${specId} validated and moved to Done. Hierarchical chain triggered (VA → EX → Epic → NS → RS). Artifact stub created.`);
     process.exit(0);
 
   } else {
@@ -1851,75 +3034,197 @@ async function cmdValidate(vaTaskId, extraArgs) {
     iState.activeTask = null;
     saveInitiative(state, slug, iState);
 
+    // Fetch all board tasks for counter derivation + EP lookup + VA linking
+    let allBoardTasks = [];
+    try {
+      allBoardTasks = ((await client.get(
+        `/api/v2/dataspheres/${iState.dsId}/tasks?planModeId=${iState.planModeId}&limit=500`
+      )).tasks || []);
+    } catch { /* non-fatal — counters fall back to 0 */ }
+
+    // Parse failed requirements from this VA for specific remediation content
+    const vaAcItems  = extractSectionChecklist(task.content, 'Acceptance Criteria');
+    const vaFrItems  = extractSectionChecklist(task.content, 'Functional Requirements');
+    const vaNfrItems = extractSectionChecklist(task.content, 'Non-Functional Requirements');
+    const failedAc   = vaAcItems.filter(i  => !i.checked);
+    const failedFr   = vaFrItems.filter(i  => !i.checked);
+    const failedNfr  = vaNfrItems.filter(i => !i.checked);
+    const totalFailed = failedAc.length + failedFr.length + failedNfr.length;
+
+    // Derive parent refs from VA front-matter
+    const parentEpicRef      = extractFrontMatterField(task.content, 'epic_ref') || '';
+    const parentNorthStarRef = extractFrontMatterField(task.content, 'north_star_ref') || '';
+    const origExRef          = extractFrontMatterField(task.content, 'execution_ref') || '';
+
+    // Post enhanced failure comment to VA task including failed items
+    const failedItemLines = [];
+    if (failedAc.length)  failedItemLines.push(``, `_Acceptance Criteria:_`, ...failedAc.map(i  => `- ${i.text}`));
+    if (failedFr.length)  failedItemLines.push(``, `_Functional:_`,          ...failedFr.map(i  => `- ${i.text}`));
+    if (failedNfr.length) failedItemLines.push(``, `_Non-Functional:_`,      ...failedNfr.map(i => `- ${i.text}`));
+
     await client.post(`/api/v2/dataspheres/${iState.dsId}/tasks/${vaTaskId}/comments`, {
       content: [
         `[all-dai-sdd-system-message]`,
         ``,
-        `**Validation FAILED — Iteration ${iteration}** | ${new Date().toISOString()}`,
+        `**Validation FAILED &mdash; Iteration ${iteration}** | ${new Date().toISOString()}`,
         ``,
-        `- Metric: ${metric} / threshold: ${threshold} (delta: -${delta})`,
-        `- Next: iteration ${nextIter} refinement task created in Execution`,
+        ...(metric !== null ? [`- Metric: ${metric} / threshold: ${threshold} (delta: -${delta})`] : []),
+        ...(totalFailed > 0 ? [`- ${totalFailed} requirement(s) unverified:`, ...failedItemLines] : []),
+        ``,
+        `**Remediation:** new EX + VA tasks auto-created in Execution / Validation columns.`,
       ].join('\n'),
     });
     info(`Failure comment posted ✓`);
 
     if (iState.executionGroupId) {
-      const baseTitle = task.title.replace(/\s*\(iteration \d+\)$/, '');
-      const newTitle = `${baseTitle} (iteration ${nextIter})`;
-      const specParts = specId.match(/^(.*?)(-\d+)(.*)$/);
-      const newSpecId = specParts
-        ? `${specParts[1]}${specParts[2]}-iter${nextIter}${specParts[3] || ''}`
-        : `${specId}-iter${nextIter}`;
+      // Derive new EX specId — count existing EX- prefixed tasks
+      const exCount    = allBoardTasks.filter(t => /^EX-\d+/i.test(t.title || '')).length;
+      const newExSpecId = `EX-${String(exCount + 1).padStart(3, '0')}`;
+      const baseLabel  = task.title
+        .replace(/\s*\(iteration \d+\)$/, '')
+        .replace(/^VA-\d+\s*[·•\s]+/i, '').trim();
+      const newExTitle = `${newExSpecId} &middot; ${baseLabel} (remediation ${nextIter})`;
 
-      const implFiles = extractImplFiles(task.content);
+      const implFiles   = extractImplFiles(task.content);
       const implSection = implFiles.length > 0
         ? `<h3>Implementation Files <!-- #impl --></h3>\n<ul>\n${implFiles.map(f => `  <li><code>${f}</code></li>`).join('\n')}\n</ul>\n\n`
         : '';
 
-      const parentEpicRef      = extractFrontMatterField(task.content, 'epic_ref') || '';
-      const parentNorthStarRef = extractFrontMatterField(task.content, 'north_star_ref') || '';
+      // Build failed-requirement AC items per category
+      const buildAcList = (items, label) => items.length === 0 ? [] : [
+        `<p><strong>${label}:</strong></p>`,
+        `<ul data-type="taskList">`,
+        ...items.map(i => `  <li data-type="taskItem" data-checked="false"><p>${i.text}</p></li>`),
+        `</ul>`,
+      ];
 
-      const newContent = [
+      const newExContent = [
         `<pre><code class="language-yaml">`,
-        `spec_id: ${newSpecId}`,
-        `title: ${newTitle}`,
-        `spec_type: algorithm`,
-        `version: 1.0.0`,
+        `spec_id: ${newExSpecId}`,
+        `spec_type: remediation`,
         `status: ACTIVE`,
         `column: execution`,
-        `iteration: ${nextIter}`,
+        `remediation_iteration: ${nextIter}`,
         `parent_va: ${vaTaskId}`,
-        ...(parentEpicRef      ? [`epic_ref: ${parentEpicRef}`]      : []),
+        ...(origExRef          ? [`remediation_for: ${origExRef}`]         : []),
+        ...(parentEpicRef      ? [`epic_ref: ${parentEpicRef}`]            : []),
         ...(parentNorthStarRef ? [`north_star_ref: ${parentNorthStarRef}`] : []),
-        `tags: [${iState.initiative}, sdd, execution, refinement]`,
         `</code></pre>`,
         ``,
         implSection,
         `<h2>Context <!-- #ctx --></h2>`,
-        `<p>Refinement iteration ${nextIter}. Previous iteration ${iteration} failed validation gate.</p>`,
+        `<p>Remediation task &mdash; iteration ${nextIter}. ${specId} failed validation.</p>`,
         `<ul>`,
-        `<li>Metric: ${metric} (target: &gt;= ${threshold})</li>`,
-        `<li>Delta: ${delta} below threshold &mdash; investigate and fix.</li>`,
+        ...(metric !== null ? [`<li>Metric: ${metric} / threshold: ${threshold} (delta: -${delta})</li>`] : []),
+        ...(totalFailed > 0 ? [`<li>${totalFailed} requirement(s) unverified &mdash; listed below under Failed Requirements</li>`] : []),
         `</ul>`,
         ``,
         `<h2>Acceptance Criteria <!-- #ac --></h2>`,
         `<ul data-type="taskList">`,
-        `  <li data-type="taskItem" data-checked="false"><p>Metric &gt;= ${threshold}</p></li>`,
-        `  <li data-type="taskItem" data-checked="false"><p>All existing tests pass</p></li>`,
+        ...(metric !== null ? [`  <li data-type="taskItem" data-checked="false"><p>Metric &gt;= ${threshold}</p></li>`] : []),
+        `  <li data-type="taskItem" data-checked="false"><p>All failing requirements from ${specId} remediated (see below)</p></li>`,
+        `  <li data-type="taskItem" data-checked="false"><p>All existing tests pass &mdash; no regressions</p></li>`,
         `  <li data-type="taskItem" data-checked="false"><p>No mocks or stubs introduced</p></li>`,
         `</ul>`,
+        ...(totalFailed > 0 ? [
+          ``,
+          `<h3>Failed Requirements from ${specId} <!-- #failed-reqs --></h3>`,
+          ...buildAcList(failedAc,  'Acceptance Criteria'),
+          ...buildAcList(failedFr,  'Functional Requirements'),
+          ...buildAcList(failedNfr, 'Non-Functional Requirements'),
+        ] : []),
       ].join('\n');
 
-      const created = await client.post(`/api/v2/dataspheres/${iState.dsId}/tasks`, {
-        title: newTitle,
-        statusGroupId: iState.executionGroupId,
-        tags: [iState.initiative, 'sdd', 'execution', 'refinement'],
-        parentId: task.parentId || null,
-        content: newContent,
-      });
+      const createdEx = await client.post(
+        `/api/v2/dataspheres/${iState.dsId}/tasks?planModeId=${iState.planModeId}`,
+        {
+          title: newExTitle,
+          statusGroupId: iState.executionGroupId,
+          content: newExContent,
+          parentId: task.parentId || null,
+        }
+      );
+      const newExId = createdEx.task?.id || createdEx.id || null;
+      info(`Remediation EX task ${newExSpecId} created (${newExId || 'unknown'}) ✓`);
 
-      const newId = created.task?.id || created.id || 'unknown';
-      info(`Iteration ${nextIter} task created: ${newTitle} (${newId})`);
+      // Auto-create VA stub for the new EX task — 1-1 rule enforced at creation time
+      let newVaSpecId = null;
+      if (iState.validationGroupId) {
+        try {
+          const vaCount = allBoardTasks.filter(t => /^VA-\d+/i.test(t.title || '')).length;
+          newVaSpecId   = `VA-${String(vaCount + 1).padStart(3, '0')}`;
+          const newVaContent = [
+            `<pre><code class="language-yaml">`,
+            `spec_id: ${newVaSpecId}`,
+            `execution_ref: ${newExSpecId}`,
+            ...(parentEpicRef      ? [`epic_ref: ${parentEpicRef}`]            : []),
+            ...(parentNorthStarRef ? [`north_star_ref: ${parentNorthStarRef}`] : []),
+            `remediation_for_va: ${specId}`,
+            `status: PENDING`,
+            `</code></pre>`,
+            ``,
+            `<h2>Validation &mdash; ${newExSpecId}</h2>`,
+            `<p>Auto-created remediation VA. Verifies all failed requirements from ${specId} are now met.</p>`,
+            ``,
+            `<h3>Acceptance Criteria <!-- #ac --></h3>`,
+            `<ul data-type="taskList">`,
+            ...(metric !== null ? [`  <li data-type="taskItem" data-checked="false"><p>Metric &gt;= ${threshold}</p></li>`] : []),
+            `  <li data-type="taskItem" data-checked="false"><p>All previously-failed requirements from ${specId} now verified</p></li>`,
+            `  <li data-type="taskItem" data-checked="false"><p>No regressions in requirements that passed in prior iteration</p></li>`,
+            `</ul>`,
+            ...(totalFailed > 0 ? [
+              ``,
+              `<h3>Previously Failed (from ${specId}) <!-- #prev-failed --></h3>`,
+              ...buildAcList(failedAc,  'Acceptance Criteria'),
+              ...buildAcList(failedFr,  'Functional Requirements'),
+              ...buildAcList(failedNfr, 'Non-Functional Requirements'),
+            ] : []),
+          ].join('\n');
+          await client.post(
+            `/api/v2/dataspheres/${iState.dsId}/tasks?planModeId=${iState.planModeId}`,
+            {
+              title: `${newVaSpecId} &middot; Validate ${newExSpecId} (remediation)`,
+              content: newVaContent,
+              statusGroupId: iState.validationGroupId,
+            }
+          );
+          info(`VA stub ${newVaSpecId} auto-created for ${newExSpecId} (1-1 rule) ✓`);
+        } catch (e) {
+          warn(`VA stub creation skipped (non-fatal): ${e.message}`);
+        }
+      }
+
+      // Post remediation summary to parent EP task — plan was updated, EP needs to know
+      if (parentEpicRef) {
+        try {
+          const epTask = allBoardTasks.find(t => {
+            const sid = extractSpecId(t.content) || t.title?.match(/^[A-Z]+-\d+/)?.[0] || '';
+            return sid.toUpperCase() === parentEpicRef.toUpperCase();
+          });
+          if (epTask) {
+            await client.post(`/api/v2/dataspheres/${iState.dsId}/tasks/${epTask.id}/comments`, {
+              content: [
+                `[all-dai-sdd-system-message]`,
+                ``,
+                `**Plan Remediation &mdash; ${specId} failed validation (iteration ${iteration})**`,
+                ``,
+                ...(metric !== null ? [`- Metric: ${metric} / threshold: ${threshold} (delta: -${delta})`] : []),
+                ...(totalFailed > 0 ? [`- ${totalFailed} requirement(s) unverified in ${specId}`] : []),
+                ``,
+                `**Auto-remediation applied to this Epic (${parentEpicRef}):**`,
+                `- New EX task: ${newExSpecId}${newExId ? ` (id: ${newExId})` : ''} &mdash; contains specific failed requirements`,
+                ...(newVaSpecId ? [`- New VA stub: ${newVaSpecId} linked to ${newExSpecId} (1&ndash;1 enforced)`] : []),
+                ``,
+                `**Next step:** implement ${newExSpecId}, then run:`,
+                `\`node sdd-conductor.mjs validate <${newVaSpecId || 'new-va-id'}>\``,
+              ].join('\n'),
+            });
+            info(`Remediation comment posted to epic ${parentEpicRef} ✓`);
+          }
+        } catch (e) {
+          warn(`EP remediation comment skipped (non-fatal): ${e.message}`);
+        }
+      }
     } else {
       warn(`executionGroupId not set — run 'init' again or set manually to enable auto-iteration`);
     }
@@ -1949,8 +3254,6 @@ async function cmdDashboardCheck(dsUri, pageSlug) {
   // Widget format per SKILL.md Step 12 template — all require data-type="plannerWidget"
   // + data-datasphere-id + data-datasphere-uri + data-plan-mode-id
   const REQUIRED = [
-    { label: 'progress-summary widget',   pattern: /data-widget-type="progress-summary"/ },
-    { label: 'Current Focus section',     pattern: /<!--\s*#focus\s*-->|Current Focus/i },
     { label: 'trace-graph widget',        pattern: /data-widget-type="trace-graph"/ },
     { label: 'task-activity-feed widget', pattern: /data-widget-type="task-activity-feed"/ },
     { label: 'plannerWidget node',        pattern: /data-type="plannerWidget"/ },
@@ -1966,9 +3269,31 @@ async function cmdDashboardCheck(dsUri, pageSlug) {
     gate(
       `Dashboard page "${pageSlug}" is missing required sections:\n\n` +
       missing.map(m => `  ✗ ${m}`).join('\n') +
-      `\n\nFix: run \`node sdd-conductor.mjs update-dashboard ${dsUri} ${pageSlug}\` to generate the Current Focus section,\n` +
-      `then ensure all 6 sections are present per SKILL.md Step 12 template.`
+      `\n\nFix: ensure all required sections are present per SKILL.md Step 12 template.`
     );
+  }
+
+  // Gate: the <!-- #focus --> block must exist AND contain a progress-summary plannerWidget.
+  // This is separate from the general REQUIRED check so the error message is specific.
+  {
+    const focusMatch = content.match(/<!--\s*#focus\s*-->([\s\S]*?)<!--\s*\/focus\s*-->/);
+    if (!focusMatch) {
+      gate(
+        `Current Focus section is missing its <!-- #focus -->...<!-- /focus --> markers.\n\n` +
+        `  Fix: run \`node sdd-conductor.mjs update-dashboard ${dsUri} ${pageSlug}\``
+      );
+    }
+    const focusBlock = focusMatch[1];
+    const hasWidget = /data-widget-type="progress-summary"|data-widget-type="focus-tree"/.test(focusBlock);
+    if (!hasWidget) {
+      const preview = focusBlock.replace(/<[^>]*>/g, '').trim().slice(0, 120).replace(/\n+/g, ' ');
+      gate(
+        `Current Focus section (#focus block) contains a plain table or no widget — expected a progress-summary plannerWidget.\n\n` +
+        `  Found: "${preview || '(empty)'}"\n\n` +
+        `  Fix: run \`node sdd-conductor.mjs update-dashboard ${dsUri} ${pageSlug}\``
+      );
+    }
+    info(`Current Focus block: progress-summary widget present ✓`);
   }
 
   OPTIONAL.filter(r => !r.pattern.test(content)).forEach(r =>
@@ -2009,7 +3334,7 @@ async function cmdDashboardCheck(dsUri, pageSlug) {
     }
   }
 
-  ok(`GATE dashboard-check: all ${REQUIRED.length} required sections present`);
+  ok(`GATE dashboard-check: all required sections present`);
   REQUIRED.forEach(r => info(`  ✓ ${r.label}`));
 
   // Step 13 gate: trackerUrl must be set on the plan mode (SKILL.md Step 13A)
@@ -2136,68 +3461,12 @@ async function cmdUpdateDashboard(dsUri, pageSlug) {
     });
   };
 
-  const seenEx = new Set();
-  const seenVa = new Set();
-
-  // Deep link format per SKILL.md: /app/<uri>/planner?mode=<planModeId>&taskId=<taskId>
-  const taskLink = (t) => `/app/${dsUri}/planner?mode=${planModeId}&taskId=${t.id}`;
-
-  let treeHtml = '<ul>\n';
-  let treeCount = 0;
-
-  for (const n of ns) {
-    const epList = epicsForNs(n);
-    const hasWork = epList.some(e => exForEpic(e).length > 0);
-    if (!hasWork && epList.length === 0) continue;
-    treeCount++;
-    treeHtml += `  <li><a href="${taskLink(n)}">${n.title || ''}</a>\n    <ul>\n`;
-    for (const e of epList) {
-      const exList = exForEpic(e);
-      if (exList.length === 0) continue;
-      treeHtml += `      <li><a href="${taskLink(e)}">${e.title || ''}</a>\n        <ul>\n`;
-      for (const x of exList) {
-        if (seenEx.has(x.id)) continue;
-        seenEx.add(x.id);
-        treeCount++;
-        treeHtml += `          <li><a href="${taskLink(x)}">${x.title || ''}</a>\n`;
-        // AC checklist items — text first, status emoji appended at end
-        const acItems = extractSectionChecklist(x.content, 'Acceptance Criteria');
-        if (acItems.length > 0) {
-          treeHtml += `            <ul>\n`;
-          for (const item of acItems) {
-            treeHtml += `              <li>${item.text} ${item.checked ? '✅' : '⏳'}</li>\n`;
-          }
-          treeHtml += `            </ul>\n`;
-        }
-        treeHtml += `          </li>\n`;
-        for (const v of vaForEx(x)) {
-          if (seenVa.has(v.id)) continue;
-          seenVa.add(v.id);
-          treeCount++;
-          treeHtml += `          <li><a href="${taskLink(v)}">${v.title || ''}</a></li>\n`;
-        }
-      }
-      treeHtml += `        </ul>\n      </li>\n`;
-    }
-    treeHtml += `    </ul>\n  </li>\n`;
-  }
-  // Orphan active EX/VA not linked to any NS/Epic
-  for (const x of ex) {
-    if (seenEx.has(x.id)) continue;
-    treeCount++;
-    treeHtml += `  <li><a href="${taskLink(x)}">${x.title || ''}</a></li>\n`;
-  }
-  for (const v of va) {
-    if (seenVa.has(v.id)) continue;
-    treeCount++;
-    treeHtml += `  <li><a href="${taskLink(v)}">${v.title || ''}</a></li>\n`;
-  }
-  treeHtml += '</ul>';
-
-  if (treeCount === 0) treeHtml = '<p><em>No tasks currently in progress.</em></p>';
+  // Inject a progress-summary widget — shows ring + stats + nested focus tree in one card.
+  const treeCount = active.length;
+  const widgetDiv = `<div data-type="plannerWidget" data-datasphere-id="${dsId}" data-datasphere-uri="${dsUri}" data-plan-mode-id="${planModeId}" data-widget-type="progress-summary" class="planner-widget-placeholder"></div>`;
 
   // Wrap in focus markers — these delimit the injected block for future updates
-  const focusBlock = `<!-- #focus -->\n${treeHtml}\n<!-- /focus -->`;
+  const focusBlock = `<!-- #focus -->\n${widgetDiv}\n<!-- /focus -->`;
 
   // GET current page content
   const pageRes = await fetch(`${baseUrl}/api/v1/dataspheres/${dsUri}/pages/${pageSlug}`, {
@@ -2214,14 +3483,13 @@ async function cmdUpdateDashboard(dsUri, pageSlug) {
   if (content.includes('<!-- #focus -->') && content.includes('<!-- /focus -->')) {
     content = content.replace(/<!-- #focus -->[\s\S]*?<!-- \/focus -->/, focusBlock);
   } else if (content.includes('<!-- #focus -->')) {
-    // Old format: had Current Focus h2 with #focus — strip the h2, inject focusBlock in its place
-    content = content.replace(
-      /(<h2[^>]*>[^<]*Current Focus[^<]*<\/h2>)([\s\S]*?)(?=<h2|$)/i,
+    // Old format: h2 heading contains <!-- #focus --> comment inline, followed by content up to next h2.
+    // Use [\s\S]*? to handle <-containing comments inside the heading.
+    const replaced = content.replace(
+      /(<h2[\s\S]*?Current Focus[\s\S]*?<\/h2>)([\s\S]*?)(?=<h2|$)/i,
       `${focusBlock}\n\n`
     );
-    if (!content.includes('<!-- #focus -->')) {
-      content = content.replace(/<!-- #focus -->/, focusBlock);
-    }
+    content = replaced !== content ? replaced : content.replace(/<!-- #focus -->[\s\S]*$/, focusBlock);
   } else {
     // First inject: place after progress-summary widget div, before Trace Graph
     const inserted = content.replace(
@@ -2394,6 +3662,30 @@ async function cmdAudit(fixMode = false) {
       violations.push({ taskId: t.id, specId, col, content,
         issue: `${bareUls} bare <ul> without class="tiptap-bullet-list"`,
         fixable: true, fixType: 'bare-ul' });
+    }
+
+    // 6. Research gate (INV-1): NS tasks in Epics or later must have a Done RS task
+    const isNS = /^NS-\d/i.test(specId);
+    if (isNS) {
+      const COL_ORDER = ['research', 'north stars', 'epics', 'execution', 'validation', 'done'];
+      const colIdx   = COL_ORDER.findIndex(c => col.replace(/\s+/g, ' ').includes(c) || c.includes(col.replace(/\s+/g, ' ')));
+      const epicsIdx = COL_ORDER.indexOf('epics');
+      if (colIdx >= epicsIdx) {
+        const rsRef = extractFrontMatterField(content, 'research_ref');
+        if (!rsRef) {
+          violations.push({ taskId: t.id, specId, col, content,
+            issue: 'RESEARCH GATE [INV-1]: NS task in Epics+ has no research_ref — gate cannot be verified', fixable: false });
+        } else {
+          const rsTask = byTitlePrefix[rsRef];
+          if (!rsTask) {
+            violations.push({ taskId: t.id, specId, col, content,
+              issue: `RESEARCH GATE [INV-1]: research_ref="${rsRef}" not found on board`, fixable: false });
+          } else if (!isDone(rsTask)) {
+            violations.push({ taskId: t.id, specId, col, content,
+              issue: `RESEARCH GATE [INV-1]: NS advanced to "${col}" but ${rsRef} is not Done (currently: ${getColumnName(rsTask)})`, fixable: false });
+          }
+        }
+      }
     }
   }
 
@@ -2843,6 +4135,157 @@ async function cmdSync() {
 }
 
 // ---------------------------------------------------------------------------
+// verify-gates — JS implementation of gate invariants (replaces Z3 claim)
+// ---------------------------------------------------------------------------
+
+async function cmdVerifyGates() {
+  const { slug, iState } = requireInitiativeState();
+  const client = makeClient();
+
+  console.log(`\n🔬 SDD-CONDUCTOR VERIFY-GATES  [${slug}]`);
+
+  const allRes = await client.get(
+    `/api/v2/dataspheres/${iState.dsId}/tasks?planModeId=${iState.planModeId}&limit=500`
+  );
+  const tasks = allRes.tasks || allRes || [];
+
+  // Build lookups
+  const bySpecId = new Map();
+  for (const t of tasks) {
+    const sid = extractSpecId(t.content) || t.title?.match(/^[A-Z]+-\d+/)?.[0];
+    if (sid) bySpecId.set(sid, t);
+  }
+
+  const COL_ORDER = ['research', 'north stars', 'epics', 'execution', 'validation', 'done'];
+  function colIdx(t) {
+    const c = getColumnName(t).toLowerCase();
+    const idx = COL_ORDER.findIndex(x => c.includes(x) || x.includes(c));
+    return idx >= 0 ? idx : -1;
+  }
+
+  const violations = [];
+  function v(inv, specId, col, msg) { violations.push({ inv, specId, col, msg }); }
+
+  const COL_PREFIX = {
+    research:      /^RS-\d/,
+    'north stars': /^NS-\d/,
+    epics:         /^E-\d/,
+    execution:     /^T-\d/,
+    validation:    /^V-T-\d/,
+  };
+
+  for (const t of tasks) {
+    const content = t.content || '';
+    const specId  = extractSpecId(content) || t.title?.match(/^[A-Z]+-\d+/)?.[0] || t.id;
+    const col     = getColumnName(t).toLowerCase();
+    const done    = isDone(t);
+
+    const isRS  = /^RS-\d/i.test(specId);
+    const isNS  = /^NS-\d/i.test(specId);
+    const isEP  = /^E-\d/i.test(specId);
+    const isEX  = /^T-\d/i.test(specId)   || /^EX-\d/i.test(specId);
+    const isVA  = /^V-T-\d/i.test(specId) || /^VA-\d/i.test(specId);
+
+    // INV-1: NS in Epics+ must reference a Done RS task
+    if (isNS && colIdx(t) >= COL_ORDER.indexOf('epics')) {
+      const rsRef = extractFrontMatterField(content, 'research_ref');
+      if (!rsRef) {
+        v('INV-1', specId, col, `NS in "${col}" has no research_ref — Research gate unverifiable`);
+      } else {
+        const rs = bySpecId.get(rsRef);
+        if (!rs)         v('INV-1', specId, col, `research_ref="${rsRef}" not found on board`);
+        else if (!isDone(rs)) v('INV-1', specId, col, `NS advanced to "${col}" but ${rsRef} is not Done (${getColumnName(rs)})`);
+      }
+    }
+
+    // INV-2: EX tasks (non-done) must have epic_ref + north_star_ref + validation_ref
+    if (isEX && !done) {
+      for (const f of ['epic_ref', 'north_star_ref', 'validation_ref']) {
+        if (!extractFrontMatterField(content, f))
+          v('INV-2', specId, col, `EX task missing ${f}`);
+      }
+    }
+
+    // INV-3: EX ref resolution
+    if (isEX && !done) {
+      for (const f of ['epic_ref', 'north_star_ref']) {
+        const ref = extractFrontMatterField(content, f);
+        if (ref && !bySpecId.has(ref))
+          v('INV-3', specId, col, `${f}="${ref}" does not match any task on board`);
+      }
+    }
+
+    // INV-4: VA tasks (non-done) must have execution_ref + epic_ref + north_star_ref
+    if (isVA && !done) {
+      for (const f of ['execution_ref', 'epic_ref', 'north_star_ref']) {
+        if (!extractFrontMatterField(content, f))
+          v('INV-4', specId, col, `VA task missing ${f}`);
+      }
+    }
+
+    // INV-5: Epic tasks (non-done) must have north_star_ref
+    if (isEP && !done) {
+      if (!extractFrontMatterField(content, 'north_star_ref'))
+        v('INV-5', specId, col, 'Epic missing north_star_ref');
+    }
+
+    // INV-6: EX tasks in Execution column must have Implementation Files
+    if (isEX && col.includes('execution')) {
+      if (extractImplFiles(content).length === 0)
+        v('INV-6', specId, col, 'EX task in Execution has no Implementation Files section');
+    }
+
+    // INV-7: Title prefix must match column
+    for (const [colKey, rex] of Object.entries(COL_PREFIX)) {
+      if (col.includes(colKey) && !rex.test(t.title || '')) {
+        v('INV-7', specId, col, `Wrong title prefix for "${col}" column: "${(t.title||'').slice(0,50)}"`);
+        break;
+      }
+    }
+
+    // INV-8: No bare <ul> wrapping taskItem elements in checklist
+    if (/<ul(?![^>]*(?:class="tiptap-bullet-list"|data-type="taskList"))[^>]*>[\s\S]{0,80}<li[^>]*data-type="taskItem"/.test(content)) {
+      v('INV-8', specId, col, 'Checklist uses bare <ul> without data-type="taskList"');
+    }
+
+    // INV-9: EX/VA tasks with content must have at least one checklist item
+    if ((isEX || isVA) && !done && content.length > 200) {
+      if (!/data-type="taskItem"/.test(content))
+        v('INV-9', specId, col, `${isEX ? 'EX' : 'VA'} task has no acceptance checklist items`);
+    }
+
+    // INV-10: front matter spec_id must match title prefix
+    const fmSpecId = extractSpecId(content);
+    const titleSpecId = t.title?.match(/^([A-Z]+-[\dT]+)/)?.[1];
+    if (fmSpecId && titleSpecId && fmSpecId !== titleSpecId) {
+      v('INV-10', specId, col, `spec_id frontmatter "${fmSpecId}" does not match title prefix "${titleSpecId}"`);
+    }
+  }
+
+  if (violations.length === 0) {
+    ok(`VERIFY-GATES: CLEAN — ${tasks.length} tasks checked, 0 invariant violations.`);
+    info(`All 10 invariants pass: NS research gate, EX/VA hierarchy refs, title prefixes, checklists, impl files.`);
+    return;
+  }
+
+  console.error(`\n🚫 VERIFY-GATES: ${violations.length} invariant violation(s) across ${tasks.length} tasks:\n`);
+  const byInv = {};
+  for (const viol of violations) {
+    byInv[viol.inv] = byInv[viol.inv] || [];
+    byInv[viol.inv].push(viol);
+  }
+  for (const [inv, viols] of Object.entries(byInv)) {
+    console.error(`  ${inv}  (${viols.length} violation${viols.length > 1 ? 's' : ''})`);
+    for (const viol of viols) {
+      console.error(`    ${viol.specId} [${viol.col}]: ${viol.msg}`);
+    }
+    console.error('');
+  }
+  console.error(`  Fix these violations before advancing tasks.\n`);
+  process.exit(1);
+}
+
+// ---------------------------------------------------------------------------
 // Utilities
 // ---------------------------------------------------------------------------
 
@@ -2895,6 +4338,7 @@ Commands:
   progress-hook                         PostToolUse(Bash) hook — auto-post test results.
   session-start                         SessionStart hook — reconcile state + run silent audit.
   audit [--fix]                         Scan board for compliance drift; --fix auto-remediates.
+  verify-gates                          Check all 10 JS gate invariants against live board. Exits 1 on violations.
   install [project-dir]                 Inject all hooks into .claude/settings.json.
   resume                                Show stuck tasks + exact recovery commands.
   brief                                 Inject session briefings into pending Execution tasks.
@@ -2932,12 +4376,28 @@ try {
     case 'validate':        await cmdValidate(args[0], args.slice(1)); break;
     case 'status':          await cmdStatus(); break;
     case 'gate':            await cmdGate(args[0], args[1]); break;
+    case 'trace-graph': {
+      const { iState: tgDisp } = requireInitiativeState();
+      await cmdGateTraceGraph(tgDisp.dsId, tgDisp.planModeId);
+      break;
+    }
+    case 'auto-template': {
+      if (!args[0]) die('Usage: auto-template <taskId>');
+      const { iState: atDisp } = requireInitiativeState();
+      const atClient = makeClient();
+      const atTask = unwrapTask(await atClient.get(`/api/v2/dataspheres/${atDisp.dsId}/tasks/${args[0]}`));
+      const atResult = await cmdAutoTemplate(args[0], atTask, atClient, atDisp);
+      if (atResult) ok(`auto-template: front-matter wired for ${atTask.title}`);
+      else ok(`auto-template: nothing to patch — all refs already present`);
+      break;
+    }
     case 'dashboard-check':   await cmdDashboardCheck(args[0], args[1]); break;
     case 'update-dashboard':  await cmdUpdateDashboard(args[0], args[1]); break;
     case 'check-file-hook':   await cmdCheckFileHook(); break;
     case 'progress-hook':   await cmdProgressHook(); break;
     case 'session-start':   await cmdSessionStart(); break;
     case 'audit':           await cmdAudit(args.includes('--fix')); break;
+    case 'verify-gates':    await cmdVerifyGates(); break;
     case 'install':         await cmdInstall(args[0]); break;
     case 'resume':          await cmdResume(); break;
     case 'brief':           await cmdBrief(); break;

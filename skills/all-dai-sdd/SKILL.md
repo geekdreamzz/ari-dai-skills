@@ -15,7 +15,7 @@ Every SDD project uses exactly these six columns, in this order. When you create
 
 **The Research column is the origin gate.** Nothing enters North Stars without a corresponding Research task that has passed Validation. This is not optional and cannot be waived.
 
-**Gate rules are SMT-verified.** After task publish (Step 9), Z3 formally checks all 12 gate invariants. UNSAT = proven correct. SAT = counterexample with exact task ID and rule violated. No task advances on a SAT result.
+**Gate rules are JS-verified.** Run `node sdd-conductor.mjs verify-gates` to check all 10 gate invariants against the live board. CLEAN = all tasks pass. VIOLATIONS = list of exact task IDs and rules violated. Fix violations before advancing tasks.
 
 ---
 
@@ -295,7 +295,7 @@ The answers determine the mode:
 ### Mode: AUDIT (board exists, no local spec)
 1. Pull all tasks from the live board via API
 2. Generate a `tasks.yaml` representing current board state
-3. Run Z3 verifier (`verify_gates.py`) against it — report violations
+3. Run `node sdd-conductor.mjs verify-gates` against it — report violations
 4. Assess what's missing: Research tasks without sources? NS without research_ref? EX tasks without epic_ref? Epics without EX tasks?
 5. Generate the delta: new tasks to add, existing tasks to update, violations to fix
 6. Confirm with user, then apply
@@ -304,9 +304,9 @@ The answers determine the mode:
 1. Load tasks.yaml
 2. Pull live board state from API
 3. Diff: tasks in yaml not on board → CREATE; tasks on board not in yaml → flag as ORPHANED; tasks in both → check for content drift
-4. Run Z3 on the merged state
+4. Run `node sdd-conductor.mjs verify-gates` on the merged state
 5. Apply delta — create missing, update drifted, report orphans
-6. Always run Z3 after sync to confirm UNSAT
+6. Always run `node sdd-conductor.mjs verify-gates` after sync to confirm CLEAN
 
 ### Mode: LOOP
 Triggered automatically when a VA task in the Validation column has at least one failed iteration (detected by scanning for `Ralph loop — iteration` in task comments). Also triggered when the user says "keep going", "resume the loop", "keep iterating", or "why did the loop stop":
@@ -324,16 +324,16 @@ Triggered automatically when a VA task in the Validation column has at least one
 ### Mode: REFACTOR
 Triggered when user says "refactor", "restructure", or "reorganize":
 1. Pull live board state
-2. Run Z3 — report all violations as baseline
+2. Run `node sdd-conductor.mjs verify-gates` — report all violations as baseline
 3. Propose restructured task set (new epics, reassigned tasks, updated refs)
 4. Show diff: what moves, what gets added, what gets removed
 5. Confirm, then apply via bulk update
 
 ### Mode: VERIFY
-Triggered when user says "verify", "check gates", or "run Z3":
+Triggered when user says "verify", "check gates", or "verify gates":
 1. Pull live board or use local tasks.yaml
-2. Run `verify_gates.py`
-3. Report UNSAT (all good) or SAT with exact violation counterexamples
+2. Run `node sdd-conductor.mjs verify-gates`
+3. Report CLEAN (all good) or VIOLATIONS with exact counterexamples (task ID + rule)
 4. If violations found: propose minimal fixes (which tasks need which field changes)
 5. Apply fixes on user confirmation
 
@@ -342,7 +342,7 @@ Triggered when user describes new work to add to an existing initiative:
 1. Pull current epics
 2. **If approach is unresolved** → invoke `start_research` before drafting any tasks
 3. Draft new tasks (Research first if new approach, otherwise EX tasks under existing Epic)
-4. Run Z3 on combined set
+4. Run `node sdd-conductor.mjs verify-gates` on combined set
 5. Confirm, then bulk create
 
 ### Mode: RESEARCH
@@ -402,7 +402,7 @@ After setup, `.sdd-state.json` in the project root is the single source of truth
 
 # Examples:
 /all-dai-sdd specs/dai-desktop        # auto-detects: SYNC or NEW
-/all-dai-sdd --verify dai-desktop     # force VERIFY mode — just run Z3
+/all-dai-sdd --verify dai-desktop     # force VERIFY mode — run verify-gates
 /all-dai-sdd --refactor dai-desktop   # force REFACTOR mode
 /all-dai-sdd --append dai-desktop     # force APPEND mode (add new tasks)
 /all-dai-sdd --audit dai-desktop      # force AUDIT mode (pull board → generate yaml)
@@ -416,7 +416,7 @@ After setup, `.sdd-state.json` in the project root is the single source of truth
 
 **Mocks are bugs. They are never acceptable at any layer of an SDD project.**
 
-**Gate rules are formally verified by Z3 (SMT solver) at Step 9.5 — not just asserted.** UNSAT means no task in the initiative can violate the gate invariants. SAT with a counterexample means something is provably wrong.
+**Gate rules are JS-verified by `sdd-conductor verify-gates` — not just asserted.** CLEAN means no task in the initiative violates any invariant. VIOLATIONS output lists the exact task ID and rule that failed.
 
 A mock is defined as any of the following:
 - A stub function that returns hardcoded or synthetic output instead of calling the real tool
@@ -761,55 +761,45 @@ If bulk returns 500, fall back to individual POSTs — but verify every task's `
 
 ---
 
-### Step 9.5 of 14 — Z3 gate verification
+### Step 9.5 of 14 — Gate verification
 
-Run the SMT constraint checker against the published tasks BEFORE applying CodeApplications.
-This formally verifies all 12 gate rules are satisfied for every task in the initiative.
-
-**Install z3-solver if needed:**
-```bash
-pip install z3-solver   # or: uv add z3-solver
-```
+Run the JS gate verifier against the published tasks BEFORE applying CodeApplications.
+This checks all 10 invariants against the live board state via the API.
 
 **Run the verifier:**
 ```bash
-# From tasks.yaml (before publish):
-python3 skills/all-dai-sdd/verify_gates.py --tasks <project-dir>/tasks.yaml
-
-# Or against live API state (pass tasks as JSON from the bulk GET):
-python3 skills/all-dai-sdd/verify_gates.py --json '<tasks-json>'
+node sdd-conductor.mjs verify-gates
 ```
 
-**Rules checked (12 total):**
+**Invariants checked (10 total):**
 
-| Rule | Description | Z3 encoding |
-|---|---|---|
-| RULE-1 | Done-gate: Done tasks must have validationResult=pass | `Done(t) → result(t) = pass` |
-| RULE-2 | No-skip-validation: Done tasks were through Validation | `Done(t) → result(t) ≠ none` |
-| RULE-3 | Research-gate: NS can't advance if research_ref isn't Done | `col(ns) > NS → col(rs) = Done` |
-| RULE-4 | NS-forward-gate: Epic can't advance past Epics if NS not in NorthStars | `col(ep) ≥ EP → col(ns) ≥ NS` |
-| RULE-5 | Epic-forward-gate: EX task can't advance if Epic not in Epics | `col(ex) ≥ EX → col(ep) ≥ EP` |
-| RULE-6 | Trace-complete: Done tasks have unbroken Research→NS→EP chain | reachability check |
-| RULE-7 | Research-ref-valid: NS tasks have non-null research_ref that exists | `ns.research_ref ∈ task_set` |
-| RULE-8 | Source-count: RS tasks have ≥2 source citations in content | `count_sources(rs) ≥ 2` |
-| RULE-9 | Origin-blockquote: RS+NS Origin Prompts section has `<blockquote>` | `has_blockquote(origin_section(t))` |
-| RULE-10 | Search-results: RS tasks have Search Results section with `<blockquote>` | `has_blockquote(search_results_section(rs))` |
-| RULE-11 | Codebase-paths: RS+NS Codebase Context has src/ paths or N/A decl | `has_paths(codebase_section(t)) ∨ na_declared(t)` |
-| RULE-12 | Codebase-snippet: RS+NS Codebase Context has `<pre><code>` or N/A decl | `has_snippet(codebase_section(t)) ∨ na_declared(t)` |
+| Invariant | Description |
+|---|---|
+| INV-1 | Research gate: NS tasks in Epics+ must reference a Done RS task via `research_ref` |
+| INV-2 | EX tasks must have `epic_ref`, `north_star_ref`, `validation_ref` |
+| INV-3 | EX ref resolution: `epic_ref` and `north_star_ref` must match a task on the board |
+| INV-4 | VA tasks must have `execution_ref`, `epic_ref`, `north_star_ref` |
+| INV-5 | Epic tasks must have `north_star_ref` |
+| INV-6 | EX tasks in Execution column must have Implementation Files listed |
+| INV-7 | Task title prefix must match column (RS-/NS-/E-/T-/V-T-) |
+| INV-8 | No bare `<ul>` wrapping `taskItem` elements in checklists |
+| INV-9 | EX/VA tasks with content must have at least one checklist item |
+| INV-10 | `spec_id` frontmatter must match the title prefix |
 
-**If UNSAT (all rules hold):**
+**If CLEAN (all invariants hold):**
 ```
-✅ GATE [9.5/14] z3-verify | <ISO-timestamp> | 12 rules UNSAT, 0 violations, N tasks
+✅ VERIFY-GATES: CLEAN — N tasks checked, 0 invariant violations.
 ```
 
-**If SAT (violation found) → STOP:**
+**If violations found → STOP:**
 ```
-🚫 GATE [9.5/14] BLOCKED — Z3 found violations:
-  - <rule>: <task-id> <description>
-Required: Fix all violations, re-run verify_gates.py, confirm UNSAT before Step 10.
+🚫 VERIFY-GATES: N invariant violation(s) across M tasks:
+  INV-1  (1 violation)
+    NS-001 [epics]: NS advanced to "epics" but RS-001 is not Done (research)
+Required: Fix all violations, re-run verify-gates, confirm CLEAN before Step 10.
 ```
 
-**Gate evidence required:** Output line starting with `✅ GATE [Z3]` (copy verbatim)
+**Gate evidence required:** Output line starting with `✅ VERIFY-GATES: CLEAN`
 
 ---
 
@@ -1051,12 +1041,12 @@ When all-dai-sdd creates or updates any task spec (in any mode), these rules are
 - Must have `Implementation Files` section listing actual source files
 - Code annotations in those files should reference the spec: `// @implements SPEC-DAI-T001`
 
-### Z3 gate check — mandatory after any batch of creates/updates
+### verify-gates check — mandatory after any batch of creates/updates
 After creating or updating 3+ tasks in any mode, always run:
 ```bash
-python3 skills/all-dai-sdd/verify_gates.py --tasks <tasks.yaml>
+node sdd-conductor.mjs verify-gates
 ```
-UNSAT required before reporting completion.
+CLEAN required before reporting completion. Any violations (INV-1 through INV-10) must be fixed before the mode exits.
 
 ---
 
