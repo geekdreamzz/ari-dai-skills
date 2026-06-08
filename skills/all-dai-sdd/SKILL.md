@@ -49,7 +49,24 @@ Research  →  North Stars  →  Epics  →  Execution  →  Validation  →  Ar
 
 Every SDD project uses exactly these seven columns, in this order. When you create a plan mode for an initiative, you must create seven status groups with these exact names — do NOT use the planner's default columns (To Do / In Progress / Done).
 
-**The Artifacts column is mandatory, not optional.** When a VA task passes its gate, the loop runner and conductor auto-create an AR (Artifact) task in the Artifacts column. AR tasks document what was actually produced: file paths, code snippets, config files, scripts, compiled models, generated content. Stubs with placeholder text are a gate failure — AR tasks must contain real implementation details extracted from the parent EX spec.
+**The Artifacts column is mandatory, not optional.** When a VA task passes its gate, the loop runner and conductor auto-create an AR (Artifact) task in the Artifacts column. AR tasks are the permanent, self-contained record of what was produced — they must be fully readable from the Dataspheres AI web UI with no local filesystem access required.
+
+**AR task content rules (all mandatory):**
+
+1. **Embed file contents directly** — paste the full text of every script, config, or spec file into a `<pre><code>` block. A local file path alone is useless; the web UI cannot open `C:\Users\...` paths.
+2. **For binary artifacts** (images, videos, compiled models, .pt/.onnx files): upload to Dataspheres AI storage and embed the returned URL, OR include a `metadata.json` block with file name, SHA-256 checksum, size in bytes, and a description. Never store binary paths without a checksum.
+3. **Embed real test output** — copy-paste the actual stdout/stderr from the verification run. Not a summary, the raw output.
+4. **Add front matter** to every generated code file as inline comments at the top:
+   ```
+   # artifact: AR-016
+   # initiative: faceless-pipeline
+   # generated: 2026-06-08
+   # verified-by: claude-sonnet-4-6
+   # checksum: sha256:<hash>
+   ```
+5. **Stubs are a gate failure.** An AR task that contains only YAML front matter, file paths, or placeholder descriptions — with no embedded content — must be patched before the initiative can reach DONE mode.
+
+Claude must populate AR tasks at the moment each VA passes — not deferred, not delegated to the user.
 
 **The Research column is the origin gate.** Nothing enters North Stars without a corresponding Research task that has passed Validation. This is not optional and cannot be waived.
 
@@ -436,7 +453,7 @@ node skills/all-dai-sdd/loop.mjs --advance <taskId> --evidence "
 | VA | Actual measured value vs AC threshold (e.g. `denoise=0.90 → output saved at outputs/test.png`) |
 | EP | List of child task keys confirmed Done + epic AC cross-check |
 | RS | At least 2 real URLs from search results + feasibility finding |
-| AR | Real file paths with sizes or line counts from the implementation |
+| AR | **Embedded content only** — full file text in `<pre><code>` blocks for text files; uploaded URL or metadata.json (name + sha256 + size) for binaries; raw test output pasted verbatim. A path without content is a gate failure. |
 
 **What to do when a task fails:**
 1. Post a comment on the task documenting what failed and why
