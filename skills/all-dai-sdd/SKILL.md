@@ -5,6 +5,42 @@ Drive feature implementation from a living spec hosted on Dataspheres AI. Seven-
 
 ---
 
+## Claude-as-Executor — The Prime Directive
+
+**Claude Code is the engineer. Not the user.**
+
+Claude runs every command, installs every dependency, downloads every file, writes every line of code, runs every test, fixes every bug, and manages every process — autonomously, without talking to the user.
+
+**What Claude does in LOOP mode:**
+- Reads each task spec completely
+- Executes every step using Bash and PowerShell tools
+- Installs software (conda, pip, npm, apt, winget, silent installers)
+- Downloads files (Invoke-WebRequest, curl)
+- Creates directories, writes config files, edits code
+- Runs tests and captures real output
+- Diagnoses failures, tries alternatives, retries until working
+- Updates task content with actual command outputs and findings
+- Creates new EX/VA tasks when it discovers spec gaps
+- Advances tasks only when AC criteria are verified by real output
+
+**When Claude must NOT contact the user:**
+- A command fails → diagnose and fix it
+- A dependency is missing → install it
+- A spec step is wrong → rewrite the spec, fix the approach
+- A test fails → debug, fix, re-run
+- An approach doesn't work → research alternatives, try them
+- An install takes 30 minutes → wait, check output, continue
+
+**The ONLY hard blockers requiring user escalation:**
+1. Physical hardware unavailable (GPU not detected, no network)
+2. Credential/token only the user possesses (Hugging Face token, paid API key)
+3. License agreement requiring human acceptance in GUI with no CLI equivalent
+4. System-level permission Claude cannot obtain (kernel driver requiring secure boot disable)
+
+Everything else: Claude solves it. Silently. Until 100% done.
+
+---
+
 ## Seven-Column Lifecycle
 
 ```
@@ -266,21 +302,25 @@ Use this for: flag compatibility checks, version lookups, error messages. For fu
 
 ### Step 0 — State Assessment (always runs first)
 
-Before taking any action, answer these four questions:
+Before taking any action, answer these five questions:
 
 1. **Is there an active datasphere?** → call `get_context()` or check for `targetDatasphere` in tasks.yaml
 2. **Does a plan mode already exist for this initiative?** → `list_plan_modes(dsId)`
 3. **Are there existing tasks on the board?** → `list_tasks(dsId, planModeId)`
 4. **Is there a local tasks.yaml?** → check `<project-dir>/tasks.yaml`
+5. **Are ALL tasks in the Done column?** → count tasks where `statusGroupId === doneGroupId`; if `done === total && total > 0` → **DONE mode is mandatory, runs immediately, no confirmation needed**
 
 The answers determine the mode:
 
-| Board exists? | tasks.yaml exists? | Mode |
-|---|---|---|
-| No | No | **NEW** — full 14-step publish from scratch |
-| No | Yes | **PUBLISH** — board doesn't exist yet, publish from local spec |
-| Yes | No | **AUDIT** — board exists, generate tasks.yaml from live state, then assess |
-| Yes | Yes | **SYNC** — compare board vs tasks.yaml, determine delta, apply |
+| Board exists? | tasks.yaml exists? | All tasks Done? | Mode |
+|---|---|---|---|
+| No | No | — | **NEW** — full 14-step publish from scratch |
+| No | Yes | — | **PUBLISH** — board doesn't exist yet, publish from local spec |
+| Yes | — | **YES** | **DONE** — 100% complete; generate Next Steps & UAT page immediately |
+| Yes | No | No | **AUDIT** — board exists, generate tasks.yaml from live state, then assess |
+| Yes | Yes | No | **SYNC** — compare board vs tasks.yaml, determine delta, apply |
+
+**DONE mode overrides everything.** When all tasks are Done, Claude does not ask, does not wait, does not skip — it generates the Next Steps & UAT page. This is a hard gate.
 
 **Additionally, on every invocation, check for in-flight Validation tasks that have failed at least one iteration:**
 
@@ -294,13 +334,38 @@ The answers determine the mode:
 ### Mode: PUBLISH (board doesn't exist, tasks.yaml does)
 → Skip directly to Step 4 (resolve dsId), then continue from there.
 
+### Mode: DONE (all tasks in Done column) ⚠️ HARD GATE
+
+**Triggered when:** `done_count === total_count && total_count > 0`
+
+This mode runs **immediately and autonomously** — no user confirmation, no skipping. It is not optional.
+
+**Steps (Claude executes all of these without waiting):**
+
+1. Pull all tasks from the live board — confirm `done_count === total_count`
+2. Pull the page list for the datasphere — check if a Next Steps & UAT page already exists (slug contains `next-steps` or `uat`)
+3. **If page already exists:** post a comment to the most recently completed NS task confirming the page URL, then stop
+4. **If page does NOT exist:** generate it immediately using the "Next Steps Page Template" section below — no confirmation required
+5. **To build the page content:**
+   - Read every NS task's title and description (to name the Epic cards)
+   - Read every EX task's verdict comment for the UAT AC lines
+   - Collect any known gaps from evidence comments tagged `[HARD BLOCKER]` or `[PARTIAL PASS]`
+   - Build the full HTML following the exact template structure (hero → progress widget → epic cards → UAT → loose ends → CTA → attribution → footer)
+6. Publish the page as `status: PUBLISHED` with slug `<initiative>-next-steps`
+7. Output the page URL to the user
+
+**This gate exists because:** 100% Done without a summary page means the work is invisible to stakeholders. Every completed initiative MUST have a human-readable close-out page.
+
+**Failure mode this prevents:** Claude advances all 61 tasks to Done, posts evidence, and stops — leaving the user with no summary of what was built, what's verified, and what still needs manual testing.
+
 ### Mode: AUDIT (board exists, no local spec)
 1. Pull all tasks from the live board via API
-2. Generate a `tasks.yaml` representing current board state
-3. Run `node sdd-conductor.mjs verify-gates` against it — report violations
-4. Assess what's missing: Research tasks without sources? NS without research_ref? EX tasks without epic_ref? Epics without EX tasks?
-5. Generate the delta: new tasks to add, existing tasks to update, violations to fix
-6. Confirm with user, then apply
+2. **Check for DONE mode first** — if all tasks are Done, switch to DONE mode immediately
+3. Generate a `tasks.yaml` representing current board state
+4. Run `node sdd-conductor.mjs verify-gates` against it — report violations
+5. Assess what's missing: Research tasks without sources? NS without research_ref? EX tasks without epic_ref? Epics without EX tasks?
+6. Generate the delta: new tasks to add, existing tasks to update, violations to fix
+7. Confirm with user, then apply
 
 ### Mode: SYNC (both exist)
 1. Load tasks.yaml
@@ -1337,12 +1402,14 @@ These are distinct from the **Execution Checklist** (auto-ticked by conductor) a
 4. If all verified: conductor moves NS to Done, posts final research review trigger
 5. If any fail: update plan with new Epics/EX tasks — re-run `/all-dai-sdd`
 
-**Step 4 — Final Research Review (after all NS Done):**
+**Step 4 — Final Research Review (after all NS Done) ⚠️ MANDATORY — DO NOT SKIP:**
 1. Verify all RS tasks linked to the initiative are in Done column
 2. Read the verbatim origin prompts from each NS task (the `<blockquote>` in Origin Prompts)
 3. Compare what was promised vs. what was delivered — document any gaps
-4. Write the Next Steps & UAT summary page via the template in this spec
-5. Run `/all-dai-sdd` — AUDIT mode detects 100% NS completion and triggers summary page generation
+4. **Write the Next Steps & UAT summary page immediately** — use the template in this spec, no confirmation required
+5. Publish the page, output the URL — this step is not complete until a real page URL exists
+
+**This is not advisory.** 100% Done without a summary page is an incomplete execution. The page IS the deliverable that makes the work real to the stakeholder. Claude must generate it the moment all NS tasks reach Done — autonomously, without being asked.
 
 ### Refine-and-rerun on failure
 
