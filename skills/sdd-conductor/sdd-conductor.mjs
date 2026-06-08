@@ -247,6 +247,15 @@ function makeClient() {
 // Task helpers
 // ---------------------------------------------------------------------------
 
+// The individual GET /tasks/:id endpoint returns 404; use the list endpoint and filter.
+async function fetchTaskById(client, dsId, planModeId, taskId) {
+  const data = await client.get(`/api/v2/dataspheres/${dsId}/tasks?planModeId=${planModeId}&limit=500`);
+  const tasks = data.tasks || data || [];
+  const found = tasks.find(t => t.id === taskId);
+  if (!found) die(`Task not found: ${taskId} (searched plan mode ${planModeId})`);
+  return found;
+}
+
 function extractImplFiles(content) {
   if (!content) return [];
   const implMatch = content.match(/Implementation Files[\s\S]*?<ul[^>]*>([\s\S]*?)<\/ul>/i);
@@ -2918,6 +2927,58 @@ async function cmdValidate(vaTaskId, extraArgs) {
       }
     }
 
+    // -------------------------------------------------------------------------
+    // EVIDENCE GATE: checked items that claim "screenshot attached", "nvidia-smi",
+    // "GPU-Z", "screen recording", etc. must be backed by actual proof in task
+    // comments — an image/video URL or a measured-value comment.
+    // A ticked item with no evidence = rubber-stamp. Gate exits 1.
+    // -------------------------------------------------------------------------
+    {
+      function evidenceRequirement(text) {
+        const t = text.toLowerCase();
+        if (/nvidia.?smi|gpu.?z/.test(t))
+          return { type: 'gpu-measurement',  desc: 'nvidia-smi/GPU-Z output with numeric MiB/MB/GB value',
+                   pattern: /\d+\s*(mib|mb|gb)/i };
+        if (/fps counter|fps.*readout|fps.*attached|\bfps\b.*screen|screen recording.*fps/.test(t))
+          return { type: 'fps-measurement',  desc: 'numeric FPS value in comment (e.g. "25.5 FPS")',
+                   pattern: /\d+\.?\d*\s*fps/i };
+        if (/screenshot.*attached|attached.*screenshot|screen recording.*attached|recording.*attached|screenshot or screen recording/i.test(text))
+          return { type: 'media-url',        desc: 'screenshot/recording URL (.png/.jpg/.mp4/.webm) or <img> tag',
+                   pattern: /https?:\/\/\S+\.(png|jpg|jpeg|gif|mp4|webm)|<img\s[^>]*src=/i };
+        if (/attached as evidence|evidence attached/i.test(text))
+          return { type: 'any-evidence',     desc: 'screenshot URL or measured value (MiB/FPS/ms) in comment',
+                   pattern: /https?:\/\/\S+\.(png|jpg|jpeg|gif|mp4|webm)|<img\s[^>]*src=|\d+\s*(mib|mb|fps|ms|gb)/i };
+        return null;
+      }
+
+      const itemsNeedingEvidence = allItems.filter(i => i.checked && evidenceRequirement(i.text));
+      if (itemsNeedingEvidence.length > 0) {
+        const vaCommentData = await client.get(`/api/v2/dataspheres/${iState.dsId}/tasks/${vaTaskId}/comments`);
+        const vaCommentList = vaCommentData.comments || vaCommentData || [];
+        const missing = [];
+        for (const item of itemsNeedingEvidence) {
+          const req = evidenceRequirement(item.text);
+          const satisfied = vaCommentList.some(c => req.pattern.test(c.content || ''));
+          if (!satisfied) missing.push({ item, req });
+        }
+        if (missing.length > 0) {
+          gate(
+            `EVIDENCE GATE: ${missing.length} checked item(s) claim attached proof but no matching evidence found in task comments.\n\n` +
+            `Items missing evidence:\n` +
+            missing.map(({ item, req }) =>
+              `  ✗ [${item.section}] ${item.text.substring(0, 80)}\n    → needs: ${req.desc}`
+            ).join('\n') +
+            `\n\nFor each missing item, post a comment on task ${vaTaskId} containing:\n` +
+            `  - GPU/VRAM: nvidia-smi output with numeric MiB/MB/GB (e.g. "VRAM: 2587 MiB")\n` +
+            `  - FPS: numeric FPS value (e.g. "25.5 FPS sustained for 30s")\n` +
+            `  - Screenshot/recording: URL ending in .png/.jpg/.mp4/.webm\n` +
+            `\nThen re-run: node sdd-conductor.mjs validate ${vaTaskId} [flags]`
+          );
+        }
+        info(`Evidence gate: ${itemsNeedingEvidence.length}/${itemsNeedingEvidence.length} verified ✓`);
+      }
+    }
+
     // Fetch all plan tasks once — used by screenshot inference AND AR gate below
     const allTasksForAr = ((await client.get(
       `/api/v2/dataspheres/${iState.dsId}/tasks?planModeId=${iState.planModeId}&limit=500`
@@ -3697,6 +3758,10 @@ async function cmdAudit(fixMode = false) {
   for (const t of taskList) {
     const prefix = t.title?.match(/^([A-Z]+-\d+)/)?.[1];
     if (prefix) byTitlePrefix[prefix] = t;
+    // Also index by spec_id from front matter (handles compound IDs like SPEC-FAP-EX-022
+    // whose titles start with "EX-022" — the regex above extracts "EX-022" not "SPEC-FAP-EX-022")
+    const sid = extractFrontMatterField(t.content || '', 'spec_id');
+    if (sid && sid !== prefix) byTitlePrefix[sid] = t;
   }
 
   // Normalize known ref drift patterns: EP-NNN → E-NNN
