@@ -3380,10 +3380,18 @@ The Ralph loop is the enforcement mechanism that prevents SDD from stalling at a
 Each iteration follows this exact sequence — no step may be skipped:
 
 1. **Run** — Execute the validation task's measurement or test
-2. **Gate check** — Call `sdd-conductor validate` with the measured metric (see Conductor Call below). The conductor posts the board comment, creates the next iteration task, and exits 0 (pass) or 1 (continue).
-3. **Exit 0 (pass)** → conductor has already marked VA Done, propagated checklist, posted completion comment. Exit loop.
-4. **Exit 1 (fail)** → conductor has posted iteration comment and created the next EX iteration task on the board. Diagnose root cause, apply best known fix, loop.
-5. **Hard blocker check** — Does any condition below apply? If yes → post BLOCKED comment, set task BLOCKED, exit loop; do not apply a fix.
+2. **Collect evidence** — Before calling validate, run auto-collection to upload real proof:
+   ```bash
+   node sdd-conductor.mjs collect-evidence <vaTaskId>
+   # Runs nvidia-smi, reads FPS logs/configs, uploads files, creates/updates AR task.
+   # Exit 0 = all evidence auto-collected. Exit 1 = some items need live session.
+   ```
+3. **Gate check** — Call `sdd-conductor validate` with the measured metric (see Conductor Call below). The conductor posts the board comment, creates the next iteration task, and exits 0 (pass) or 1 (continue).
+4. **Exit 0 (pass)** → conductor has already marked VA Done, propagated checklist, posted completion comment. Exit loop.
+5. **Exit 1 (fail)** → conductor has posted iteration comment and created the next EX iteration task on the board. Diagnose root cause, apply best known fix, loop.
+6. **Hard blocker check** — Does any condition below apply? If yes → post BLOCKED comment, set task BLOCKED, exit loop; do not apply a fix.
+
+**North-star reasoning before every iteration:** Before applying any fix, re-read the parent EX task, Epic, and North Star. Ask: "Is this fix aligned with the North Star, or am I thrashing on the wrong approach?" If the approach is wrong → restructure the plan (create new EX tasks, update Epic) before iterating.
 
 **Conductor call (mandatory — replaces manual curl iteration comment):**
 
@@ -3446,8 +3454,15 @@ Only these conditions exit the loop with a BLOCKED status. Everything else conti
 | **Architectural mismatch** | The tool or approach is wrong for the data type at a fundamental level (e.g., GATK HaplotypeCaller on bisulfite-converted reads — produces 0 valid SNPs regardless of parameters) |
 | **Missing dependency — no alternative** | Required tool is not installed, cannot be installed in this environment, and no equivalent alternative exists |
 | **Max iterations reached** | `MAX_ITERS` exhausted (default: 8). Log best result, post final summary. |
+| **Evidence gate: live session items only** | `collect-evidence` was run and ALL remaining items require live GUI capture (OBS recordings, Spout2 output, camera feed). These cannot be auto-collected — only a live session unblocks them. |
 
 **Not hard blockers:** "results are poor", "it might not work", "it's taking a long time", "uncertain which fix is best." These are reasons to iterate, not reasons to stop.
+
+**Evidence gate is NEVER a hard blocker until `collect-evidence` is run first.** Before declaring BLOCKED on evidence, always run:
+```bash
+node sdd-conductor.mjs collect-evidence <vaTaskId>
+```
+The conductor will auto-collect nvidia-smi output, FPS logs, config files, and upload them. Only block if the conductor itself reports human-required items. An evidence gate failure without first running `collect-evidence` is an error in the loop logic, not a legitimate block.
 
 On hard blocker, post this comment and stop:
 
