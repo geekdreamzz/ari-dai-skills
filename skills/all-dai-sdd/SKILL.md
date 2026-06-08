@@ -3485,9 +3485,16 @@ The loop distinguishes two levels — passing the gate does NOT stop the loop:
 | Level | Threshold | Behavior on pass |
 |---|---|---|
 | **Gate** | Minimum acceptable (e.g., F1 ≥ 0.95) | Close VA task → Done, continue iterating toward North Star |
-| **North Star** | Exceeds published benchmark (e.g., F1 > 0.97) | Close VA task → Done, post celebration comment, exit loop |
+| **North Star** | Exceeds published benchmark (e.g., F1 > 0.97) | Close VA task &rarr; Done, run `create-next-steps`, exit to summary page |
 
 The loop runs past gate pass because SDD's goal is not minimum compliance — it is to surpass the benchmark. Close the task when the gate passes (the board reflects reality), but keep running until North Star is hit or MAX_ITERS is reached.
+
+**Loop exit = next-steps page, not the dashboard.** When all North Stars are Done, the conductor's `drive` command calls `create-next-steps` (creates/updates `<initiative>-next-steps`) and exits with its URL. The dashboard (`<initiative>-dashboard`) stays up as the live tracker — it is never the exit target. The summary page can be regenerated on every run as the board evolves.
+
+```bash
+# Run manually at any time to rebuild the close-out summary page
+node sdd-conductor.mjs create-next-steps
+```
 
 ---
 

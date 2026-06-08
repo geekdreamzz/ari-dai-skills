@@ -4007,6 +4007,185 @@ async function cmdUpdateDashboard(dsUri, pageSlug) {
   info(`\nDashboard: ${env.DATASPHERES_BASE_URL?.replace('http://localhost', 'https://dataspheres.ai') || baseUrl}/pages/${dsUri}/${pageSlug}`);
 }
 
+// ---------------------------------------------------------------------------
+// cmdCreateOrUpdateNextSteps — DONE mode exit gate (SKILL.md § Mode: DONE)
+// Builds / updates the `<initiative>-next-steps` close-out summary page.
+// Dashboard = live tracker (stays). This page = loop exit target.
+// ---------------------------------------------------------------------------
+
+async function cmdCreateOrUpdateNextSteps(dsUri, dsId, planModeId, slug, baseUrl, apiKey, taskList, dashboardUrl) {
+  const nextStepsSlug = `${slug}-next-steps`;
+  const plannerUrl    = `${baseUrl}/app/${dsUri}/planner?mode=${planModeId}`;
+  const publicBase    = baseUrl.replace('http://localhost', 'https://dataspheres.ai');
+
+  const nsTasks  = taskList.filter(t => /^NS-/i.test(t.title || '') || getColumnName(t).toLowerCase() === 'north stars');
+  const epTasks  = taskList.filter(t => /^EP-/i.test(t.title || '') || getColumnName(t).toLowerCase() === 'epics');
+  const vaTasks  = taskList.filter(t => /^VA-/i.test(t.title || '') || getColumnName(t).toLowerCase() === 'validation');
+  const arTasks  = taskList.filter(t => /^AR-/i.test(t.title || '') || getColumnName(t).toLowerCase() === 'artifacts');
+
+  const doneCount = taskList.filter(t => isDone(t)).length;
+  const total     = taskList.length;
+  const pct       = total > 0 ? Math.round(doneCount / total * 100) : 100;
+
+  // ---- Epic cards HTML ----
+  const epicCardsHtml = epTasks.map(ep => {
+    const epId   = extractSpecId(ep.content) || ep.title?.match(/^EP-\d+/)?.[0] || '';
+    const epName = ep.title.replace(/&middot;/g, '&middot;').replace(/^EP-\d+\s*[&middot;·\s]*\s*/i, '').trim();
+    const done   = isDone(ep);
+    const chip   = done
+      ? `<span style="background:#dcfce7;color:#16a34a;font-size:10px;font-weight:700;padding:2px 9px;border-radius:20px;text-transform:uppercase;letter-spacing:.05em;">&#10003;&nbsp;Done</span>`
+      : `<span style="background:#fef3c7;color:#b45309;font-size:10px;font-weight:700;padding:2px 9px;border-radius:20px;text-transform:uppercase;letter-spacing:.05em;">&#9888;&nbsp;In Progress</span>`;
+    const epVAs  = vaTasks.filter(va => {
+      const epRef = extractFrontMatterField(va.content || '', 'epic_ref') || '';
+      return epRef.toUpperCase() === epId.toUpperCase();
+    });
+    const vaLines = epVAs.slice(0, 3).map(va => {
+      const vaId   = extractSpecId(va.content) || va.title?.match(/^VA-\d+/)?.[0] || '';
+      const vaName = va.title.replace(/&middot;/g, '&middot;').replace(/^(SPEC-[A-Z]+-)?VA-\d+[\*\s·&middot;]*/i, '').trim().slice(0, 80);
+      const vaDone = isDone(va) ? '&#10003;' : '&#9675;';
+      return `<li style="margin:0;color:#475569;font-size:12px;line-height:1.7;">${vaDone}&nbsp;<span style="font-family:monospace;font-size:11px;color:#94a3b8;">${escapeHtml(vaId)}</span> ${escapeHtml(vaName)}</li>`;
+    }).join('');
+    const moreVAs = epVAs.length > 3 ? `<li style="color:#94a3b8;font-size:12px;">+ ${epVAs.length - 3} more</li>` : '';
+    return `<div style="border:1px solid #e2e8f0;border-radius:10px;padding:20px 24px;margin-bottom:14px;background:#f8fafc;">
+  <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">
+    ${chip}
+    <span style="font-size:12px;font-family:monospace;color:#94a3b8;">${escapeHtml(epId)}</span>
+    <a href="${plannerUrl}&amp;taskId=${ep.id}" style="margin-left:auto;font-size:11px;color:#64748b;text-decoration:none;" title="Open in planner">&#8599;</a>
+  </div>
+  <h3 style="margin:0 0 8px;font-size:16px;font-weight:700;color:#0f172a;">${escapeHtml(epName)}</h3>
+  ${epVAs.length > 0 ? `<ul style="margin:4px 0 0;padding-left:14px;list-style:none;">${vaLines}${moreVAs}</ul>` : ''}
+</div>`;
+  }).join('\n');
+
+  // ---- UAT sections HTML (one per done NS, using VA AC items as evidence) ----
+  const uatHtml = nsTasks.filter(ns => isDone(ns)).map(ns => {
+    const nsId   = extractSpecId(ns.content) || ns.title?.match(/^NS-\d+/)?.[0] || '';
+    const nsName = ns.title.replace(/&middot;/g, '&middot;').replace(/^NS-\d+\s*[&middot;·\s]*/i, '').trim();
+    const nsVAs  = vaTasks.filter(va => {
+      const nsRef = extractFrontMatterField(va.content || '', 'north_star_ref') || '';
+      return nsRef.toUpperCase() === nsId.toUpperCase() && isDone(va);
+    });
+    const acLines = nsVAs.flatMap(va => {
+      const items = extractSectionChecklist(va.content || '', 'Acceptance Criteria');
+      return items.filter(i => i.checked).slice(0, 3).map(i =>
+        `<li>${escapeHtml(i.text.replace(/<[^>]+>/g, '').trim().slice(0, 100))}</li>`
+      );
+    }).slice(0, 8).join('');
+    if (!acLines) return '';
+    return `<div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:10px;padding:20px 24px;margin-bottom:16px;">
+  <h3 style="margin:0 0 14px;font-size:14px;font-weight:700;color:#1e293b;">&#9989;&nbsp; ${escapeHtml(nsName)} &mdash; UAT</h3>
+  <ul style="margin:0;padding-left:18px;color:#374151;font-size:13px;line-height:1.8;">${acLines}</ul>
+</div>`;
+  }).filter(Boolean).join('\n');
+
+  // ---- Loose ends (unchecked VA items, HARD BLOCKERs) ----
+  const looseEnds = vaTasks.filter(t => !isDone(t)).slice(0, 5).map(va => {
+    const vaId   = extractSpecId(va.content) || va.title?.match(/^VA-\d+/)?.[0] || '';
+    const vaName = va.title.replace(/&middot;/g, '&middot;').replace(/^(SPEC-[A-Z]+-)?VA-\d+[\*\s·&middot;]*/i, '').trim().slice(0, 80);
+    return `<div style="border-left:4px solid #f59e0b;background:#fffbeb;border-radius:0 8px 8px 0;padding:14px 18px;margin-bottom:12px;">
+  <strong style="font-size:13px;color:#92400e;">Known gap: ${escapeHtml(vaId)}</strong>
+  <p style="margin:6px 0 0;font-size:13px;color:#78350f;">${escapeHtml(vaName)} &mdash; not yet validated.</p>
+</div>`;
+  }).join('\n');
+
+  // ---- AR summary ----
+  const arLines = arTasks.slice(0, 8).map(ar => {
+    const arId   = extractSpecId(ar.content) || ar.title?.match(/^AR-\d+/)?.[0] || '';
+    const arName = ar.title.replace(/&middot;/g, '&middot;').replace(/^AR-\d+\s*[&middot;·\s]*/i, '').trim().slice(0, 80);
+    return `<li><span style="font-family:monospace;font-size:11px;color:#94a3b8;">${escapeHtml(arId)}</span> ${escapeHtml(arName)}</li>`;
+  }).join('');
+
+  const content = `<div class="not-prose" style="background:linear-gradient(135deg,#0f172a 0%,#1e293b 60%,#0f172a 100%);border-radius:16px;padding:40px 36px;margin-bottom:32px;text-align:center;">
+  <p style="margin:0 0 6px;font-size:11px;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:.14em;">Initiative Complete</p>
+  <h1 style="margin:0 0 12px;font-size:28px;font-weight:800;color:#f1f5f9;line-height:1.2;">${pct}% Done &mdash; ${doneCount}/${total} Tasks</h1>
+  <p style="margin:0 0 24px;font-size:15px;color:#94a3b8;">${nsTasks.filter(t => isDone(t)).length} North Star${nsTasks.filter(t => isDone(t)).length !== 1 ? 's' : ''} achieved</p>
+  <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap;">
+    <a href="${dashboardUrl}" style="display:inline-block;padding:10px 22px;background:#a67c00;color:#fff;font-size:13px;font-weight:700;border-radius:8px;text-decoration:none;">&#9679;&nbsp;Live Tracker</a>
+    <a href="${plannerUrl}" style="display:inline-block;padding:10px 22px;background:transparent;color:#94a3b8;font-size:13px;font-weight:700;border-radius:8px;text-decoration:none;border:1px solid #334155;">Open Planner</a>
+  </div>
+</div>
+
+<h2>Progress Summary</h2>
+<div data-type="plannerWidget"
+     data-widget-type="progress-summary"
+     data-datasphere-id="${dsId}"
+     data-plan-mode-id="${planModeId}"
+     data-refresh-interval="60"></div>
+
+<h2>Epics</h2>
+${epicCardsHtml || '<p>No epics found.</p>'}
+
+${uatHtml ? `<h2>UAT &mdash; Verified Acceptance Criteria</h2>\n${uatHtml}` : ''}
+
+${looseEnds ? `<h2>Loose Ends</h2>\n${looseEnds}` : ''}
+
+${arLines ? `<h2>Artifacts</h2>\n<ul class="tiptap-bullet-list">${arLines}</ul>` : ''}
+
+<div class="not-prose" style="display:flex;gap:16px;flex-wrap:wrap;margin:24px 0;">
+  <div style="flex:1;min-width:200px;border:1px solid #e2e8f0;border-radius:10px;padding:20px;background:#f8fafc;">
+    <p style="margin:0 0 8px;font-size:12px;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:.08em;">Live Tracker</p>
+    <a href="${dashboardUrl}" style="font-size:14px;font-weight:600;color:#0f172a;text-decoration:none;">&#9679; Initiative Dashboard &#8599;</a>
+    <p style="margin:6px 0 0;font-size:12px;color:#94a3b8;">Real-time progress, trace graph, activity feed</p>
+  </div>
+  <div style="flex:1;min-width:200px;border:1px solid #e2e8f0;border-radius:10px;padding:20px;background:#f8fafc;">
+    <p style="margin:0 0 8px;font-size:12px;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:.08em;">Planner Board</p>
+    <a href="${plannerUrl}" style="font-size:14px;font-weight:600;color:#0f172a;text-decoration:none;">&#9776; Open Kanban &#8599;</a>
+    <p style="margin:6px 0 0;font-size:12px;color:#94a3b8;">Full task board with all columns</p>
+  </div>
+</div>
+
+<div class="not-prose" style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;padding:20px 24px;text-align:center;margin-bottom:24px;">
+  <p style="margin:0 0 6px;font-size:10px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:.12em;">Powered by</p>
+  <div style="display:flex;align-items:center;justify-content:center;gap:20px;flex-wrap:wrap;margin-bottom:8px;">
+    <a href="https://github.com/geekdreamzz/ari-dai-skills" style="font-size:13px;font-weight:600;color:#0f172a;text-decoration:none;">&#9881; ari-dai-skills</a>
+    <span style="color:#cbd5e1;">&#183;</span>
+    <a href="https://dataspheres.ai" style="font-size:13px;font-weight:600;color:#a67c00;text-decoration:none;">&#10022; dataspheres.ai</a>
+  </div>
+  <p style="margin:0;font-size:11px;color:#94a3b8;">Spec-driven development tracked end-to-end in Dataspheres AI</p>
+</div>
+<div data-type="doc-footer"></div>`;
+
+  // Check if page exists (GET by slug)
+  const checkRes = await fetch(`${baseUrl}/api/v1/dataspheres/${dsUri}/pages/${nextStepsSlug}`, {
+    headers: { Authorization: `Bearer ${apiKey}` },
+  });
+
+  let pageId = null;
+  if (checkRes.ok) {
+    const existing = await checkRes.json();
+    pageId = existing.page?.id || existing.id;
+  }
+
+  const body = JSON.stringify({ title: `${slug} &mdash; Next Steps &amp; UAT`, content, status: 'PUBLISHED', isPubliclyVisible: false });
+
+  if (pageId) {
+    // Update existing page
+    const putRes = await fetch(`${baseUrl}/api/v1/dataspheres/${dsUri}/pages/${nextStepsSlug}`, {
+      method: 'PUT', headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' }, body,
+    });
+    if (!putRes.ok) {
+      const t = await putRes.text().catch(() => '');
+      warn(`Next-steps page PUT ${putRes.status} — ${t.slice(0, 120)}`);
+    } else {
+      ok(`Next-steps page updated: ${publicBase}/pages/${dsUri}/${nextStepsSlug}`);
+    }
+  } else {
+    // Create new page
+    const postRes = await fetch(`${baseUrl}/api/v1/dataspheres/${dsUri}/pages`, {
+      method: 'POST', headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: `${slug} &mdash; Next Steps &amp; UAT`, content, status: 'PUBLISHED', isPubliclyVisible: false, slug: nextStepsSlug }),
+    });
+    if (!postRes.ok) {
+      const t = await postRes.text().catch(() => '');
+      warn(`Next-steps page POST ${postRes.status} — ${t.slice(0, 120)}`);
+    } else {
+      ok(`Next-steps page created: ${publicBase}/pages/${dsUri}/${nextStepsSlug}`);
+    }
+  }
+
+  return `${publicBase}/pages/${dsUri}/${nextStepsSlug}`;
+}
+
 async function cmdSessionStart() {
   const state = loadState();
   if (!state) return;
@@ -4440,10 +4619,19 @@ async function cmdDrive() {
 
   if (nsOpen.length === 0 && nsAll.length > 0) {
     console.log(`\n  ✅ NORTH STAR ACHIEVED — all ${nsAll.length} North Star(s) Done`);
-    console.log(`\n  The initiative is complete. Final summary at:`);
-    console.log(`  ${dashboardUrl}`);
-    // Update the dashboard "Current Focus" section to reflect completion
+    // Dashboard stays as live tracker — next-steps page is the loop exit target (SKILL.md § Mode: DONE)
+    const env2 = loadEnv();
+    const nextStepsUrl = await cmdCreateOrUpdateNextSteps(
+      iState.dsUri, iState.dsId, iState.planModeId, slug,
+      env2.DATASPHERES_BASE_URL || 'https://dataspheres.ai',
+      env2.DATASPHERES_API_KEY,
+      taskList, dashboardUrl
+    ).catch(e => { warn(`Next-steps page: ${e.message}`); return dashboardUrl; });
     try { await cmdUpdateDashboard(iState.dsUri, dashboardSlug); } catch {}
+    console.log(`\n  ✅ DONE. Close-out summary:`);
+    console.log(`  ${nextStepsUrl}`);
+    console.log(`\n  Live tracker (stays up):`);
+    console.log(`  ${dashboardUrl}`);
     console.log('');
     return;
   }
@@ -4920,6 +5108,23 @@ try {
     }
     case 'dashboard-check':   await cmdDashboardCheck(args[0], args[1]); break;
     case 'update-dashboard':  await cmdUpdateDashboard(args[0], args[1]); break;
+    case 'create-next-steps': {
+      const { state: cnsState, slug: cnsSlug, iState: cnsIS } = requireInitiativeState();
+      const cnsEnv = loadEnv();
+      const cnsClient = makeClient();
+      const cnsTasks = (await cnsClient.get(
+        `/api/v2/dataspheres/${cnsIS.dsId}/tasks?planModeId=${cnsIS.planModeId}&limit=500`
+      )).tasks || [];
+      const cnsDashSlug = cnsIS.dashboardSlug || `${cnsSlug}-dashboard`;
+      const cnsDashUrl  = `${cnsEnv.DATASPHERES_BASE_URL || 'https://dataspheres.ai'}/docs/${cnsIS.dsUri}/${cnsDashSlug}`;
+      await cmdCreateOrUpdateNextSteps(
+        cnsIS.dsUri, cnsIS.dsId, cnsIS.planModeId, cnsSlug,
+        cnsEnv.DATASPHERES_BASE_URL || 'https://dataspheres.ai',
+        cnsEnv.DATASPHERES_API_KEY,
+        cnsTasks, cnsDashUrl
+      );
+      break;
+    }
     case 'check-file-hook':   await cmdCheckFileHook(); break;
     case 'progress-hook':   await cmdProgressHook(); break;
     case 'session-start':   await cmdSessionStart(); break;
