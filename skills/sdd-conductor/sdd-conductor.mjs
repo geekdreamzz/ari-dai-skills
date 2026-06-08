@@ -4400,31 +4400,10 @@ async function cmdInstall(projectDir) {
 async function cmdDrive() {
   const { state, slug, iState } = requireInitiativeState();
   const client = makeClient();
+  const baseUrl = loadEnv().DATASPHERES_BASE_URL || 'https://dataspheres.ai';
 
-  console.log(`\n🚀 SDD-CONDUCTOR DRIVE  [${slug}]`);
-  info(`Datasphere: ${iState.dsUri}`);
-
-  // Inline compliance check — surface violations at the top of every drive
-  try {
-    const { clean, violations } = await cmdAudit(false);
-    if (!clean && violations.length > 0) {
-      const fixable = violations.filter(v => v.fixable).length;
-      console.log(`\n  ⚠️  BOARD DRIFT (${violations.length} violation${violations.length > 1 ? 's' : ''}, ${fixable} auto-fixable):`);
-      for (const v of violations.slice(0, 5)) {
-        warn(`    ${v.specId}: ${v.issue}`);
-      }
-      if (violations.length > 5) warn(`    ...and ${violations.length - 5} more. Run: audit --fix`);
-      if (fixable > 0) info(`  Fix: node sdd-conductor.mjs audit --fix`);
-      console.log('');
-    }
-  } catch {}
-
-
-  // Show other initiatives if multiple exist
-  const allSlugs = Object.keys(state.initiatives || {});
-  if (allSlugs.length > 1) {
-    info(`Other initiatives: ${allSlugs.filter(s => s !== slug).join(', ')}  (switch with: switch <slug>)`);
-  }
+  const dashboardSlug = iState.dashboardSlug || `${slug}-dashboard`;
+  const dashboardUrl  = `${baseUrl}/docs/${iState.dsUri}/${dashboardSlug}`;
 
   const allTasks = await client.get(
     `/api/v2/dataspheres/${iState.dsId}/tasks?planModeId=${iState.planModeId}&limit=500`
@@ -4433,10 +4412,9 @@ async function cmdDrive() {
 
   const bySpecId = {};
   for (const t of taskList) {
-    const specId = extractSpecId(t.content) || t.title?.match(/^[A-Z]+-\d+/)?.[0];
-    if (specId) bySpecId[specId] = t;
+    const sid = extractSpecId(t.content) || t.title?.match(/^[A-Z]+-\d+/)?.[0];
+    if (sid) bySpecId[sid] = t;
   }
-
   const groups = {};
   for (const t of taskList) {
     const col = getColumnName(t).toLowerCase();
@@ -4444,94 +4422,138 @@ async function cmdDrive() {
     groups[col].push(t);
   }
 
-  if (iState.activeTask) {
-    console.log(`\n  ACTIVE TASK:`);
-    info(`  ${iState.activeTask.specId} — ${iState.activeTask.title}`);
-    info(`  Started: ${iState.activeTask.startedAt}`);
-    info(`  Impl files: ${iState.activeTask.implFiles?.join(', ') || '(none)'}`);
-    info(`  When done: node sdd-conductor.mjs complete ${iState.activeTask.taskId}`);
-  }
-
-  const rsTasks = taskList.filter(t => t.title?.match(/^RS-/) && !isDone(t));
-  if (rsTasks.length > 0) {
-    console.log(`\n  RESEARCH REQUIRED (${rsTasks.length}):`);
-    for (const t of rsTasks) {
-      const specId = extractSpecId(t.content) || t.title?.match(/^RS-\d+/)?.[0] || t.id;
-      info(`  ${specId} · ${t.title}`);
-      info(`    → node sdd-conductor.mjs start ${t.id}`);
-    }
-  }
-
-  const exTasks = (groups['execution'] || []).filter(t => !isDone(t) && t.id !== iState.activeTask?.taskId);
-  const readyTasks = [];
-  const blockedTasks = [];
-  for (const t of exTasks) {
-    const deps = extractDependsOn(t.content);
-    const notDone = deps.filter(dep => { const dt = bySpecId[dep]; return !dt || !isDone(dt); });
-    notDone.length === 0 ? readyTasks.push({ task: t }) : blockedTasks.push({ task: t, blocking: notDone });
-  }
-
-  if (readyTasks.length > 0) {
-    console.log(`\n  READY TO START (${readyTasks.length}):`);
-    for (const { task } of readyTasks) {
-      const specId = extractSpecId(task.content) || task.title?.match(/^[A-Z]+-\d+/)?.[0] || '';
-      info(`  ${specId} · ${task.title}`);
-      info(`    → node sdd-conductor.mjs start ${task.id}`);
-    }
-  }
-
-  const vaTasks = (groups['validation'] || []).filter(t => !isDone(t));
-  if (vaTasks.length > 0) {
-    console.log(`\n  NEEDS VALIDATION (${vaTasks.length}):`);
-    for (const t of vaTasks) {
-      const specId = extractSpecId(t.content) || t.title?.match(/^[A-Z]+-\d+/)?.[0] || '';
-      info(`  ${specId} · ${t.title}`);
-      info(`    → node sdd-conductor.mjs validate ${t.id} --metric <measured> --threshold <gate> --iteration 1`);
-    }
-  }
-
-  if (blockedTasks.length > 0) {
-    console.log(`\n  BLOCKED (${blockedTasks.length}):`);
-    for (const { task, blocking } of blockedTasks) {
-      const specId = extractSpecId(task.content) || task.title?.match(/^[A-Z]+-\d+/)?.[0] || '';
-      info(`  ${specId} · ${task.title}`);
-      info(`    Waiting on: ${blocking.join(', ')}`);
-    }
-  }
-
-  const nsTasks = taskList.filter(t => {
-    const col = getColumnName(t).toLowerCase();
-    return (col === 'north stars' || t.title?.match(/^NS-/)) && !isDone(t);
-  });
-  const nsReady = nsTasks.filter(t => t.content && countUncheckedItems(t.content) === 0 && t.content.includes('data-checked'));
-  if (nsReady.length > 0) {
-    console.log(`\n  NORTH STARS READY TO CLOSE:`);
-    for (const t of nsReady) {
-      const specId = extractSpecId(t.content) || t.title?.match(/^NS-\d+/)?.[0] || t.id;
-      info(`  ${specId} · ${t.title}`);
-      info(`    → node sdd-conductor.mjs complete ${t.id}`);
-    }
-  }
-
   const doneCount = (groups['done'] || []).length;
-  const pct = taskList.length > 0 ? Math.round(doneCount / taskList.length * 100) : 0;
-  console.log(`\n  PROGRESS: ${doneCount}/${taskList.length} Done (${pct}%) | ${readyTasks.length} Ready | ${vaTasks.length} In Validation | ${blockedTasks.length} Blocked`);
+  const pct       = taskList.length > 0 ? Math.round(doneCount / taskList.length * 100) : 0;
+  const vaTasks   = (groups['validation'] || []).filter(t => !isDone(t));
+  const exTasks   = (groups['execution']  || []).filter(t => !isDone(t));
+  const rsTasks   = taskList.filter(t => t.title?.match(/^RS-/) && !isDone(t));
+
+  // -------------------------------------------------------------------------
+  // NORTH STAR STATUS — the only thing that matters
+  // -------------------------------------------------------------------------
+  const nsAll  = taskList.filter(t => /^NS-/i.test(t.title || '') || getColumnName(t).toLowerCase() === 'north stars');
+  const nsDone = nsAll.filter(t => isDone(t));
+  const nsOpen = nsAll.filter(t => !isDone(t));
+
+  console.log(`\n🏔  MISSION STATUS  [${slug}]`);
+  console.log(`   Dashboard: ${dashboardUrl}`);
+
+  if (nsOpen.length === 0 && nsAll.length > 0) {
+    console.log(`\n  ✅ NORTH STAR ACHIEVED — all ${nsAll.length} North Star(s) Done`);
+    console.log(`\n  The initiative is complete. Final summary at:`);
+    console.log(`  ${dashboardUrl}`);
+    // Update the dashboard "Current Focus" section to reflect completion
+    try { await cmdUpdateDashboard(iState.dsUri, dashboardSlug); } catch {}
+    console.log('');
+    return;
+  }
+
+  for (const ns of nsOpen) {
+    const nsSpecId = extractSpecId(ns.content) || ns.title?.match(/^NS-\d+/)?.[0] || '';
+    const vision   = ns.content?.match(/<h[3-4][^>]*>[^<]*Vision[^<]*<\/h[3-4]>([\s\S]*?)(?=<h[2-4]|$)/i)?.[1]
+      ?.replace(/<[^>]+>/g, '').trim().slice(0, 120) || ns.title;
+
+    console.log(`\n  ◎ ${nsSpecId} · ${ns.title.replace(/&middot;/g, '·')}`);
+    if (vision) info(`  Vision: ${vision}…`);
+
+    // Find which Epics are under this NS
+    const epics = taskList.filter(t => {
+      const nsRef = extractFrontMatterField(t.content || '', 'north_star_ref') || '';
+      const col   = getColumnName(t).toLowerCase();
+      return (col === 'epics' || /^EP-/i.test(t.title || '')) && nsRef.toUpperCase() === nsSpecId.toUpperCase();
+    });
+
+    const epicsDone = epics.filter(t => isDone(t));
+    const epicsOpen = epics.filter(t => !isDone(t));
+    if (epics.length > 0) {
+      console.log(`\n  EPICS (${epicsDone.length}/${epics.length} Done):`);
+      for (const ep of epics) {
+        const epId   = extractSpecId(ep.content) || ep.title?.match(/^EP-\d+/)?.[0] || '';
+        const epName = ep.title.replace(/&middot;/g, '·').replace(/^EP-\d+\s*·?\s*/, '').trim();
+        const open   = vaTasks.filter(va => {
+          const exRef = extractFrontMatterField(va.content || '', 'execution_ref') || '';
+          const epRef = extractFrontMatterField(va.content || '', 'epic_ref')      || '';
+          return epRef.toUpperCase() === epId.toUpperCase();
+        });
+        const status = isDone(ep) ? '✓' : open.length > 0 ? `⚠  ${open.length} VA open` : '◌';
+        info(`  ${status}  ${epId} · ${epName}`);
+      }
+    }
+
+    // What specifically is blocking this NS
+    const blockers = vaTasks.filter(va => {
+      const nsRef = extractFrontMatterField(va.content || '', 'north_star_ref') || '';
+      return nsRef.toUpperCase() === nsSpecId.toUpperCase();
+    });
+
+    if (blockers.length > 0) {
+      console.log(`\n  WHAT'S BLOCKING ${nsSpecId} (${blockers.length} VA task${blockers.length > 1 ? 's' : ''}):`);
+      // Dedupe by what they actually need (don't list every remediation — find root cause)
+      const originals  = blockers.filter(t => !/remediation/i.test(t.title || ''));
+      const remeds     = blockers.filter(t => /remediation/i.test(t.title || ''));
+      const showTasks  = originals.length > 0 ? originals : blockers.slice(0, 3);
+      for (const va of showTasks) {
+        const vaTitle = va.title.replace(/&middot;/g, '·').replace(/^(SPEC-FAP-)?VA-\d+\s*[\*·]*\s*/i, '').trim();
+        info(`  ✗ ${vaTitle}`);
+      }
+      if (remeds.length > 0 && originals.length > 0) {
+        info(`    (+ ${remeds.length} remediation task${remeds.length > 1 ? 's' : ''} cascade from the above)`);
+      }
+
+      // Analyze what specifically each VA needs
+      const humanNeeded = [];
+      for (const va of showTasks) {
+        const acItems  = extractSectionChecklist(va.content || '', 'Acceptance Criteria');
+        const frItems  = extractSectionChecklist(va.content || '', 'Functional Requirements');
+        const nfrItems = extractSectionChecklist(va.content || '', 'Non-Functional Requirements');
+        const unchecked = [...acItems, ...frItems, ...nfrItems].filter(i => !i.checked);
+        for (const item of unchecked.slice(0, 3)) {
+          humanNeeded.push(item.text.replace(/<[^>]+>/g, '').trim().slice(0, 80));
+        }
+      }
+      if (humanNeeded.length > 0) {
+        console.log(`\n  Specifically needs:`);
+        for (const need of [...new Set(humanNeeded)].slice(0, 5)) {
+          info(`    → ${need}`);
+        }
+      }
+    }
+  }
+
+  // Show other initiatives if multiple exist
+  const allSlugs = Object.keys(state.initiatives || {});
+  if (allSlugs.length > 1) {
+    console.log(`\n  Other initiatives: ${allSlugs.filter(s => s !== slug).join(', ')}`);
+  }
+
+  // -------------------------------------------------------------------------
+  // WHAT TO DO NOW — one clear action, not a list of task IDs
+  // -------------------------------------------------------------------------
+  console.log(`\n  PROGRESS: ${doneCount}/${taskList.length} Done (${pct}%)  |  ${vaTasks.length} VA open  |  ${exTasks.length} EX open`);
 
   if (!iState.activeTask && vaTasks.length > 0) {
-    const firstVa = vaTasks[0];
-    const vaSpecId = extractSpecId(firstVa.content) || firstVa.title?.match(/^[A-Z]+-\d+/)?.[0] || '';
-    console.log(`\n  ▶ NEXT (evidence collection):`);
-    console.log(`    node sdd-conductor.mjs collect-evidence ${firstVa.id}  # auto-collect for ${vaSpecId}`);
-    console.log(`    node sdd-conductor.mjs validate ${firstVa.id}  # validate after evidence collected`);
-  } else if (!iState.activeTask && readyTasks.length > 0) {
-    const next = readyTasks[0];
-    const specId = extractSpecId(next.task.content) || next.task.title?.match(/^[A-Z]+-\d+/)?.[0] || '';
-    console.log(`\n  ▶ NEXT: node sdd-conductor.mjs start ${next.task.id}  # ${specId}`);
+    const firstVa    = vaTasks[0];
+    const vaSpecId   = extractSpecId(firstVa.content) || firstVa.title?.match(/^[A-Z]+-\d+/)?.[0] || '';
+    const vaTitle    = firstVa.title.replace(/&middot;/g, '·').replace(/^(SPEC-FAP-)?VA-\d+[\*\s·]*/i, '').trim();
+    console.log(`\n  ▶ NEXT: collect evidence → validate`);
+    info(`  ${vaSpecId} — ${vaTitle}`);
+    info(`  node sdd-conductor.mjs collect-evidence ${firstVa.id}`);
+    info(`  node sdd-conductor.mjs validate ${firstVa.id}`);
+  } else if (!iState.activeTask && exTasks.length > 0) {
+    const next     = exTasks[0];
+    const exSpecId = extractSpecId(next.content) || next.title?.match(/^[A-Z]+-\d+/)?.[0] || '';
+    const exTitle  = next.title.replace(/&middot;/g, '·').replace(/^(SPEC-FAP-)?EX-\d+[\*\s·]*/i, '').trim();
+    console.log(`\n  ▶ NEXT: start execution`);
+    info(`  ${exSpecId} — ${exTitle}`);
+    info(`  node sdd-conductor.mjs start ${next.id}`);
   } else if (!iState.activeTask && rsTasks.length > 0) {
-    console.log(`\n  ▶ NEXT: node sdd-conductor.mjs start ${rsTasks[0].id}  # ${rsTasks[0].title}`);
-  } else if (doneCount === taskList.length && taskList.length > 0) {
-    console.log(`\n  ✅ All ${taskList.length} tasks complete!`);
+    const rsTitle = rsTasks[0].title.replace(/&middot;/g, '·');
+    console.log(`\n  ▶ NEXT: complete research — ${rsTitle}`);
+  } else if (iState.activeTask) {
+    console.log(`\n  ▶ ACTIVE: ${iState.activeTask.specId} in progress`);
   }
+
+  console.log(`\n  Dashboard: ${dashboardUrl}`);
   console.log('');
 }
 
