@@ -293,12 +293,14 @@ function extractChecklistItems(content) {
   return items;
 }
 
-// Returns checklist items within a named H2–H4 section
+// Returns checklist items within a named H2–H4 section.
+// Strips HTML comment anchors (<!-- #ac -->) before matching so [^<]* works correctly.
 function extractSectionChecklist(content, sectionTitle) {
   if (!content) return [];
+  const stripped = content.replace(/<!--[\s\S]*?-->/g, '');
   const esc = escapeRegex(sectionTitle);
   const rx = new RegExp(`<h[2-4][^>]*>[^<]*${esc}[^<]*<\\/h[2-4]>([\\s\\S]*?)(?=<h[2-4]|$)`, 'i');
-  const m = content.match(rx);
+  const m = stripped.match(rx);
   return m ? extractChecklistItems(m[1]) : [];
 }
 
@@ -2862,9 +2864,12 @@ async function autoCollectEvidence(vaTask, evidenceItems, allTasks, client, iSta
         const uploadData = await uploadRes.json();
         entry.url = uploadData.url;
         info(`Uploaded evidence: ${uploadData.url}`);
+      } else {
+        const errText = await uploadRes.text().catch(() => '');
+        warn(`Upload ${uploadRes.status} for ${entry.type} — AR has inline code block only. ${errText.slice(0, 120)}`);
       }
     } catch (e) {
-      warn(`Upload failed for ${entry.type}: ${e.message.split('\n')[0]}`);
+      warn(`Upload failed for ${entry.type}: ${e.message.split('\n')[0]} — AR has inline code block only`);
     }
   }
 
