@@ -2927,62 +2927,137 @@ async function cmdValidate(vaTaskId, extraArgs) {
       }
     }
 
-    // -------------------------------------------------------------------------
-    // EVIDENCE GATE: checked items that claim "screenshot attached", "nvidia-smi",
-    // "GPU-Z", "screen recording", etc. must be backed by actual proof in task
-    // comments — an image/video URL or a measured-value comment.
-    // A ticked item with no evidence = rubber-stamp. Gate exits 1.
-    // -------------------------------------------------------------------------
-    {
-      function evidenceRequirement(text) {
-        const t = text.toLowerCase();
-        if (/nvidia.?smi|gpu.?z/.test(t))
-          return { type: 'gpu-measurement',  desc: 'nvidia-smi/GPU-Z output with numeric MiB/MB/GB value',
-                   pattern: /\d+\s*(mib|mb|gb)/i };
-        if (/fps counter|fps.*readout|fps.*attached|\bfps\b.*screen|screen recording.*fps/.test(t))
-          return { type: 'fps-measurement',  desc: 'numeric FPS value in comment (e.g. "25.5 FPS")',
-                   pattern: /\d+\.?\d*\s*fps/i };
-        if (/screenshot.*attached|attached.*screenshot|screen recording.*attached|recording.*attached|screenshot or screen recording/i.test(text))
-          return { type: 'media-url',        desc: 'screenshot/recording URL (.png/.jpg/.mp4/.webm) or <img> tag',
-                   pattern: /https?:\/\/\S+\.(png|jpg|jpeg|gif|mp4|webm)|<img\s[^>]*src=/i };
-        if (/attached as evidence|evidence attached/i.test(text))
-          return { type: 'any-evidence',     desc: 'screenshot URL or measured value (MiB/FPS/ms) in comment',
-                   pattern: /https?:\/\/\S+\.(png|jpg|jpeg|gif|mp4|webm)|<img\s[^>]*src=|\d+\s*(mib|mb|fps|ms|gb)/i };
-        return null;
-      }
-
-      const itemsNeedingEvidence = allItems.filter(i => i.checked && evidenceRequirement(i.text));
-      if (itemsNeedingEvidence.length > 0) {
-        const vaCommentData = await client.get(`/api/v2/dataspheres/${iState.dsId}/tasks/${vaTaskId}/comments`);
-        const vaCommentList = vaCommentData.comments || vaCommentData || [];
-        const missing = [];
-        for (const item of itemsNeedingEvidence) {
-          const req = evidenceRequirement(item.text);
-          const satisfied = vaCommentList.some(c => req.pattern.test(c.content || ''));
-          if (!satisfied) missing.push({ item, req });
-        }
-        if (missing.length > 0) {
-          gate(
-            `EVIDENCE GATE: ${missing.length} checked item(s) claim attached proof but no matching evidence found in task comments.\n\n` +
-            `Items missing evidence:\n` +
-            missing.map(({ item, req }) =>
-              `  ✗ [${item.section}] ${item.text.substring(0, 80)}\n    → needs: ${req.desc}`
-            ).join('\n') +
-            `\n\nFor each missing item, post a comment on task ${vaTaskId} containing:\n` +
-            `  - GPU/VRAM: nvidia-smi output with numeric MiB/MB/GB (e.g. "VRAM: 2587 MiB")\n` +
-            `  - FPS: numeric FPS value (e.g. "25.5 FPS sustained for 30s")\n` +
-            `  - Screenshot/recording: URL ending in .png/.jpg/.mp4/.webm\n` +
-            `\nThen re-run: node sdd-conductor.mjs validate ${vaTaskId} [flags]`
-          );
-        }
-        info(`Evidence gate: ${itemsNeedingEvidence.length}/${itemsNeedingEvidence.length} verified ✓`);
-      }
-    }
-
-    // Fetch all plan tasks once — used by screenshot inference AND AR gate below
+    // Fetch all plan tasks once — used by evidence gate, screenshot inference, and AR gate
     const allTasksForAr = ((await client.get(
       `/api/v2/dataspheres/${iState.dsId}/tasks?planModeId=${iState.planModeId}&limit=500`
     )).tasks || []);
+
+    // -------------------------------------------------------------------------
+    // EVIDENCE GATE — AR task required for any item claiming attached proof.
+    //
+    // Checked items whose text contains evidence keywords (screenshot attached,
+    // nvidia-smi, GPU-Z, screen recording, attached as evidence, etc.) MUST be
+    // backed by a Done AR task in the Artifacts column whose content includes at
+    // least one HTTPS URL pointing to an actual file (.png/.jpg/.mp4/.webm etc.)
+    // or a Dataspheres media URL.
+    //
+    // Writing a number in a comment ("VRAM: 2587 MiB") is NOT sufficient.
+    // A real artifact = an uploaded file URL that can be independently opened.
+    //
+    // Gate logic:
+    //   1. Find evidence-requiring checked items.
+    //   2. Look for a Done AR task with validation_ref == this VA's specId.
+    //   3. If no AR task → auto-create stub, exit 1 with instructions.
+    //   4. If AR task exists but not Done → exit 1 (add URLs and mark Done).
+    //   5. If AR task Done but no file URLs in content → exit 1.
+    //   6. Pass only when: AR task is Done AND content has ≥1 real file URL.
+    // -------------------------------------------------------------------------
+    {
+      // Keywords that signal an item requires an attached artifact
+      const EVIDENCE_KEYWORDS = [
+        /screenshot/i, /screen recording/i, /recording attached/i,
+        /nvidia.?smi/i, /gpu.?z/i, /fps counter/i, /fps.*readout/i,
+        /attached as evidence/i, /evidence attached/i, /visual confirmation/i,
+        /output attached/i,
+      ];
+      function itemNeedsArtifact(text) {
+        return EVIDENCE_KEYWORDS.some(rx => rx.test(text));
+      }
+      // A "real artifact URL" — hosted file, not a bare number in prose
+      const ARTIFACT_URL_RX = /https?:\/\/\S+\.(png|jpg|jpeg|gif|mp4|webm|pdf|zip|csv|txt|log)|https?:\/\/\S+\/media\/\S+|<img\s[^>]*src="https?:/i;
+
+      const evidenceItems = allItems.filter(i => i.checked && itemNeedsArtifact(i.text));
+
+      if (evidenceItems.length > 0) {
+        // Find the AR task that backs this VA
+        const arTask = allTasksForAr.find(t => {
+          const ref = (extractFrontMatterField(t.content || '', 'validation_ref') || '').toUpperCase();
+          return ref === specId.toUpperCase() && /^AR-/i.test(t.title || '');
+        });
+
+        if (!arTask) {
+          // Auto-create a stub in the Artifacts column so the user has somewhere to attach files
+          const arCounter = allTasksForAr.filter(t => /^AR-\d+/i.test(t.title || '')).length + 1;
+          const arSpecId  = `AR-${String(arCounter).padStart(3, '0')}`;
+          const arEpicRef = extractFrontMatterField(task.content, 'epic_ref')       || '';
+          const arNsRef   = extractFrontMatterField(task.content, 'north_star_ref') || '';
+          const arExRef   = extractFrontMatterField(task.content, 'execution_ref')  || '';
+          const arContent = [
+            `<pre><code class="language-yaml">`,
+            `spec_id: ${arSpecId}`,
+            `validation_ref: ${specId}`,
+            ...(arExRef   ? [`execution_ref: ${arExRef}`]   : []),
+            ...(arEpicRef ? [`epic_ref: ${arEpicRef}`]       : []),
+            ...(arNsRef   ? [`north_star_ref: ${arNsRef}`]   : []),
+            `artifact_type: evidence`,
+            `status: PENDING`,
+            `</code></pre>`,
+            ``,
+            `<h2>Evidence Artifacts <!-- #artifact --></h2>`,
+            `<p>Upload screenshots, recordings, and terminal output for each item below, then mark this task Done.</p>`,
+            ``,
+            `<h3>Required Evidence</h3>`,
+            `<ul class="tiptap-bullet-list">`,
+            ...evidenceItems.map(i => `<li><p>[${i.section}] ${i.text} &mdash; <strong>add URL here</strong></p></li>`),
+            `</ul>`,
+            ``,
+            `<h3>How to attach</h3>`,
+            `<ul class="tiptap-bullet-list">`,
+            `<li><p>Take screenshot or screen recording → upload via Dataspheres media or paste a public URL</p></li>`,
+            `<li><p>For nvidia-smi: run <code>nvidia-smi</code>, screenshot the output, upload and paste URL here</p></li>`,
+            `<li><p>For FPS: screenshot the terminal showing FPS counter, upload and paste URL here</p></li>`,
+            `<li><p>For OBS recordings: export clip to .mp4, upload and paste URL here</p></li>`,
+            `</ul>`,
+          ].join('\n');
+
+          try {
+            await client.post(`/api/v2/dataspheres/${iState.dsId}/tasks`, {
+              title: `${arSpecId} · Evidence for ${specId}`,
+              content: arContent,
+              statusGroupId: iState.artifactsGroupId || iState.doneGroupId,
+              planModeId: iState.planModeId,
+            });
+          } catch { /* non-fatal — stub creation best-effort */ }
+
+          gate(
+            `EVIDENCE GATE: ${evidenceItems.length} checked item(s) require real artifact files.\n\n` +
+            `AR stub created: ${arSpecId} · Evidence for ${specId}\n\n` +
+            `Items needing evidence:\n` +
+            evidenceItems.map(i => `  ✗ [${i.section}] ${i.text.substring(0, 80)}`).join('\n') +
+            `\n\nTo unblock:\n` +
+            `  1. Open the AR task "${arSpecId}" in the Artifacts column\n` +
+            `  2. For each item: capture a screenshot/recording, upload it, paste the HTTPS URL in the AR task\n` +
+            `     - nvidia-smi output  → screenshot showing MiB value\n` +
+            `     - FPS readout        → screenshot of terminal FPS counter\n` +
+            `     - OBS recording      → .mp4 clip URL\n` +
+            `     - Visual confirmation → .png screenshot\n` +
+            `  3. Mark the AR task Done\n` +
+            `  4. Re-run: node sdd-conductor.mjs validate ${vaTaskId} [flags]`
+          );
+        }
+
+        // AR task exists — must be Done
+        if (!isDone(arTask)) {
+          gate(
+            `EVIDENCE GATE: AR task "${arTask.title}" exists but is not Done.\n\n` +
+            `Add artifact file URLs to the AR task for each evidence item, then mark it Done.\n` +
+            `Re-run: node sdd-conductor.mjs validate ${vaTaskId} [flags]`
+          );
+        }
+
+        // AR task is Done — must contain at least one real file URL
+        if (!ARTIFACT_URL_RX.test(arTask.content || '')) {
+          gate(
+            `EVIDENCE GATE: AR task "${arTask.title}" is Done but contains no file URLs.\n\n` +
+            `A real artifact = an HTTPS URL pointing to an uploaded file (.png/.jpg/.mp4/.webm/etc.).\n` +
+            `Writing a number in prose ("VRAM: 2587 MiB") does not count — upload the screenshot.\n\n` +
+            `Add the URL(s) to the AR task content, then re-run: node sdd-conductor.mjs validate ${vaTaskId} [flags]`
+          );
+        }
+
+        info(`Evidence gate: AR task "${arTask.title}" is Done with artifact URLs ✓`);
+      }
+    }
 
     // Post detailed verification comment — lists every item as audit trail
     const commentLines = [
