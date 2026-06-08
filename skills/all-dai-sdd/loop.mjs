@@ -630,6 +630,12 @@ async function advanceTask(cfg, iState, slug) {
     /^No rubber-stamping/,
     /first iteration passed/,
     /All checklist items ticked\. Implementation files documented\. Spec ready/,
+    // Job-completion boilerplate — not evidence of correctness
+    /^job\s+(ran|completed|finished|succeeded)/im,
+    /^file\s+(was\s+)?(saved|created|written)\s+to/im,
+    /^(no|zero)\s+(runtime\s+)?errors?\.?\s*$/im,
+    /completed\s+without\s+(error|exception|RuntimeError)/i,
+    /output\s+(saved|written)\s+to\s+outputs\//i,
   ];
   if (evidenceText.length < MIN_EVIDENCE_LEN) {
     console.error(`✗ Evidence too short (${evidenceText.length} chars, min ${MIN_EVIDENCE_LEN}). Provide real output.`);
@@ -638,6 +644,38 @@ async function advanceTask(cfg, iState, slug) {
   for (const pattern of BOILERPLATE_PATTERNS) {
     if (pattern.test(evidenceText)) {
       console.error('✗ Evidence matches known boilerplate. Replace with real command output, file paths, or measured results.');
+      process.exit(1);
+    }
+  }
+
+  // ── Visual evidence gate for image-generation VA tasks ──────────────────────
+  // Any VA task whose title references image generation must include:
+  //   1. A visual description of what is actually visible in the output
+  //   2. Not just job IDs, file paths, or "no errors"
+  // Claude MUST use the Read tool to view the output image before calling --advance.
+  const IMAGE_VA_PATTERN = /synthesis|transfer|garment|character|render|inpaint|upscale|pipeline|tryon|try.on|outfit|cloth|generat|wears?|image/i;
+  const tasks_check = await readBoard(cfg);
+  const task_check = tasks_check.find(t => t.id === advanceTaskId) ||
+                     tasks_check.find(t => sddKey(t.title) === advanceTaskId);
+  if (task_check && sddType(task_check.title) === 'VA' && IMAGE_VA_PATTERN.test(task_check.title)) {
+    // Must contain a visual description — not just "job ran / file saved / pid = ..."
+    const VISUAL_KEYWORDS = /shows?|displays?|visible|appears?|look[si]|wearing|dressed|garment\s+on|character\s+(is|has|wears?|shows?|appears?)|image\s+shows?|output\s+shows?|can\s+see|identity\s+(match|lock|preserv)|face\s+(match|lock|preserv)|correctly|incorrect|wrong|broken|succeed|fail/i;
+    const evidenceHasJobOnly = /^[\s\S]{0,300}(pid\s*=|job\s+id|prompt_id)[^a-z]*$/i;
+    if (!VISUAL_KEYWORDS.test(evidenceText)) {
+      console.error('✗ GATE FAIL — image generation VA task requires VISUAL evidence.');
+      console.error('');
+      console.error('  You must READ the output image before advancing this task.');
+      console.error('  Steps:');
+      console.error('    1. Use the Read tool on the output file path (e.g. outputs/…/stage1_char.png)');
+      console.error('    2. Look at what is actually visible in the image');
+      console.error('    3. Describe: Does the output match the AC? Is the character identity correct?');
+      console.error('       Is the garment ON the character\'s body? Or is it a broken composite?');
+      console.error('    4. Only advance if the visual output matches the acceptance criteria');
+      console.error('');
+      console.error('  Prohibited evidence (not enough on its own):');
+      console.error('    "job ran", "file saved", "no errors", "pid = ...", "output at URL"');
+      console.error('');
+      console.error('  Required: describe what is VISIBLE in the output image.');
       process.exit(1);
     }
   }

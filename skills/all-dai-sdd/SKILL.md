@@ -452,6 +452,33 @@ node skills/all-dai-sdd/loop.mjs --advance <taskId> --evidence "
 | EX | File existence check (`ls -la path/to/file`), import or smoke test output |
 | VA | Actual measured value vs AC threshold (e.g. `denoise=0.90 → output saved at outputs/test.png`) |
 | EP | List of child task keys confirmed Done + epic AC cross-check |
+
+---
+
+## Image Generation VA Gate (HARD GATE — never skip)
+
+Any VA task whose title contains: `synthesis`, `transfer`, `garment`, `character`, `render`, `inpaint`, `upscale`, `pipeline`, `tryon`, `outfit`, `cloth`, `generates`, `wears`, `image` — is an **image generation VA task** and requires visual evidence.
+
+**Before calling `--advance` on an image generation VA task, Claude MUST:**
+
+1. **Run the generation code** and capture the output file path and ComfyUI job URL
+2. **Use the `Read` tool on the output image file** (e.g. `Read outputs/test/stage1_char.png`) — you must see the actual pixels, not just confirm a file exists
+3. **Write a visual description** of what is actually visible: identity match, garment placement, scene, artifacts, failures
+4. **Evaluate each AC criterion** based on what you see — not based on "the job completed"
+
+**Your evidence string for image VA tasks MUST contain:**
+- The output file URL (ComfyUI `/view?filename=...` or local path)
+- A visual description of what the output image shows (minimum 3 sentences)
+- Explicit pass/fail verdict per AC criterion based on visual inspection
+
+**The gate rejects these as sole evidence:**
+- `"job ran"` / `"job completed"` — you saw no pixels
+- `"file saved to outputs/"` — you saw no pixels
+- `"no RuntimeError"` — technical success ≠ visual correctness
+- `"output at URL [X]"` with no visual description — you didn't look
+- `"pid = <uuid>"` alone — a job ID is not a visual confirmation
+
+**The failure this prevents:** advancing VA-022 (garment transfer) with `pid=0c7aa6ba` as evidence — only to discover the "garment transfer" output is the reference image plastered behind a naked character. The pipeline ran. The output was garbage. The gate should have caught it.
 | RS | At least 2 real URLs from search results + feasibility finding |
 | AR | **Embedded content only** — full file text in `<pre><code>` blocks for text files; uploaded URL or metadata.json (name + sha256 + size) for binaries; raw test output pasted verbatim. A path without content is a gate failure. |
 
