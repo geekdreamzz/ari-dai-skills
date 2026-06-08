@@ -1061,6 +1061,7 @@ async function cmdStart(taskId) {
     implFiles,
     startedAt: new Date().toISOString(),
   };
+  iState.activeTaskId = taskId;
   saveInitiative(state, slug, iState);
 
   // Sync .claude/sdd-active.json so sdd-enforce.js (PreToolUse) sees the active task
@@ -1307,6 +1308,7 @@ async function cmdComplete(taskId) {
         ].join('\n'),
       });
       iState.activeTask = null;
+      iState.activeTaskId = null;
       saveInitiative(state, slug, iState);
       syncLegacyActive({ active: false, activeTaskId: null, specId: null, completedAt,
         lastCompletedSpecId: specId, project: slug, initiative: slug, implFiles: [] });
@@ -1333,6 +1335,7 @@ async function cmdComplete(taskId) {
 
   // Clear active task, save state, inject briefing into next pending task
   iState.activeTask = null;
+  iState.activeTaskId = null;
   iState.lastCompleted = { taskId, specId, title: task.title, completedAt };
   saveInitiative(state, slug, iState);
 
@@ -3352,20 +3355,8 @@ async function cmdDashboardCheck(dsUri, pageSlug) {
     }
   }
 
-  // Gate: detect duplicate progress-summary widgets (both markers + a standalone one).
-  {
-    const summaryCount = (content.match(/data-widget-type="progress-summary"/g) || []).length;
-    if (summaryCount > 1) {
-      gate(
-        `Duplicate progress-summary widgets detected (${summaryCount} found — expected 1).\n\n` +
-        `  The dashboard should have exactly one progress-summary widget (wrapped in #focus markers).\n` +
-        `  Fix: run \`node sdd-conductor.mjs update-dashboard ${dsUri} ${pageSlug}\``
-      );
-    }
-  }
-
-  // Gate: the <!-- #focus --> block must exist AND contain a progress-summary plannerWidget.
-  // This is separate from the general REQUIRED check so the error message is specific.
+  // Gate: the <!-- #focus --> block must exist AND contain a focus-tree plannerWidget.
+  // progress-summary belongs in Section 2 (Initiative Summary) only.
   {
     const focusMatch = content.match(/<!--\s*#focus\s*-->([\s\S]*?)<!--\s*\/focus\s*-->/);
     if (!focusMatch) {
@@ -3375,16 +3366,16 @@ async function cmdDashboardCheck(dsUri, pageSlug) {
       );
     }
     const focusBlock = focusMatch[1];
-    const hasWidget = /data-widget-type="progress-summary"|data-widget-type="focus-tree"/.test(focusBlock);
+    const hasWidget = /data-widget-type="focus-tree"/.test(focusBlock);
     if (!hasWidget) {
       const preview = focusBlock.replace(/<[^>]*>/g, '').trim().slice(0, 120).replace(/\n+/g, ' ');
       gate(
-        `Current Focus section (#focus block) contains a plain table or no widget — expected a progress-summary plannerWidget.\n\n` +
+        `Current Focus section (#focus block) must contain a focus-tree plannerWidget (not progress-summary).\n\n` +
         `  Found: "${preview || '(empty)'}"\n\n` +
         `  Fix: run \`node sdd-conductor.mjs update-dashboard ${dsUri} ${pageSlug}\``
       );
     }
-    info(`Current Focus block: progress-summary widget present ✓`);
+    info(`Current Focus block: focus-tree widget present ✓`);
   }
 
   OPTIONAL.filter(r => !r.pattern.test(content)).forEach(r =>
@@ -3552,12 +3543,20 @@ async function cmdUpdateDashboard(dsUri, pageSlug) {
     });
   };
 
-  // Inject a progress-summary widget — shows ring + stats + nested focus tree in one card.
-  const treeCount = active.length;
-  const widgetDiv = `<div data-type="plannerWidget" data-datasphere-id="${dsId}" data-datasphere-uri="${dsUri}" data-plan-mode-id="${planModeId}" data-widget-type="progress-summary" class="planner-widget-placeholder"></div>`;
+  // Build the Current Focus block.
+  // When an active task is registered in state, inject a focus-tree widget scoped to that task.
+  // When idle (no active task), show a minimal "nothing in flight" message.
+  // The full progress-summary widget lives in Section 2 (Initiative Summary) — NOT here.
+  const activeTaskId = iState?.activeTaskId;
+  let focusWidgetDiv;
+  if (activeTaskId) {
+    focusWidgetDiv = `<div data-type="plannerWidget" data-datasphere-id="${dsId}" data-datasphere-uri="${dsUri}" data-plan-mode-id="${planModeId}" data-widget-type="focus-tree" data-active-task-id="${activeTaskId}" class="planner-widget-placeholder"></div>`;
+  } else {
+    focusWidgetDiv = `<div data-type="plannerWidget" data-datasphere-id="${dsId}" data-datasphere-uri="${dsUri}" data-plan-mode-id="${planModeId}" data-widget-type="focus-tree" class="planner-widget-placeholder"></div>`;
+  }
 
   // Wrap in focus markers — these delimit the injected block for future updates
-  const focusBlock = `<!-- #focus -->\n${widgetDiv}\n<!-- /focus -->`;
+  const focusBlock = `<!-- #focus -->\n${focusWidgetDiv}\n<!-- /focus -->`;
 
   // GET current page content
   const pageRes = await fetch(`${baseUrl}/api/v1/dataspheres/${dsUri}/pages/${pageSlug}`, {
@@ -3590,15 +3589,14 @@ async function cmdUpdateDashboard(dsUri, pageSlug) {
     );
     content = replaced !== content ? replaced : content.replace(/<!-- #focus -->[\s\S]*$/, focusBlock);
   } else {
-    // First inject: wrap the EXISTING progress-summary widget in #focus markers.
-    // Do NOT add a duplicate widget — the Initiative Summary widget is already the
-    // canonical current-focus surface. Future updates will use the replace-between-
-    // markers path above. Fallback: insert before the Trace Graph heading.
-    const wrapped = content.replace(
-      /(<div[^>]*data-widget-type="progress-summary"[^>]*><\/div>)/i,
+    // First inject: look for an existing focus-tree widget or a Trace Graph heading to insert before.
+    // The dashboard template publishes a focus-tree widget in the Current Focus section;
+    // if no #focus markers exist yet, insert the block before the Trace Graph heading as fallback.
+    const existingFocusTree = content.replace(
+      /(<div[^>]*data-widget-type="focus-tree"[^>]*><\/div>)/i,
       `<!-- #focus -->\n$1\n<!-- /focus -->`
     );
-    content = wrapped !== content ? wrapped : content.replace(
+    content = existingFocusTree !== content ? existingFocusTree : content.replace(
       /(<h2[^>]*>(?:Trace\s+Graph)[^<]*<\/h2>)/i,
       `${focusBlock}\n\n$1`
     );
@@ -3614,7 +3612,8 @@ async function cmdUpdateDashboard(dsUri, pageSlug) {
     die(`PUT page failed (${putRes.status}): ${t.slice(0, 200)}`);
   }
 
-  ok(`Current Focus tree updated — ${treeCount} in-progress item(s)`);
+  const focusLabel = activeTaskId ? `task ${activeTaskId}` : 'idle (no active task)';
+  ok(`Current Focus widget updated — ${focusLabel}`);
   info(`\nDashboard: ${env.DATASPHERES_BASE_URL?.replace('http://localhost', 'https://dataspheres.ai') || baseUrl}/pages/${dsUri}/${pageSlug}`);
 }
 

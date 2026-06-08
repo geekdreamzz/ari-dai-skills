@@ -92,6 +92,30 @@ function loadState() {
   try { return JSON.parse(fs.readFileSync(p, 'utf-8')); } catch { return null; }
 }
 
+function saveState(state) {
+  const p = path.join(findGitRoot(), '.sdd-state.json');
+  fs.writeFileSync(p, JSON.stringify(state, null, 2), 'utf-8');
+}
+
+// Track the current in-flight task in .sdd-state.json so dashboards can scope Current Focus.
+function setActiveTask(state, slug, taskId) {
+  if (!state?.initiatives?.[slug]) return;
+  state.initiatives[slug].activeTaskId = taskId;
+  saveState(state);
+}
+
+// Spawn update-dashboard in the background so the Current Focus widget reflects the new state.
+function refreshDashboard(iState) {
+  if (!iState?.dashboardSlug || !iState?.dsUri) return;
+  const conductorPath = path.resolve(path.dirname(new URL(import.meta.url).pathname), '../sdd-conductor/sdd-conductor.mjs');
+  import('child_process').then(({ spawn }) => {
+    const child = spawn(process.execPath, [conductorPath, 'update-dashboard', iState.dsUri, iState.dashboardSlug], {
+      stdio: 'ignore', detached: true,
+    });
+    child.unref();
+  }).catch(() => {});
+}
+
 function resolveInitiative(state) {
   if (!state) return null;
   const slug = initiativeOverride || state.currentInitiative;
@@ -547,6 +571,15 @@ async function findNextTask(cfg, iState, slug) {
   const taskIndex = {};
   tasks.forEach(t => { const k = sddKey(t.title); if (k) taskIndex[k] = { id: t.id, title: t.title, isDone: t.isDone }; });
 
+  // Track the in-flight task in state so dashboards can scope their Current Focus widget.
+  // This is non-fatal — if state write fails the task briefing still works.
+  try {
+    const freshState = loadState();
+    const freshSlug = initiativeOverride || freshState?.currentInitiative;
+    if (freshState && freshSlug) setActiveTask(freshState, freshSlug, next.id);
+    refreshDashboard(iState);
+  } catch { /* non-fatal */ }
+
   process.stdout.write(JSON.stringify({
     status: 'next',
     done, total,
@@ -573,6 +606,20 @@ async function advanceTask(cfg, iState, slug) {
   if (!evidenceText) {
     console.error('✗ --evidence is required. Provide real test output, file paths, or measured results.');
     console.error('  Do NOT advance a task without substantiation — that is the problem we are fixing.');
+    process.exit(1);
+  }
+
+  // Dashboard gate — initiative MUST have a registered dashboard before any task can be Done.
+  // Without a dashboard the planner is a black box to stakeholders.
+  if (!iState.dashboardSlug) {
+    console.error('✗ GATE FAIL — no dashboardSlug in .sdd-state.json for this initiative.');
+    console.error('  Run steps 12–13 from the all-dai-sdd SKILL.md before advancing tasks:');
+    console.error('    1. Create the dashboard page using the Dashboard Page Template.');
+    console.error('    2. Register dashboardSlug + trackerUrl in .sdd-state.json.');
+    console.error('    3. Set trackerUrl on the plan mode:');
+    console.error(`       PATCH /api/v2/dataspheres/${iState.dsId}/tasks/plan-modes/${iState.planModeId}`);
+    console.error('       { "trackerUrl": "<PUBLIC_URL>/pages/<uri>/<dashboard-slug>" }');
+    console.error('    4. Then re-run --advance.');
     process.exit(1);
   }
 
@@ -632,6 +679,14 @@ async function advanceTask(cfg, iState, slug) {
 
   await moveDone(cfg, task.id);
   console.log(`✅ ${key} Done`);
+
+  // Clear the in-flight task from state and refresh dashboard Current Focus.
+  try {
+    const freshState = loadState();
+    const freshSlug = initiativeOverride || freshState?.currentInitiative;
+    if (freshState && freshSlug) setActiveTask(freshState, freshSlug, null);
+    refreshDashboard(iState);
+  } catch { /* non-fatal */ }
 
   // Print updated progress
   const updated = await readBoard(cfg);
