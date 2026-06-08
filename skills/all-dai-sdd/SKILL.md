@@ -85,6 +85,7 @@ Every Research task (`RS-NNN · <title>`) must contain ALL of the following sect
 ```html
 <h3>Origin Prompts <!-- #origin --></h3>
 <h3>Problem Statement <!-- #problem --></h3>
+<h3>Non-Functional Requirements <!-- #nfr --></h3>
 <h3>Approach Under Evaluation <!-- #approach --></h3>
 <h3>Search Results <!-- #search-results --></h3>
 <h3>Codebase Context <!-- #codebase --></h3>
@@ -93,6 +94,26 @@ Every Research task (`RS-NNN · <title>`) must contain ALL of the following sect
 <h3>Recommendation <!-- #rec --></h3>
 <h3>Validation Criteria <!-- #vc --></h3>
 ```
+
+#### Non-Functional Requirements — mandatory section (hardened)
+
+The `Non-Functional Requirements` section must document all system constraints extracted from the user's origin prompt. These become gates on every downstream EX and VA task.
+
+**Every RS task must list NFRs explicitly.** Common NFR categories:
+
+| Category | Example |
+|---|---|
+| Execution model | "100% local — all inference on RTX 5080 16GB VRAM, no cloud APIs" |
+| Cost | "Zero cost — no paid API keys, no commercial inference fees" |
+| Memory | "Total pipeline VRAM ≤ 14GB; system RAM ≤ 32GB" |
+| Latency | "End-to-end pipeline < 120s per output" |
+| Dependencies | "No internet at inference time; self-contained after model download" |
+
+**The gate rejects any RS recommendation that references a paid/cloud API node.** Known violators: `KlingVirtualTryOnNode`, `FluxKontextProImageNode`, `FluxKontextMaxImageNode`, `RecraftImageInpaintingNode`, `RunwayImageToVideoNode`, and all other `api_node: true` ComfyUI nodes. If a node requires `auth_token_comfy_org` or `api_key_comfy_org` in its hidden inputs — it is a paid API node.
+
+**How to check:** query `GET https://comfy.dataspheres.ai/object_info/<NodeName>` — if `"api_node": true` in the response, it is paid/cloud. Do NOT use it if the NFR requires local execution.
+
+**The failure this prevents:** RS-001 recommending `KlingVirtualTryOnNode` (Kling cloud VTON API, $0.04/image) when the NFR clearly states "run everything 100% free on local RTX 5080 16GB VRAM."
 
 #### Origin Prompts — verbatim requirement (hardened)
 

@@ -444,11 +444,90 @@ function verifyVA(task) {
   return { pass: issues.length === 0, issues };
 }
 
+// Known paid/cloud API node names — any RS recommendation or EX impl using these
+// violates the NFR: "100% local execution, zero cost".
+const PAID_API_NODES = [
+  'KlingVirtualTryOnNode','KlingTextToVideoNode','KlingImage2VideoNode',
+  'KlingImageGenerationNode','KlingOmniPro','FluxKontextProImageNode',
+  'FluxKontextMaxImageNode','FluxProUltraImageNode','FluxProFillNode',
+  'RecraftTextToImageNode','RecraftImageToImageNode','RecraftImageInpaintingNode',
+  'RecraftReplaceBackgroundNode','RecraftCrispUpscaleNode','RecraftCreativeUpscaleNode',
+  'IdeogramV','OpenAIDalle','OpenAIGPTImage','OpenAIChatNode',
+  'RunwayFirstLastFrameNode','RunwayImageToVideoNode','RunwayTextToImageNode',
+  'LumaImageNode','LumaVideoNode','LumaImageToVideoNode',
+  'StabilityStableImage','StabilityUpscale','StabilityTextToAudio',
+  'MinimaxTextToVideo','MinimaxImageToVideo','VeoVideoGeneration','Veo3',
+  'WanTextToImageApi','WanImageToImageApi','WanTextToVideoApi','WanImageToVideoApi',
+  'GeminiNode','GeminiImageNode','TopazImageEnhance','TopazVideoEnhance',
+  'ViduTextToVideoNode','ViduImageToVideoNode','ByteDanceImageNode',
+];
+
+function verifyRS(task) {
+  const c = task.content || '';
+  const issues = [];
+
+  // 1. Must have NFR section
+  if (!c.includes('<!-- #nfr -->') && !c.match(/Non-Functional Requirements/i)) {
+    issues.push('missing Non-Functional Requirements section (<!-- #nfr -->) — must document: local-only, zero-cost, VRAM budget, no cloud APIs');
+  }
+
+  // 2. NFR section must explicitly state local/free constraint
+  const nfrSection = c.match(/Non-Functional Requirements[\s\S]*?(?=<h[23]|$)/i)?.[0] || '';
+  if (nfrSection && !nfrSection.match(/local|RTX|VRAM|free|zero.cost|no.*api|no.*cloud/i)) {
+    issues.push('NFR section does not mention local execution or cost constraints — must state: local GPU, zero cost, no paid APIs');
+  }
+
+  // 3. Recommendation must not reference paid API nodes
+  const recSection = c.match(/Recommendation[\s\S]*?(?=<h[23]|$)/i)?.[0] || '';
+  for (const node of PAID_API_NODES) {
+    if (recSection.includes(node) || (c.includes(node) && !c.includes('DO NOT USE') && !c.includes('REJECTED'))) {
+      issues.push(`paid/cloud API node referenced: ${node} — violates NFR (local-only, zero-cost). Mark as REJECTED or remove.`);
+      break;
+    }
+  }
+
+  // 4. Must have Sources section with at least 2 URLs
+  const sourceSection = c.match(/Sources[\s\S]*?(?=<h[23]|$)/i)?.[0] || '';
+  const urls = sourceSection.match(/https?:\/\/[^\s<"']+/g) || [];
+  if (urls.length < 2) issues.push(`Sources section has only ${urls.length} URL(s) — need at least 2`);
+
+  return { pass: issues.length === 0, issues };
+}
+
+function verifyEX(task) {
+  const c = task.content || '';
+  const issues = [];
+
+  if (!c.match(/Implementation Files/i)) issues.push('missing Implementation Files section');
+
+  const acItems = extractAcItems(c);
+  if (acItems.length < 2) issues.push(`only ${acItems.length} AC item(s) — need at least 2 testable criteria`);
+
+  // Check AC items are specific (not vague)
+  const vague = acItems.filter(item => /should work|seems|looks good|no errors?$/i.test(item));
+  if (vague.length > 0) issues.push(`vague AC items (not measurable): "${vague[0]}"`);
+
+  // Check for paid API node usage in implementation
+  for (const node of PAID_API_NODES) {
+    if (c.includes(node)) {
+      issues.push(`paid/cloud API node in EX spec: ${node} — violates NFR (local-only). Replace with local node.`);
+      break;
+    }
+  }
+
+  for (const pattern of STUB_PATTERNS) {
+    if (pattern.test(c)) issues.push(`stub placeholder: ${pattern.source}`);
+  }
+
+  return { pass: issues.length === 0, issues };
+}
+
 function verifyTask(type, task) {
   if (type === 'AR') return verifyAR(task);
   if (type === 'EX') return verifyEX(task);
   if (type === 'VA') return verifyVA(task);
-  return { pass: true, issues: [] }; // RS/NS/EP: structural checks handled by conductor
+  if (type === 'RS') return verifyRS(task);
+  return { pass: true, issues: [] }; // NS/EP: structural checks handled by conductor
 }
 
 // ── Gate comments ─────────────────────────────────────────────────────────────
