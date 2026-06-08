@@ -4617,8 +4617,8 @@ async function cmdDrive() {
   console.log(`\n🏔  MISSION STATUS  [${slug}]`);
   console.log(`   Dashboard: ${dashboardUrl}`);
 
-  if (nsOpen.length === 0 && nsAll.length > 0) {
-    console.log(`\n  ✅ NORTH STAR ACHIEVED — all ${nsAll.length} North Star(s) Done`);
+  if (nsOpen.length === 0 && nsAll.length > 0 && vaTasks.length === 0) {
+    console.log(`\n  ✅ NORTH STAR ACHIEVED — all ${nsAll.length} North Star(s) Done, 0 VA tasks pending`);
     // Dashboard stays as live tracker — next-steps page is the loop exit target (SKILL.md § Mode: DONE)
     const env2 = loadEnv();
     const nextStepsUrl = await cmdCreateOrUpdateNextSteps(
@@ -4636,12 +4636,25 @@ async function cmdDrive() {
     return;
   }
 
-  for (const ns of nsOpen) {
+  // NS is marked Done on the board but VA tasks are still in Validation — rubber-stamp guard.
+  // Treat these open VAs as active blockers; do NOT declare victory until Validation is empty.
+  if (nsOpen.length === 0 && nsAll.length > 0 && vaTasks.length > 0) {
+    console.log(`\n  ⚠️  NS Done on board but ${vaTasks.length} VA task(s) still in Validation — loop continues.`);
+    console.log(`  The North Star was moved to Done prematurely. Validation must clear before exit.`);
+    // Fall through to blocker analysis below — treat each open VA as a blocker
+  }
+
+  // When NS is Done but VAs remain, synthesize a virtual "open NS" from the Done NSes
+  // so the blocker analysis loop runs and shows what still needs clearing.
+  const nsForBlockerAnalysis = nsOpen.length > 0 ? nsOpen : (vaTasks.length > 0 ? nsDone : []);
+
+  for (const ns of nsForBlockerAnalysis) {
     const nsSpecId = extractSpecId(ns.content) || ns.title?.match(/^NS-\d+/)?.[0] || '';
     const vision   = ns.content?.match(/<h[3-4][^>]*>[^<]*Vision[^<]*<\/h[3-4]>([\s\S]*?)(?=<h[2-4]|$)/i)?.[1]
       ?.replace(/<[^>]+>/g, '').trim().slice(0, 120) || ns.title;
 
-    console.log(`\n  ◎ ${nsSpecId} · ${ns.title.replace(/&middot;/g, '·')}`);
+    const nsStatus = isDone(ns) ? '✓ (board Done — validation pending)' : '◎';
+    console.log(`\n  ${nsStatus} ${nsSpecId} · ${ns.title.replace(/&middot;/g, '·')}`);
     if (vision) info(`  Vision: ${vision}…`);
 
     // Find which Epics are under this NS
