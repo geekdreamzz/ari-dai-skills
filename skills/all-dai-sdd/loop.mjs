@@ -408,26 +408,6 @@ function verifyAR(task) {
   return { pass: issues.length === 0, issues };
 }
 
-function verifyEX(task) {
-  const c = task.content || '';
-  const issues = [];
-
-  if (!c.match(/Implementation Files/i)) issues.push('missing Implementation Files section');
-
-  const acItems = extractAcItems(c);
-  if (acItems.length < 2) issues.push(`only ${acItems.length} AC item(s) — need at least 2 testable criteria`);
-
-  // Check AC items are specific (not vague)
-  const vague = acItems.filter(item => /should work|seems|looks good|no errors?$/i.test(item));
-  if (vague.length > 0) issues.push(`vague AC items (not measurable): "${vague[0]}"`);
-
-  for (const pattern of STUB_PATTERNS) {
-    if (pattern.test(c)) issues.push(`stub placeholder: ${pattern.source}`);
-  }
-
-  return { pass: issues.length === 0, issues };
-}
-
 function verifyVA(task) {
   const c = task.content || '';
   const issues = [];
