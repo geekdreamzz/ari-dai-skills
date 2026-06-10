@@ -4614,6 +4614,23 @@ async function cmdDrive() {
   const nsDone = nsAll.filter(t => isDone(t));
   const nsOpen = nsAll.filter(t => !isDone(t));
 
+  // ── JSON mode (--json flag) — machine-readable mission status ───────────────
+  if (process.argv.includes('--json')) {
+    const status = (nsOpen.length === 0 && vaTasks.length === 0) ? 'complete' : 'next';
+    process.stdout.write(JSON.stringify({
+      status,
+      slug,
+      done: doneCount,
+      total: taskList.length,
+      pct,
+      openNS: nsOpen.length,
+      openVA: vaTasks.length,
+      openEX: exTasks.length,
+      dashboardUrl,
+    }) + '\n');
+    return;
+  }
+
   console.log(`\n🏔  MISSION STATUS  [${slug}]`);
   console.log(`   Dashboard: ${dashboardUrl}`);
 
@@ -5072,9 +5089,13 @@ Commands:
   brief                                 Inject session briefings into pending Execution tasks.
   recover <taskId>                      Force stuck Validation/Execution task to Done (gate_status: PASS).
   update                                Pull latest sdd-conductor.mjs + SKILL.md from GitHub.
+  build-content <type> [payload.json]   Assemble deterministic Tiptap HTML for a task from a JSON payload.
+                                        Types: rs, ns, ep, ex, va, ar. Reads JSON from file or stdin.
+                                        Example: echo '{"spec_id":"RS-001",...}' | node sdd-conductor.mjs build-content rs
 
 Global flag (any command):
   --initiative <slug>                   Target a specific initiative instead of currentInitiative
+  drive --json                          Machine-readable mission status: {status,done,total,pct,openNS,openVA,openEX}
 
 Gate names: deps-done, research-done, no-mocks, checklist, impl-files, hierarchy, checklist-format, title-prefix, tracker-link, tiptap-html
 
@@ -5089,6 +5110,206 @@ Multi-initiative example:
   node sdd-conductor.mjs workspace               # cross-project view
 `);
   process.exit(0);
+}
+
+// ── build-content ─────────────────────────────────────────────────────────────
+// Deterministically assemble Tiptap HTML for a task from a JSON payload.
+// Ensures correct section anchors and front-matter — no template drift.
+//
+// Usage:
+//   node sdd-conductor.mjs build-content <type> [payload.json]
+//   echo '{"spec_id":"RS-001",...}' | node sdd-conductor.mjs build-content rs
+//
+// Types: rs, ns, ep, ex, va, ar
+async function cmdBuildContent(args) {
+  const type = (args[0] || '').toLowerCase();
+  const VALID_TYPES = ['rs', 'ns', 'ep', 'ex', 'va', 'ar'];
+  if (!VALID_TYPES.includes(type)) {
+    die(`build-content: unknown type "${type}". Valid types: ${VALID_TYPES.join(', ')}`);
+  }
+
+  // Read JSON from file arg or stdin
+  let raw;
+  if (args[1]) {
+    const fpath = path.resolve(args[1]);
+    if (!fs.existsSync(fpath)) die(`build-content: file not found: ${fpath}`);
+    raw = fs.readFileSync(fpath, 'utf-8');
+  } else {
+    // Read from stdin (cross-platform: fd 0)
+    raw = fs.readFileSync(0, 'utf-8');
+  }
+  let payload;
+  try { payload = JSON.parse(raw); }
+  catch (e) { die(`build-content: invalid JSON — ${e.message}`); }
+
+  const h = (level, text, anchor) =>
+    `<h${level}>${text}${anchor ? ` <!-- ${anchor} -->` : ''}</h${level}>`;
+  const p = (text) => `<p>${text || ''}</p>`;
+  const ul = (items) => items?.length
+    ? `<ul>${items.map(i => `<li><p>${i}</p></li>`).join('')}</ul>`
+    : '<ul><li><p></p></li></ul>';
+  const taskList = (items) => items?.length
+    ? `<ul data-type="taskList">${items.map(i => `<li data-type="taskItem" data-checked="false"><label><input type="checkbox" /><span></span></label><div><p>${i}</p></div></li>`).join('')}</ul>`
+    : '<ul data-type="taskList"><li data-type="taskItem" data-checked="false"><label><input type="checkbox" /><span></span></label><div><p></p></div></li></ul>';
+  const blockquote = (text) => `<blockquote><p>${text || ''}</p></blockquote>`;
+  const pre = (lang, code) => `<pre><code class="language-${lang}">${code}</code></pre>`;
+  const sources = (srcs) => srcs?.length
+    ? `<ul>${srcs.map(s => `<li><a href="${s.url || '#'}">${s.title || s.url || ''}</a>${s.note ? ` — ${s.note}` : ''}</li>`).join('')}</ul>`
+    : '<ul><li><a href="#">Source title</a> — relevance note</li></ul>';
+
+  const buildFrontMatter = (fields) => {
+    const lines = Object.entries(fields).filter(([, v]) => v != null).map(([k, v]) => `${k}: ${v}`).join('\n');
+    return pre('yaml', lines);
+  };
+
+  let html = '';
+
+  switch (type) {
+    case 'rs': {
+      const fm = buildFrontMatter({
+        spec_id: payload.spec_id || 'RS-000',
+        title: payload.title || '',
+        north_star_ref: payload.north_star_ref || null,
+        status: payload.status || 'draft',
+      });
+      html = [
+        fm,
+        h(3, 'Origin Prompts', '#origin'),
+        payload.origin_prompts ? blockquote(payload.origin_prompts) : p(''),
+        h(3, 'Problem Statement', '#problem'),
+        p(payload.problem_statement || ''),
+        h(3, 'Approach Under Evaluation', '#approach'),
+        p(payload.approach || ''),
+        h(3, 'Search Results', '#search-results'),
+        payload.search_results?.length
+          ? payload.search_results.map(r => blockquote(r)).join('')
+          : p(''),
+        h(3, 'Codebase Context', '#codebase'),
+        p(payload.codebase_context || 'N/A — no existing code in this area.'),
+        h(3, 'Sources', '#sources'),
+        sources(payload.sources),
+        h(3, 'Feasibility Evidence', '#feasibility'),
+        p(payload.feasibility_evidence || ''),
+        h(3, 'Recommendation', '#rec'),
+        p(payload.recommendation || ''),
+        h(3, 'Validation Criteria', '#vc'),
+        taskList(payload.validation_criteria),
+      ].join('');
+      break;
+    }
+    case 'ns': {
+      const fm = buildFrontMatter({
+        spec_id: payload.spec_id || 'NS-000',
+        title: payload.title || '',
+        research_ref: payload.research_ref || null,
+        status: payload.status || 'draft',
+      });
+      html = [
+        fm,
+        h(3, 'Vision'),
+        p(payload.vision || ''),
+        h(3, 'Success Metrics'),
+        ul(payload.success_metrics),
+        h(3, 'Acceptance Criteria'),
+        taskList(payload.acceptance_criteria),
+        h(3, 'Out of Scope'),
+        ul(payload.out_of_scope),
+      ].join('');
+      break;
+    }
+    case 'ep': {
+      const fm = buildFrontMatter({
+        spec_id: payload.spec_id || 'EP-000',
+        title: payload.title || '',
+        north_star_ref: payload.north_star_ref || null,
+        status: payload.status || 'draft',
+      });
+      html = [
+        fm,
+        h(3, 'Goal'),
+        p(payload.goal || ''),
+        h(3, 'Scope'),
+        ul(payload.scope),
+        h(3, 'Acceptance Criteria'),
+        taskList(payload.acceptance_criteria),
+        h(3, 'Out of Scope'),
+        ul(payload.out_of_scope),
+      ].join('');
+      break;
+    }
+    case 'ex': {
+      const fm = buildFrontMatter({
+        spec_id: payload.spec_id || 'EX-000',
+        title: payload.title || '',
+        epic_ref: payload.epic_ref || null,
+        north_star_ref: payload.north_star_ref || null,
+        validation_command: payload.validation_command || null,
+        status: payload.status || 'draft',
+      });
+      const dependsSection = payload.depends_on?.length
+        ? [h(3, 'Dependencies'), ul(payload.depends_on)].join('')
+        : '';
+      html = [
+        fm,
+        h(3, 'Implementation Steps', '#impl-steps'),
+        taskList(payload.implementation_steps),
+        h(3, 'Implementation Files', '#impl-files'),
+        ul(payload.implementation_files),
+        h(3, 'Validation Command', '#validation-cmd'),
+        p(payload.validation_command
+          ? `<code>${payload.validation_command}</code>`
+          : 'N/A — manual review or no automated test available.'),
+        h(3, 'Acceptance Criteria', '#ac'),
+        taskList(payload.acceptance_criteria),
+        dependsSection,
+      ].join('');
+      break;
+    }
+    case 'va': {
+      const fm = buildFrontMatter({
+        spec_id: payload.spec_id || 'VA-000',
+        title: payload.title || '',
+        execution_ref: payload.execution_ref || null,
+        epic_ref: payload.epic_ref || null,
+        north_star_ref: payload.north_star_ref || null,
+        gate_status: payload.gate_status || 'pending',
+        status: payload.status || 'draft',
+      });
+      html = [
+        fm,
+        h(3, 'Acceptance Criteria', '#ac'),
+        taskList(payload.acceptance_criteria),
+        h(3, 'Functional Requirements', '#fr'),
+        taskList(payload.functional_requirements),
+        h(3, 'Non-Functional Requirements', '#nfr'),
+        taskList(payload.non_functional_requirements),
+        h(3, 'Test Plan', '#test-plan'),
+        taskList(payload.test_plan),
+      ].join('');
+      break;
+    }
+    case 'ar': {
+      const fm = buildFrontMatter({
+        spec_id: payload.spec_id || 'AR-000',
+        title: payload.title || '',
+        execution_ref: payload.execution_ref || null,
+        validation_ref: payload.validation_ref || null,
+        status: payload.status || 'done',
+      });
+      html = [
+        fm,
+        h(3, 'Produced Artifacts', '#artifacts'),
+        ul(payload.produced_artifacts),
+        h(3, 'Implementation Notes', '#impl-notes'),
+        p(payload.implementation_notes || ''),
+        h(3, 'File Inventory', '#file-inventory'),
+        ul(payload.file_inventory),
+      ].join('');
+      break;
+    }
+  }
+
+  process.stdout.write(html + '\n');
 }
 
 try {
@@ -5149,6 +5370,7 @@ try {
     case 'brief':           await cmdBrief(); break;
     case 'recover':         await cmdRecover(args[0]); break;
     case 'update':          await cmdUpdate(); break;
+    case 'build-content':   await cmdBuildContent(args); break;
     default:                die(`Unknown command: ${command}. Run with --help.`);
   }
 } catch (e) {

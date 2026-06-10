@@ -11,6 +11,8 @@
  *   node loop.mjs --next                         # output next incomplete task as JSON (no writes)
  *   node loop.mjs --advance <taskId>             # advance task to Done (requires --evidence)
  *     --evidence "..."                           # REQUIRED: real test output, file paths, measured results
+ *                                                # If task front-matter has validation_command:, it is run
+ *                                                # as a subprocess — task blocked if exit code != 0.
  *   node loop.mjs --backfill-artifacts           # create AR tasks for all Done VA tasks retroactively
  *   node loop.mjs --initiative <slug>            # target a specific initiative
  *   node loop.mjs --dry-run                      # print what would advance, don't write
@@ -747,6 +749,33 @@ async function advanceTask(cfg, iState, slug) {
       console.error('');
       console.error('  Required: describe what is VISIBLE in the output image.');
       process.exit(1);
+    }
+  }
+
+  // ── validation_command gate ──────────────────────────────────────────────────
+  // If the task front-matter contains `validation_command:`, run it as a subprocess.
+  // The task cannot advance unless the command exits 0.
+  {
+    const vcMatch = task_check?.content?.match(/validation_command:\s*(.+)/);
+    const valCmd = vcMatch ? vcMatch[1].trim() : null;
+    if (valCmd) {
+      process.stdout.write(`\n→ Running validation_command: ${valCmd}\n`);
+      try {
+        const vcOut = execSync(valCmd, { encoding: 'utf-8', timeout: 120000 });
+        process.stdout.write(`  ✅ validation_command exited 0\n`);
+        // Prepend validation output to evidence so it is part of the gate comment.
+        evidenceText = `[validation_command: ${valCmd}]\nExit: 0\nOutput:\n${vcOut.slice(0, 2000)}\n\n${evidenceText}`;
+      } catch (vcErr) {
+        const failLog = path.join(findGitRoot(), '.sdd-failures.log');
+        const entry = `[${new Date().toISOString()}] ${advanceTaskId} — validation_command FAILED\nCommand: ${valCmd}\nStdout: ${(vcErr.stdout || '').slice(0, 500)}\nStderr: ${(vcErr.stderr || '').slice(0, 500)}\n---\n`;
+        fs.appendFileSync(failLog, entry, 'utf-8');
+        console.error(`\n✗ GATE FAIL — validation_command exited non-zero.`);
+        console.error(`  Command: ${valCmd}`);
+        if (vcErr.stderr) console.error(`  Stderr:  ${vcErr.stderr.slice(0, 300)}`);
+        console.error(`  Logged to: ${failLog}`);
+        console.error(`  Fix the failing command, then re-run --advance.`);
+        process.exit(1);
+      }
     }
   }
 
