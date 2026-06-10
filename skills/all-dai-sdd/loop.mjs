@@ -152,15 +152,25 @@ async function api(method, urlPath, body) {
 }
 
 // ── Board reader ──────────────────────────────────────────────────────────────
-async function readBoard(cfg) {
+async function readBoard(cfg, iState) {
   const d = await api('GET', `/api/v2/dataspheres/${cfg.dsId}/tasks?planModeId=${cfg.planModeId}&limit=200`);
-  return (d.tasks || d).map(t => ({
-    id: t.id,
-    title: t.title,
-    sgId: t.statusGroupId,
-    content: t.content || '',
-    isDone: t.statusGroupId === cfg.doneGroupId,
-  }));
+  // Filter to tasks that belong to THIS initiative's status groups.
+  // The API sometimes returns all datasphere tasks ignoring planModeId, so we
+  // scope by checking each task's statusGroupId against the initiative's known groups.
+  // Build from iState.statusGroups (all column group IDs) plus any direct cfg overrides.
+  const knownGroups = new Set([
+    ...Object.values(iState?.statusGroups || {}),
+    cfg.doneGroupId, cfg.artifactsGroupId,
+  ].filter(Boolean));
+  return (d.tasks || d)
+    .filter(t => !knownGroups.size || knownGroups.has(t.statusGroupId))
+    .map(t => ({
+      id: t.id,
+      title: t.title,
+      sgId: t.statusGroupId,
+      content: t.content || '',
+      isDone: t.statusGroupId === cfg.doneGroupId,
+    }));
 }
 
 // ── SDD title helpers ─────────────────────────────────────────────────────────
@@ -608,7 +618,7 @@ async function createArtifact(cfg, vaTask, allTasks) {
 // Outputs the next incomplete task as JSON so Claude can read, execute, and
 // substantiate it before calling --advance. No board modifications.
 async function findNextTask(cfg, iState, slug) {
-  const tasks = await readBoard(cfg);
+  const tasks = await readBoard(cfg, iState);
   const nonAR = tasks.filter(t => sddType(t.title) !== 'AR');
   const total = nonAR.length;
   const done = nonAR.filter(t => t.isDone).length;
@@ -712,8 +722,9 @@ async function advanceTask(cfg, iState, slug) {
   //   1. A visual description of what is actually visible in the output
   //   2. Not just job IDs, file paths, or "no errors"
   // Claude MUST use the Read tool to view the output image before calling --advance.
-  const IMAGE_VA_PATTERN = /synthesis|transfer|garment|character|render|inpaint|upscale|pipeline|tryon|try.on|outfit|cloth|generat|wears?|image/i;
-  const tasks_check = await readBoard(cfg);
+  // Narrowed to ComfyUI/diffusion-specific terms — "pipeline" is too generic (matches survey pipelines).
+  const IMAGE_VA_PATTERN = /synthesis|garment|render|inpaint|upscale|tryon|try.on|outfit|cloth|wears?|comfyui|stable.diff|tensorrt|liveportrait|spout2|faceless|avatar|talking.head/i;
+  const tasks_check = await readBoard(cfg, iState);
   const task_check = tasks_check.find(t => t.id === advanceTaskId) ||
                      tasks_check.find(t => sddKey(t.title) === advanceTaskId);
   if (task_check && sddType(task_check.title) === 'VA' && IMAGE_VA_PATTERN.test(task_check.title)) {
@@ -739,7 +750,7 @@ async function advanceTask(cfg, iState, slug) {
     }
   }
 
-  const tasks = await readBoard(cfg);
+  const tasks = await readBoard(cfg, iState);
   const task = tasks.find(t => t.id === advanceTaskId);
   if (!task) {
     // Also try matching by key (e.g. "VA-003")
@@ -786,7 +797,7 @@ async function advanceTask(cfg, iState, slug) {
   } catch { /* non-fatal */ }
 
   // Print updated progress
-  const updated = await readBoard(cfg);
+  const updated = await readBoard(cfg, iState);
   const nonAR = updated.filter(t => sddType(t.title) !== 'AR');
   const done = nonAR.filter(t => t.isDone).length;
   const total = nonAR.length;
@@ -806,7 +817,7 @@ async function backfillArtifacts(cfg, iState, slug) {
     process.exit(1);
   }
 
-  const tasks = await readBoard(cfg);
+  const tasks = await readBoard(cfg, iState);
   const vaTasks = tasks.filter(t => sddType(t.title) === 'VA' && t.isDone)
                        .sort((a, b) => sddNum(a.title) - sddNum(b.title));
 
@@ -941,7 +952,7 @@ async function main() {
   while (iteration < MAX_ITERATIONS) {
     iteration++;
 
-    const tasks = await readBoard(cfg);
+    const tasks = await readBoard(cfg, iState);
     const total = tasks.length;
     const doneCount = tasks.filter(t => t.isDone).length;
     const pct = Math.round(doneCount / total * 100);
@@ -1026,7 +1037,7 @@ async function main() {
 
   if (iteration >= MAX_ITERATIONS) {
     console.log(`\n[LOOP] Max iterations (${MAX_ITERATIONS}) reached.`);
-    const tasks = await readBoard(cfg);
+    const tasks = await readBoard(cfg, iState);
     tasks.filter(t => sddType(t.title) !== 'AR' && !t.isDone)
          .forEach(t => console.log(`    - ${sddKey(t.title) || '?'} | ${t.title.slice(0, 60)}`));
   }

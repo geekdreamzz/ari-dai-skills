@@ -4891,9 +4891,9 @@ async function cmdVerifyGates() {
   const COL_PREFIX = {
     research:      /^RS-\d/,
     'north stars': /^NS-\d/,
-    epics:         /^E-\d/,
-    execution:     /^T-\d/,
-    validation:    /^V-T-\d/,
+    epics:         /^(?:E|EP)-\d/,
+    execution:     /^(?:T|EX)-\d/,
+    validation:    /^(?:V-T|VA)-\d/,
   };
 
   for (const t of tasks) {
@@ -4976,10 +4976,11 @@ async function cmdVerifyGates() {
         v('INV-9', specId, col, `${isEX ? 'EX' : 'VA'} task has no acceptance checklist items`);
     }
 
-    // INV-10: front matter spec_id must match title prefix
+    // INV-10: front matter spec_id must match (or end with) title prefix
+    // Accepts both short form ("VA-001") and namespaced form ("SPEC-NL-VA-001")
     const fmSpecId = extractSpecId(content);
     const titleSpecId = t.title?.match(/^([A-Z]+-[\dT]+)/)?.[1];
-    if (fmSpecId && titleSpecId && fmSpecId !== titleSpecId) {
+    if (fmSpecId && titleSpecId && fmSpecId !== titleSpecId && !fmSpecId.endsWith(titleSpecId)) {
       v('INV-10', specId, col, `spec_id frontmatter "${fmSpecId}" does not match title prefix "${titleSpecId}"`);
     }
   }
