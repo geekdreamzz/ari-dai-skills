@@ -10,6 +10,13 @@ You are producing a high-fidelity, interactive page on the Dataspheres AI platfo
 
 ---
 
+## Default voice and visuals (read first)
+
+- **Prose voice → use the `house-style` skill by default.** All page bodies are written in the measured, human, white-paper-without-being-a-white-paper register defined there. Strip the AI tells it lists (rhetorical triplets, "not X but Y", fragment-drama, clickbait headings, marketing closers, hype words). This is the default unless the user asks for a different register.
+- **Custom diagrams / stat rows → use the `data-viz` skill.** Never embed a raw inline `<svg>` in page content (TipTap strips it). Use the sanitizer-safe `<img>` data-URI components (`statCards`, `flowStrip`, `flowStack`, `toFigure`). See the "Simple SVG / Inline Charts" section below.
+
+---
+
 ## Temporal Accuracy — Non-Negotiable Rules
 
 These rules apply to every piece of content, no exceptions.
@@ -548,27 +555,32 @@ Full encoded iframe for video ID `dQw4w9WgXcQ`:
 
 ## Simple SVG / Inline Charts (No Dataset)
 
-For simple one-off charts that don't warrant a full dataset, use Mermaid instead:
+Pick by intent:
 
+| Need | Use |
+|------|-----|
+| Live chart backed by real data | **Datasets + data cards** (see Step 4) |
+| Process/flow or quick pie/bar generated from data | **Mermaid** via the `diagramming` tool |
+| Custom static diagram, stat row, or on-brand schematic | **`data-viz` skill** (sanitizer-safe SVG components) |
+
+> ⚠️ **Never embed a raw inline `<svg>` in page content.** `<svg>` is not in TipTap's node schema — it survives the first save then gets stripped to run-on text on the next re-serialization. It must be an `<img>` data-URI, and that data-URI is parsed as strict XML (named entities like `&middot;` and `width="100%"` on the root both break it). The `data-viz` skill's `svg-components.mjs` handles all of this. Do not hand-roll it.
+
+For a custom diagram or stat row, use the components from the **`data-viz`** skill — they return paste-ready `<figure><img>` markup:
+
+```js
+import { statCards, flowStrip, flowStack, toFigure }
+  from './.claude/skills/data-viz/svg-components.mjs';
+
+content += statCards([
+  { value: '24%', lines: ['of developers merged AI code', 'without reviewing it'], source: 'Stack Overflow, 2025' },
+  // …
+]);
+content += flowStrip([{ label: 'Research', badge: 'ORIGIN GATE', tone: 'gold' }, /* … */ { label: 'Done', tone: 'green' }]);
 ```
-Pie chart → pie title TITLE\n  "Label" : value
-Bar chart → xychart-beta with bar/line
-Timeline  → gantt
-Process   → flowchart LR
-```
 
-If the user specifically needs a static SVG (for a logo, icon, or decorative element), embed it inline inside a `<figure>`:
+For manual editing, run `node .claude/skills/data-viz/encode.mjs …` (see the data-viz skill's `templates.md`). Always render-validate (`naturalWidth > 0`) before publishing.
 
-```html
-<figure style="margin:1.5rem auto;text-align:center">
-  <svg width="400" height="200" viewBox="0 0 400 200" xmlns="http://www.w3.org/2000/svg">
-    <!-- SVG content here -->
-  </svg>
-  <figcaption style="font-size:0.85rem;color:#888;margin-top:0.5rem">Caption</figcaption>
-</figure>
-```
-
-> **Note:** There is no dedicated SVG chart API endpoint. Use Mermaid via the `diagramming` tool for all data-driven inline charts. Use datasets + data cards for interactive, live charts with real data.
+Mermaid is still the right tool for data-driven flow/pie/bar charts via the `diagramming` tool; datasets + data cards remain the tool for interactive live charts.
 
 ---
 
@@ -583,6 +595,12 @@ Before calling `create_page`, verify every item:
 - [ ] Any YouTube embed either (a) came from a search result URL in this session, or (b) has an explicit age acknowledgement in the caption
 - [ ] If any source is older than 18 months, the staleness is acknowledged and explained in the text
 - [ ] Dataset column names include the year (e.g. `revenue_2026_usd_billions`)
+
+**Voice & visuals**
+- [ ] Prose is in the `house-style` voice — no AI tells (triplets, "not X but Y", fragment-drama, clickbait headings, marketing closers, hype words)
+- [ ] Opens on the problem/domain (not a hook or structure announcement); ends on the idea (not a CTA pep-talk)
+- [ ] Any custom diagram/stat row uses the `data-viz` components (`<img>` data-URI), never a raw inline `<svg>`
+- [ ] Diagrams render-validated (`naturalWidth > 0`, no clipping) before publish
 
 **Content structure**
 - [ ] Hero image generated and URL captured
