@@ -691,6 +691,13 @@ function verifyEX(task) {
 
   if (!c.match(/Implementation Files/i)) issues.push('missing Implementation Files section');
 
+  // Check that at least one listed file has a spec ref path (belt-and-suspenders before the disk gate)
+  const implSection = c.match(/Implementation Files[\s\S]*?(?=<h2|$)/i)?.[0] || '';
+  const implPaths = [...implSection.matchAll(/<code[^>]*>([^<]+)<\/code>/g)].map(m => m[1].trim());
+  if (implPaths.length === 0 && c.match(/Implementation Files/i)) {
+    issues.push('Implementation Files section lists no file paths — add <code>src/…</code> entries for every file created or modified');
+  }
+
   const acItems = extractAcItems(c);
   if (acItems.length < 2) issues.push(`only ${acItems.length} AC item(s) — need at least 2 testable criteria`);
 
@@ -1687,6 +1694,92 @@ async function advanceTask(cfg, iState, slug) {
           console.error(`  Next: capture screenshots, then advance ${result.exKey} with screenshot evidence.`);
         }
       }
+      process.exit(1);
+    }
+  }
+
+  // ── Implementation files existence + front-matter gate (EX tasks) ──────────
+  // When advancing an EX task, every file listed in the spec's Implementation Files section must:
+  //   1. Exist on disk (not just in the spec)
+  //   2. Contain a spec ref in the first 15 lines: "artifact: EX-NNN", "spec: EX-NNN", or "initiative:"
+  // This is the foreign-key mechanism that makes the spec→code trace graph work.
+  // Binary files (.png/.jpg/.mp4 etc.) must instead be registered in .sdd-artifacts.json.
+  if (task_check && sddType(task_check.title) === 'EX') {
+    const exKey = sddKey(task_check.title);
+    const implSection = (task_check.content || '').match(/Implementation Files[\s\S]*?(?=<h2|$)/i)?.[0] || '';
+    const rawPaths = [...implSection.matchAll(/<code[^>]*>([^<]+)<\/code>/g)].map(m => m[1].trim());
+    const codePaths = rawPaths.filter(p =>
+      p.match(/^[A-Z]:\\|^\/|^(src|tests|prisma|scripts|components|pages|hooks|styles|config|public|lib|server|client)\//i) &&
+      !p.match(/\.(png|jpg|jpeg|gif|webp|mp4|mov|webm|onnx|pt|bin|zip|tar)$/i)
+    );
+    const binaryPaths = rawPaths.filter(p =>
+      p.match(/\.(png|jpg|jpeg|gif|webp|mp4|mov|webm|onnx|pt|bin|zip|tar)$/i)
+    );
+
+    const gitRoot = findGitRoot();
+    const missingFiles = [];
+    const missingFrontMatter = [];
+
+    for (const fp of codePaths) {
+      const absPath = fp.match(/^[A-Z]:\\|^\//) ? fp : path.join(gitRoot, fp);
+      if (!fs.existsSync(absPath)) {
+        missingFiles.push(fp);
+        continue;
+      }
+      try {
+        const head = fs.readFileSync(absPath, 'utf-8').split('\n').slice(0, 15).join('\n');
+        const hasRef = /(?:artifact|spec):\s*(?:[A-Z]+-)?(?:EX|VA|AR|EP|NS|RS)-\d+|initiative:/i.test(head);
+        if (!hasRef) missingFrontMatter.push(fp);
+      } catch { /* unreadable — skip */ }
+    }
+
+    // Binary artifacts must be in .sdd-artifacts.json
+    const artifactsMapPath = path.join(gitRoot, '.sdd-artifacts.json');
+    const artifactsMap = fs.existsSync(artifactsMapPath)
+      ? (() => { try { return JSON.parse(fs.readFileSync(artifactsMapPath, 'utf-8')); } catch { return {}; } })()
+      : {};
+    const unregisteredBinaries = binaryPaths.filter(bp => {
+      const basename = bp.split(/[\\/]/).pop();
+      return !artifactsMap[basename] && !artifactsMap[bp];
+    });
+
+    if (missingFiles.length > 0) {
+      const msg = `EX task lists ${missingFiles.length} implementation file(s) that do not exist on disk:\n${missingFiles.map(f => `  · ${f}`).join('\n')}`;
+      console.error(`\n✗ GATE FAIL — implementation file(s) missing.\n${msg}`);
+      console.error(`\n  The spec claims these files were created but they are not on disk.`);
+      console.error(`  Create the files first, then re-run --advance.`);
+      if (autoFix) {
+        const tasks_af2 = await readBoard(cfg);
+        const task_af2 = tasks_af2.find(t => t.id === advanceTaskId) || tasks_af2.find(t => sddKey(t.title) === advanceTaskId);
+        if (task_af2) {
+          const r = await createRemediationTasks(cfg, task_af2, missingFiles.map(f => `Implementation file missing on disk: ${f}`), tasks_af2);
+          console.error(`\n  ✅ Remediation tasks created: ${r.exKey} + ${r.vaKey}`);
+        }
+      }
+      process.exit(1);
+    }
+
+    if (missingFrontMatter.length > 0) {
+      const msg = `${missingFrontMatter.length} implementation file(s) lack spec front matter in first 15 lines.\nAdd "// artifact: ${exKey}" or "// spec: ${exKey} | initiative: <slug>" to:\n${missingFrontMatter.map(f => `  · ${f}`).join('\n')}`;
+      console.error(`\n✗ GATE FAIL — spec tracing broken.\n${msg}`);
+      console.error(`\n  Spec→code foreign keys are required for the trace graph.`);
+      console.error(`  Without them, there is no way to audit which code implements which spec.`);
+      if (autoFix) {
+        const tasks_af2 = await readBoard(cfg);
+        const task_af2 = tasks_af2.find(t => t.id === advanceTaskId) || tasks_af2.find(t => sddKey(t.title) === advanceTaskId);
+        if (task_af2) {
+          const r = await createRemediationTasks(cfg, task_af2, missingFrontMatter.map(f => `Missing spec front matter: ${f} — add // artifact: ${exKey} | initiative: <slug>`), tasks_af2);
+          console.error(`\n  ✅ Remediation tasks created: ${r.exKey} + ${r.vaKey}`);
+        }
+      }
+      process.exit(1);
+    }
+
+    if (unregisteredBinaries.length > 0) {
+      const msg = `${unregisteredBinaries.length} binary artifact(s) not registered in .sdd-artifacts.json:\n${unregisteredBinaries.map(b => `  · ${b}`).join('\n')}`;
+      console.error(`\n✗ GATE FAIL — binary artifact(s) untraced.\n${msg}`);
+      console.error(`\n  Binary files cannot embed inline comments. Register them in .sdd-artifacts.json:`);
+      console.error(`  { "filename.png": { "artifact": "${exKey}", "initiative": "<slug>", "created": "YYYY-MM-DD" } }`);
       process.exit(1);
     }
   }
