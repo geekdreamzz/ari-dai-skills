@@ -11,11 +11,38 @@
  *   node loop.mjs --next                         # output next incomplete task as JSON (no writes)
  *   node loop.mjs --advance <taskId>             # advance task to Done (requires --evidence)
  *     --evidence "..."                           # REQUIRED: real test output, file paths, measured results
- *                                                # If task front-matter has validation_command:, it is run
- *                                                # as a subprocess — task blocked if exit code != 0.
+ *     --auto-fix                                 # on gate fail: auto-create EX+VA remediation pair instead of just erroring
+ *   node loop.mjs --create-fix <taskId>          # Ralph error mode: create EX+VA fix pair for a failing task
+ *     --reason "issue1; issue2"                  # REQUIRED: semicolon-separated gate failure reasons
+ *     --dry-run                                  # preview what would be created WITHOUT writing to board
  *   node loop.mjs --backfill-artifacts           # create AR tasks for all Done VA tasks retroactively
+ *   node loop.mjs --health                       # validate initiative config + board structural health
  *   node loop.mjs --initiative <slug>            # target a specific initiative
  *   node loop.mjs --dry-run                      # print what would advance, don't write
+ *
+ * Continuous intake commands (follow-up prompts, UAT results, stakeholder feedback):
+ *   node loop.mjs --intake                       # queue a new intake item
+ *     --intake-type <instruction|uat-result|stakeholder-feedback>
+ *     --intake-priority <critical|high|normal>   # critical blocks --next until triaged
+ *     --intake-summary "..."                     # REQUIRED: one-line description
+ *     --intake-body "..."                        # optional: full text / instructions
+ *   node loop.mjs --triage <intakeId>            # turn intake item into board tasks
+ *     --target-type <EX|VA|NS|EP>               # task type to create (default: EX)
+ *     --target-ref <EP-NNN>                      # add context to existing task instead of creating new
+ *     --dry-run                                  # preview without writing
+ *   node loop.mjs --intake-status               # list intake queue with auto-done sweep
+ *     --pending-only                             # filter to pending items only
+ *   node loop.mjs --uat <vaTaskId>              # run UAT validation on a VA task
+ *     --outcome <pass|fail>                      # REQUIRED: UAT outcome
+ *     --evidence "..."                           # REQUIRED: real test output
+ *
+ * Ralph loop error recovery workflow (AI-driven):
+ *   1. node loop.mjs --next          → Claude reads task, runs tests
+ *   2. node loop.mjs --advance ...   → gate fails with specific error message
+ *   3. Claude diagnoses the reason from the error
+ *   4. node loop.mjs --create-fix <id> --reason "..."  → creates EX+VA remediation pair
+ *   5. node loop.mjs --next          → returns new EX fix task
+ *   6. Claude implements the fix, advances EX, then VA, then original failing task
  *
  * IMPORTANT — AI-DRIVEN MODE:
  *   When Claude (or any AI) is active in the conversation, use --next + --advance.
@@ -36,7 +63,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { execSync } from 'node:child_process';
 
-const BASE = 'https://dataspheres.ai';
+let BASE = process.env.DATASPHERES_BASE_URL || 'https://dataspheres.ai';
 const MAX_ITERATIONS = 500;
 
 // ── CLI args ──────────────────────────────────────────────────────────────────
@@ -46,6 +73,22 @@ let backfillMode = false;
 let nextMode = false;
 let advanceTaskId = null;
 let evidenceText = null;
+let autoFix = false;
+let createFixTaskId = null;
+let createFixReason = null;
+let healthMode = false;
+let intakeAdd = false;
+let intakeType = 'instruction';
+let intakePriority = 'normal';
+let intakeSummary = null;
+let intakeBody_ = null;
+let triageIntakeId = null;
+let triageTargetType = 'EX';
+let triageTargetRef = null;
+let showIntakeStatus = false;
+let intakePendingOnly = false;
+let uatTaskId = null;
+let uatOutcome = null;
 
 for (let i = 2; i < process.argv.length; i++) {
   if (process.argv[i] === '--initiative' && process.argv[i + 1]) {
@@ -60,6 +103,38 @@ for (let i = 2; i < process.argv.length; i++) {
     advanceTaskId = process.argv[++i];
   } else if (process.argv[i] === '--evidence' && process.argv[i + 1]) {
     evidenceText = process.argv[++i];
+  } else if (process.argv[i] === '--auto-fix') {
+    autoFix = true;
+  } else if (process.argv[i] === '--create-fix' && process.argv[i + 1]) {
+    createFixTaskId = process.argv[++i];
+  } else if (process.argv[i] === '--reason' && process.argv[i + 1]) {
+    createFixReason = process.argv[++i];
+  } else if (process.argv[i] === '--health') {
+    healthMode = true;
+  } else if (process.argv[i] === '--intake') {
+    intakeAdd = true;
+  } else if (process.argv[i] === '--intake-type' && process.argv[i + 1]) {
+    intakeType = process.argv[++i];
+  } else if (process.argv[i] === '--intake-priority' && process.argv[i + 1]) {
+    intakePriority = process.argv[++i];
+  } else if (process.argv[i] === '--intake-summary' && process.argv[i + 1]) {
+    intakeSummary = process.argv[++i];
+  } else if (process.argv[i] === '--intake-body' && process.argv[i + 1]) {
+    intakeBody_ = process.argv[++i];
+  } else if (process.argv[i] === '--triage' && process.argv[i + 1]) {
+    triageIntakeId = process.argv[++i];
+  } else if (process.argv[i] === '--target-type' && process.argv[i + 1]) {
+    triageTargetType = process.argv[++i];
+  } else if (process.argv[i] === '--target-ref' && process.argv[i + 1]) {
+    triageTargetRef = process.argv[++i];
+  } else if (process.argv[i] === '--intake-status') {
+    showIntakeStatus = true;
+  } else if (process.argv[i] === '--pending-only') {
+    intakePendingOnly = true;
+  } else if (process.argv[i] === '--uat' && process.argv[i + 1]) {
+    uatTaskId = process.argv[++i];
+  } else if (process.argv[i] === '--outcome' && process.argv[i + 1]) {
+    uatOutcome = process.argv[++i];
   }
 }
 
@@ -97,6 +172,55 @@ function loadState() {
 function saveState(state) {
   const p = path.join(findGitRoot(), '.sdd-state.json');
   fs.writeFileSync(p, JSON.stringify(state, null, 2), 'utf-8');
+}
+
+// ── Intake queue helpers (.sdd-intake.json) ───────────────────────────────────
+// Scoped per-initiative so multiple initiatives can share one repo.
+// Schema: { initiatives: { [slug]: { items: IntakeItem[] } } }
+function loadIntakeFile() {
+  const p = path.join(findGitRoot(), '.sdd-intake.json');
+  if (!fs.existsSync(p)) return { initiatives: {} };
+  try { return JSON.parse(fs.readFileSync(p, 'utf-8')); } catch { return { initiatives: {} }; }
+}
+
+function saveIntakeFile(data) {
+  const p = path.join(findGitRoot(), '.sdd-intake.json');
+  fs.writeFileSync(p, JSON.stringify(data, null, 2), 'utf-8');
+}
+
+function getIntakeItems(slug) {
+  const data = loadIntakeFile();
+  return data.initiatives?.[slug]?.items || [];
+}
+
+function setIntakeItems(slug, items) {
+  const data = loadIntakeFile();
+  if (!data.initiatives) data.initiatives = {};
+  if (!data.initiatives[slug]) data.initiatives[slug] = {};
+  data.initiatives[slug].items = items;
+  saveIntakeFile(data);
+}
+
+function nextIntakeId(items) {
+  const nums = items.map(i => parseInt((i.id || '').replace('INT-', '') || '0')).filter(n => !isNaN(n) && n > 0);
+  return `INT-${pad3((nums.length > 0 ? Math.max(...nums) : 0) + 1)}`;
+}
+
+// Sweep triaged items to done when all their board taskIds are Done.
+// Called at the start of --next and --intake-status so state stays current.
+async function sweepIntakeDone(cfg, slug, boardTasks) {
+  const items = getIntakeItems(slug);
+  let changed = false;
+  for (const item of items) {
+    if (item.status !== 'triaged' || !item.taskIds || item.taskIds.length === 0) continue;
+    const allDone = item.taskIds.every(tid => boardTasks.find(t => t.id === tid)?.isDone);
+    if (allDone) {
+      item.status = 'done';
+      item.doneAt = new Date().toISOString();
+      changed = true;
+    }
+  }
+  if (changed) setIntakeItems(slug, items);
 }
 
 // Track the current in-flight task in .sdd-state.json so dashboards can scope Current Focus.
@@ -153,26 +277,77 @@ async function api(method, urlPath, body) {
   }
 }
 
+// ── Status group loader ───────────────────────────────────────────────────────
+// The tasks API does NOT filter by planModeId server-side — it returns all tasks
+// in the datasphere. We filter client-side via status group IDs, which are unique
+// per plan mode. This function fetches and caches those IDs from the plan mode API
+// so readBoard() always scopes correctly even when .sdd-state.json is incomplete.
+let _groupCache = null; // { planModeId → Set<sgId> }
+async function ensureGroupIds(cfg) {
+  if (cfg.allGroupIds && cfg.allGroupIds.size > 0) return cfg.allGroupIds;
+
+  // Cache per plan mode to avoid redundant API calls within a session
+  if (!_groupCache) _groupCache = new Map();
+  if (_groupCache.has(cfg.planModeId)) {
+    cfg.allGroupIds = _groupCache.get(cfg.planModeId);
+    return cfg.allGroupIds;
+  }
+
+  // Fetch status groups from the plan modes list
+  let groups = [];
+  try {
+    const d = await api('GET', `/api/v2/dataspheres/${cfg.dsId}/tasks/plan-modes`);
+    const planModes = d.planModes || d;
+    const pm = Array.isArray(planModes)
+      ? planModes.find(p => p.id === cfg.planModeId)
+      : null;
+    groups = pm?.statusGroups || [];
+  } catch { /* non-fatal — fall back to no filter */ }
+
+  if (groups.length === 0) {
+    process.stderr.write(`[WARN] Could not fetch status groups for plan ${cfg.planModeId} — readBoard will return all tasks (cross-initiative contamination possible)\n`);
+    cfg.allGroupIds = new Set();
+    return cfg.allGroupIds;
+  }
+
+  // Populate cfg with named group IDs and update .sdd-state.json for future runs
+  const sgMap = {};
+  for (const g of groups) sgMap[g.name] = g.id;
+  cfg.allGroupIds     = new Set(groups.map(g => g.id));
+  cfg.doneGroupId     = cfg.doneGroupId     || sgMap.Done     || null;
+  cfg.artifactsGroupId= cfg.artifactsGroupId|| sgMap.Artifacts|| null;
+  cfg.executionGroupId= cfg.executionGroupId|| sgMap.Execution|| null;
+  cfg.validationGroupId=cfg.validationGroupId||sgMap.Validation||null;
+
+  // Back-fill .sdd-state.json so next run doesn't need the API call
+  try {
+    const state = loadState();
+    const slug  = cfg._slug;
+    if (state && slug && state.initiatives?.[slug]) {
+      state.initiatives[slug].statusGroups = { ...sgMap };
+      saveState(state);
+    }
+  } catch { /* non-fatal */ }
+
+  _groupCache.set(cfg.planModeId, cfg.allGroupIds);
+  return cfg.allGroupIds;
+}
+
 // ── Board reader ──────────────────────────────────────────────────────────────
-async function readBoard(cfg, iState) {
-  const d = await api('GET', `/api/v2/dataspheres/${cfg.dsId}/tasks?planModeId=${cfg.planModeId}&limit=200`);
-  // Filter to tasks that belong to THIS initiative's status groups.
-  // The API sometimes returns all datasphere tasks ignoring planModeId, so we
-  // scope by checking each task's statusGroupId against the initiative's known groups.
-  // Build from iState.statusGroups (all column group IDs) plus any direct cfg overrides.
-  const knownGroups = new Set([
-    ...Object.values(iState?.statusGroups || {}),
-    cfg.doneGroupId, cfg.artifactsGroupId,
-  ].filter(Boolean));
-  return (d.tasks || d)
-    .filter(t => !knownGroups.size || knownGroups.has(t.statusGroupId))
-    .map(t => ({
-      id: t.id,
-      title: t.title,
-      sgId: t.statusGroupId,
-      content: t.content || '',
-      isDone: t.statusGroupId === cfg.doneGroupId,
-    }));
+async function readBoard(cfg) {
+  const groupIds = await ensureGroupIds(cfg);
+  const d = await api('GET', `/api/v2/dataspheres/${cfg.dsId}/tasks?planModeId=${cfg.planModeId}&limit=500`);
+  const allTasks = d.tasks || d;
+  const scoped = groupIds.size > 0
+    ? allTasks.filter(t => groupIds.has(t.statusGroupId))
+    : allTasks;
+  return scoped.map(t => ({
+    id: t.id,
+    title: t.title,
+    sgId: t.statusGroupId,
+    content: t.content || '',
+    isDone: t.statusGroupId === cfg.doneGroupId,
+  }));
 }
 
 // ── SDD title helpers ─────────────────────────────────────────────────────────
@@ -304,7 +479,7 @@ function extractKeyCommands(content) {
 }
 
 // ── Build AR task content ─────────────────────────────────────────────────────
-function buildArContent(arNum, vaNum, exTask, cfg) {
+function buildArContent(arNum, vaNum, exTask, cfg, evidenceText) {
   const arKey = `AR-${pad3(arNum)}`;
   const vaKey = `VA-${pad3(vaNum)}`;
   const exKey = sddKey(exTask.title) || `EX-${pad3(vaNum)}`;
@@ -316,11 +491,23 @@ function buildArContent(arNum, vaNum, exTask, cfg) {
   const acItems = extractAcItems(exTask.content);
   const keyCmds = extractKeyCommands(exTask.content);
 
+  // Extract screenshot paths from evidence text
+  const screenshotPaths = [];
+  if (evidenceText) {
+    const shotRe = /([^\s"'()\[\],]+\.(png|jpg|jpeg|gif|webp))/gi;
+    let m;
+    while ((m = shotRe.exec(evidenceText)) !== null) {
+      if (!screenshotPaths.includes(m[1])) screenshotPaths.push(m[1]);
+    }
+  }
+
   // Determine artifact type from content
-  const hasScript = implFiles.some(f => f.match(/\.(py|ps1|bat|sh|lua|json|yaml)$/i));
+  const hasScript = implFiles.some(f => f.match(/\.(py|ps1|bat|sh|lua|json|yaml|tsx?|jsx?|mjs|cjs)$/i));
   const hasConfig = implFiles.some(f => f.match(/\.ini|\.json|\.yaml|\.cfg|config/i));
   const hasEngine = implFiles.some(f => f.match(/\.engine|\.onnx/i));
+  const hasScreenshots = screenshotPaths.length > 0;
   const artifactType = hasEngine ? 'model-artifact'
+    : hasScreenshots ? 'ui-component'
     : hasScript ? 'script'
     : hasConfig ? 'config'
     : 'system-install';
@@ -333,6 +520,7 @@ function buildArContent(arNum, vaNum, exTask, cfg) {
     `execution_ref: ${exKey}`,
     ...(epicRef ? [`epic_ref: ${epicRef}`] : []),
     `north_star_ref: ${nsRef}`,
+    `plan_mode_id: ${cfg.planModeId}`,
     `status: DELIVERED`,
     `created: ${today}`,
     `</code></pre>`,
@@ -372,6 +560,16 @@ function buildArContent(arNum, vaNum, exTask, cfg) {
     lines.push(``);
   }
 
+  if (screenshotPaths.length > 0) {
+    lines.push(`<h2>Screenshot Evidence <!-- #screenshots --></h2>`);
+    lines.push(`<ul class="tiptap-bullet-list">`);
+    for (const sp of screenshotPaths.slice(0, 12)) {
+      lines.push(`  <li><p><code>${sp.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</code></p></li>`);
+    }
+    lines.push(`</ul>`);
+    lines.push(``);
+  }
+
   lines.push(`<h3>Delivery Trace</h3>`);
   lines.push(`<ul class="tiptap-bullet-list">`);
   lines.push(`  <li><p>${arKey} ← ${vaKey} ← ${exKey}${epicRef ? ` ← ${epicRef}` : ''} ← ${nsRef}</p></li>`);
@@ -395,16 +593,17 @@ function verifyAR(task) {
   const c = task.content || '';
   const issues = [];
 
-  // 1. Must have validation_ref
-  if (!c.match(/validation_ref:\s*VA-\d+/)) issues.push('missing validation_ref front-matter');
+  // 1. Must have validation_ref (accept bare VA-NNN or initiative-prefixed like LG-VA-001)
+  if (!c.match(/validation_ref:\s*(?:[A-Z]+-)?VA-\d+/)) issues.push('missing validation_ref front-matter');
 
   // 2. Must have Delivered Files section with at least one real path
   const filesSection = c.match(/Delivered Files[\s\S]*?(?=<h2|$)/i)?.[0] || '';
   const paths = [...filesSection.matchAll(/<code[^>]*>([^<]+)<\/code>/g)].map(m => m[1].trim());
   if (paths.length === 0) issues.push('Delivered Files section has no file paths');
   else {
-    const hasRealPath = paths.some(p => p.match(/^[A-Z]:\\|^\//));
-    if (!hasRealPath) issues.push(`Delivered Files has no Windows/Unix paths (found: ${paths.slice(0,2).join(', ')})`);
+    // Accept: absolute paths (C:\, /) AND relative source paths (src/, tests/, etc.)
+    const hasRealPath = paths.some(p => p.match(/^[A-Z]:\\|^\/|^(src|tests|assets|outputs|dist|scripts|components|pages|hooks|styles|config|public|lib|server|client)\//));
+    if (!hasRealPath) issues.push(`Delivered Files has no real file paths (found: ${paths.slice(0,2).join(', ')})`);
   }
 
   // 3. No stub placeholder text
@@ -514,12 +713,41 @@ function verifyEX(task) {
   return { pass: issues.length === 0, issues };
 }
 
+function verifyEpicOrNS(task, type) {
+  const c = task.content || '';
+  const issues = [];
+
+  if (!c.match(/Acceptance Criteria/i)) issues.push('missing Acceptance Criteria section');
+  if (!c.match(/Functional Requirements/i)) issues.push('missing Functional Requirements section');
+  if (!c.match(/Non-Functional Requirements/i)) issues.push('missing Non-Functional Requirements section');
+
+  const allItems = extractAcItems(c);
+  if (allItems.length < 2) {
+    issues.push(`only ${allItems.length} checklist item(s) — ${type} needs at least 2 AC/FR/NFR criteria`);
+  }
+
+  if (type === 'EP') {
+    const execSection = c.match(/Execution Checklist[\s\S]*?(?=<h2|$)/i)?.[0] || '';
+    const childCount = [...execSection.matchAll(/\b(EX|T)-\d+/g)].length;
+    if (childCount === 0) issues.push('Execution Checklist has no child EX/T task references — cannot verify epic completion');
+  }
+
+  if (type === 'NS') {
+    const nsSection = c.match(/North Star Checklist[\s\S]*?(?=<h2|$)/i)?.[0] || '';
+    const epicCount = [...nsSection.matchAll(/\b(EP|E)-\d+/g)].length;
+    if (epicCount === 0) issues.push('North Star Checklist has no child EP/E task references — cannot verify NS completion');
+  }
+
+  return { pass: issues.length === 0, issues };
+}
+
 function verifyTask(type, task) {
   if (type === 'AR') return verifyAR(task);
   if (type === 'EX') return verifyEX(task);
   if (type === 'VA') return verifyVA(task);
   if (type === 'RS') return verifyRS(task);
-  return { pass: true, issues: [] }; // NS/EP: structural checks handled by conductor
+  if (type === 'EP' || type === 'NS') return verifyEpicOrNS(task, type);
+  return { pass: true, issues: [] };
 }
 
 // ── Gate comments ─────────────────────────────────────────────────────────────
@@ -580,7 +808,9 @@ async function createArtifact(cfg, vaTask, allTasks) {
     return;
   }
 
-  // Check if AR already exists for this VA
+  // Check if AR already exists for this VA.
+  // readBoard() is already scoped to this plan mode's status groups, so no cross-initiative
+  // contamination is possible here. The plan_mode_id in AR front matter is belt-and-suspenders.
   const vaKeyStr = sddKey(vaTask.title);
   const existing = allTasks.find(t =>
     sddType(t.title) === 'AR' &&
@@ -591,9 +821,12 @@ async function createArtifact(cfg, vaTask, allTasks) {
     return;
   }
 
-  const arNum = allTasks.filter(t => sddType(t.title) === 'AR').length + 1;
+  // Count only properly-numbered AR tasks (sddNum < 900) to avoid inflated numbers
+  // from any non-standard AR titles that fall through with sddNum=999.
+  const arCount = allTasks.filter(t => sddType(t.title) === 'AR' && sddNum(t.title) < 900).length;
+  const arNum = arCount + 1;
   const arKey = `AR-${pad3(arNum)}`;
-  const arContent = buildArContent(arNum, vaNum, exTask, cfg);
+  const arContent = buildArContent(arNum, vaNum, exTask, cfg, evidenceText);
 
   try {
     const created = await api('POST', `/api/v2/dataspheres/${cfg.dsId}/tasks`, {
@@ -616,14 +849,651 @@ async function createArtifact(cfg, vaTask, allTasks) {
   }
 }
 
+// ── Remediation task creation (error detection + fix scaffolding) ─────────────
+// When a task fails validation, this creates a sibling EX+VA pair that describes
+// exactly what needs to be fixed. The failing task gets a BLOCKED comment with the
+// new task IDs. The loop's findNextIncomplete will pick up the new EX first.
+async function createRemediationTasks(cfg, failingTask, issues, allTasks) {
+  // Exclude sddNum=999 (returned for non-standard titles like "VA-conversational-surve")
+  // to prevent spuriously high task numbers (EX-1000, VA-1000, etc.)
+  const allExNums = allTasks.filter(t => sddType(t.title) === 'EX' && sddNum(t.title) < 900).map(t => sddNum(t.title));
+  const allVaNums = allTasks.filter(t => sddType(t.title) === 'VA' && sddNum(t.title) < 900).map(t => sddNum(t.title));
+  const nextExNum = (allExNums.length > 0 ? Math.max(...allExNums) : 0) + 1;
+  const nextVaNum = (allVaNums.length > 0 ? Math.max(...allVaNums) : 0) + 1;
+
+  const failKey = sddKey(failingTask.title) || '?';
+  const failType = sddType(failingTask.title) || 'VA';
+  const epicRef = (failingTask.content || '').match(/epic_ref:\s*(EP-\d+)/)?.[1] || '';
+  const nsRef = (failingTask.content || '').match(/north_star_ref:\s*(NS-\d+)/)?.[1] || 'NS-001';
+  const today = new Date().toISOString().slice(0, 10);
+
+  // Build a concise reason from the gate issues
+  const issueSummary = issues.slice(0, 2).join('; ');
+  const shortReason = issueSummary.slice(0, 80);
+
+  const exKey = `EX-${pad3(nextExNum)}`;
+  const vaKey = `VA-${pad3(nextVaNum)}`;
+
+  const htmlIssues = issues.map(i => `  <li><p>${i.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</p></li>`).join('\n');
+  const acIssues = issues.map(i => `  <li data-type="taskItem" data-checked="false"><p>Resolved: ${i.slice(0, 120).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</p></li>`).join('\n');
+
+  const exContent = [
+    `<pre><code class="language-yaml">`,
+    `spec_id: ${exKey}`,
+    `fix_for: ${failKey}`,
+    ...(epicRef ? [`epic_ref: ${epicRef}`] : []),
+    `north_star_ref: ${nsRef}`,
+    `plan_mode_id: ${cfg.planModeId}`,
+    `created: ${today}`,
+    `auto_generated: true`,
+    `</code></pre>`,
+    ``,
+    `<h2>Problem <!-- #problem --></h2>`,
+    `<p><strong>${failKey}</strong> failed gate verification with ${issues.length} issue(s):</p>`,
+    `<ul class="tiptap-bullet-list">`,
+    htmlIssues,
+    `</ul>`,
+    ``,
+    `<h2>Implementation Steps <!-- #steps --></h2>`,
+    `<ol>`,
+    ...issues.map(issue => `  <li><p>Fix: ${issue.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</p></li>`),
+    `  <li><p>Re-run validation and confirm all ${failKey} gate checks pass</p></li>`,
+    `  <li><p>Advance ${failKey} with updated evidence after fix is verified</p></li>`,
+    `</ol>`,
+    ``,
+    `<h2>Implementation Files <!-- #files --></h2>`,
+    `<ul class="tiptap-bullet-list">`,
+    `  <li><p><em>Identify and update the relevant files to resolve the issues above</em></p></li>`,
+    `</ul>`,
+    ``,
+    `<h2>Acceptance Criteria <!-- #ac --></h2>`,
+    `<ul data-type="taskList">`,
+    acIssues,
+    `  <li data-type="taskItem" data-checked="false"><p>${failKey} gate passes on re-run after fix</p></li>`,
+    `</ul>`,
+  ].join('\n');
+
+  const vaContent = [
+    `<pre><code class="language-yaml">`,
+    `spec_id: ${vaKey}`,
+    `execution_ref: ${exKey}`,
+    `fix_for: ${failKey}`,
+    `plan_mode_id: ${cfg.planModeId}`,
+    `created: ${today}`,
+    `auto_generated: true`,
+    `</code></pre>`,
+    ``,
+    `<h2>Validation Steps <!-- #validation --></h2>`,
+    `<ol>`,
+    `  <li><p>Verify all ${issues.length} gate issue(s) from ${failKey} are resolved by ${exKey}</p></li>`,
+    `  <li><p>Re-run ${failType === 'VA' ? 'Playwright tests or manual validation flow' : 'implementation checks and unit tests'}</p></li>`,
+    `  <li><p>Confirm ${failKey} can now advance to Done (gate passes)</p></li>`,
+    `</ol>`,
+    ``,
+    `<h2>Acceptance Criteria <!-- #ac --></h2>`,
+    `<ul data-type="taskList">`,
+    acIssues,
+    `  <li data-type="taskItem" data-checked="false"><p>${failKey} gate passes on re-run</p></li>`,
+    `  <li data-type="taskItem" data-checked="false"><p>${exKey} implementation verified end-to-end</p></li>`,
+    `</ul>`,
+  ].join('\n');
+
+  const results = { exKey, vaKey, exId: null, vaId: null };
+
+  // Place in the appropriate columns — fall back to artifacts group if execution/validation unknown
+  const exGroupId = cfg.executionGroupId || cfg.artifactsGroupId || cfg.doneGroupId;
+  const vaGroupId = cfg.validationGroupId || cfg.artifactsGroupId || cfg.doneGroupId;
+
+  try {
+    const exObj = await api('POST', `/api/v2/dataspheres/${cfg.dsId}/tasks`, {
+      title: `${exKey} · FIX: ${shortReason}`,
+      content: exContent,
+      statusGroupId: exGroupId,
+      planModeId: cfg.planModeId,
+    });
+    results.exId = exObj.task?.id || exObj.id;
+  } catch (e) {
+    process.stderr.write(`[remediation EX create failed: ${e.message.slice(0, 60)}] `);
+    return results;
+  }
+
+  try {
+    const vaObj = await api('POST', `/api/v2/dataspheres/${cfg.dsId}/tasks`, {
+      title: `${vaKey} · Verify fix: ${shortReason.slice(0, 60)}`,
+      content: vaContent,
+      statusGroupId: vaGroupId,
+      planModeId: cfg.planModeId,
+    });
+    results.vaId = vaObj.task?.id || vaObj.id;
+  } catch (e) {
+    process.stderr.write(`[remediation VA create failed: ${e.message.slice(0, 60)}] `);
+  }
+
+  // Post BLOCKED comment on the failing task with links to new remediation tasks
+  const ts = new Date().toISOString();
+  const blockedComment = [
+    `**[BLOCKED] Gate failure — remediation tasks auto-created** | ${ts}`,
+    ``,
+    `This task failed gate verification with **${issues.length}** issue(s):`,
+    ...issues.map(i => `- ${i}`),
+    ``,
+    `**Remediation tasks created:**`,
+    `- **${exKey}** (${results.exId || 'created'}) — Fix: ${shortReason}`,
+    `- **${vaKey}** (${results.vaId || 'created'}) — Verify the fix`,
+    ``,
+    `**Unblock path:** Advance ${exKey} → ${vaKey} → then re-attempt ${failKey}.`,
+  ].join('\n');
+
+  await postComment(cfg, failingTask.id, blockedComment);
+
+  return results;
+}
+
+// ── Create intake-driven EX+VA board tasks ───────────────────────────────────
+async function createIntakeTasks(cfg, item, allTasks) {
+  const allExNums = allTasks.filter(t => sddType(t.title) === 'EX' && sddNum(t.title) < 900).map(t => sddNum(t.title));
+  const allVaNums = allTasks.filter(t => sddType(t.title) === 'VA' && sddNum(t.title) < 900).map(t => sddNum(t.title));
+  const nextExNum = (allExNums.length > 0 ? Math.max(...allExNums) : 0) + 1;
+  const nextVaNum = (allVaNums.length > 0 ? Math.max(...allVaNums) : 0) + 1;
+
+  const exKey = `EX-${pad3(nextExNum)}`;
+  const vaKey = `VA-${pad3(nextVaNum)}`;
+  const today = new Date().toISOString().slice(0, 10);
+  const esc = s => (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+  const bodyHtml = item.body
+    ? `<p>${esc(item.body).replace(/\n/g, '</p><p>')}</p>`
+    : `<p>${esc(item.summary)}</p>`;
+
+  const exContent = [
+    `<pre><code class="language-yaml">`,
+    `spec_id: ${exKey}`,
+    `intake_ref: ${item.id}`,
+    `intake_type: ${item.type}`,
+    `intake_priority: ${item.priority}`,
+    `plan_mode_id: ${cfg.planModeId}`,
+    `created: ${today}`,
+    `auto_generated: true`,
+    `</code></pre>`,
+    ``,
+    `<h2>Context <!-- #context --></h2>`,
+    `<p><strong>Intake ${item.id} (${item.type}, ${item.priority} priority):</strong></p>`,
+    bodyHtml,
+    ``,
+    `<h2>Implementation Steps <!-- #steps --></h2>`,
+    `<ol>`,
+    `  <li><p>Review the intake context above and identify affected files</p></li>`,
+    `  <li><p>Implement the changes described in the intake body</p></li>`,
+    `  <li><p>Write or update tests covering the changed behaviour</p></li>`,
+    `  <li><p>Verify end-to-end and document evidence for ${vaKey}</p></li>`,
+    `</ol>`,
+    ``,
+    `<h2>Implementation Files <!-- #files --></h2>`,
+    `<ul class="tiptap-bullet-list">`,
+    `  <li><p><em>Identify and update the relevant files to address the intake item</em></p></li>`,
+    `</ul>`,
+    ``,
+    `<h2>Acceptance Criteria <!-- #ac --></h2>`,
+    `<ul data-type="taskList">`,
+    `  <li data-type="taskItem" data-checked="false"><p>Intake context satisfied: ${esc(item.summary.slice(0, 120))}</p></li>`,
+    `  <li data-type="taskItem" data-checked="false"><p>Changes tested and verified end-to-end with real output</p></li>`,
+    `  <li data-type="taskItem" data-checked="false"><p>No regressions in existing tests</p></li>`,
+    `</ul>`,
+  ].join('\n');
+
+  const vaContent = [
+    `<pre><code class="language-yaml">`,
+    `spec_id: ${vaKey}`,
+    `execution_ref: ${exKey}`,
+    `intake_ref: ${item.id}`,
+    `plan_mode_id: ${cfg.planModeId}`,
+    `created: ${today}`,
+    `auto_generated: true`,
+    `</code></pre>`,
+    ``,
+    `<h2>Validation Steps <!-- #validation --></h2>`,
+    `<ol>`,
+    `  <li><p>Verify ${exKey} fully addresses: ${esc(item.summary.slice(0, 120))}</p></li>`,
+    `  <li><p>Run tests (unit + integration or Playwright) and capture real output</p></li>`,
+    `  <li><p>Confirm no regressions — diff test results before/after</p></li>`,
+    `  <li><p>Confirm intake context is satisfied end-to-end</p></li>`,
+    `</ol>`,
+    ``,
+    `<h2>Acceptance Criteria <!-- #ac --></h2>`,
+    `<ul data-type="taskList">`,
+    `  <li data-type="taskItem" data-checked="false"><p>Intake ${item.id} context satisfied: ${esc(item.summary.slice(0, 120))}</p></li>`,
+    `  <li data-type="taskItem" data-checked="false"><p>${exKey} implementation verified with real test output</p></li>`,
+    `  <li data-type="taskItem" data-checked="false"><p>No regressions introduced by the change</p></li>`,
+    `</ul>`,
+  ].join('\n');
+
+  const exGroupId = cfg.executionGroupId || cfg.artifactsGroupId || cfg.doneGroupId;
+  const vaGroupId = cfg.validationGroupId || cfg.artifactsGroupId || cfg.doneGroupId;
+  const results = { exKey, vaKey, exId: null, vaId: null };
+
+  const exObj = await api('POST', `/api/v2/dataspheres/${cfg.dsId}/tasks`, {
+    title: `${exKey} · ${item.summary.slice(0, 60)}`,
+    content: exContent,
+    statusGroupId: exGroupId,
+    planModeId: cfg.planModeId,
+  });
+  results.exId = exObj.task?.id || exObj.id;
+
+  const vaObj = await api('POST', `/api/v2/dataspheres/${cfg.dsId}/tasks`, {
+    title: `${vaKey} · Verify: ${item.summary.slice(0, 55)}`,
+    content: vaContent,
+    statusGroupId: vaGroupId,
+    planModeId: cfg.planModeId,
+  });
+  results.vaId = vaObj.task?.id || vaObj.id;
+
+  return results;
+}
+
+// ── Intake commands ───────────────────────────────────────────────────────────
+
+async function addIntakeCommand(slug) {
+  if (!intakeSummary) {
+    console.error('✗ --intake requires --intake-summary "..."');
+    process.exit(1);
+  }
+  const VALID_TYPES = ['instruction', 'uat-result', 'stakeholder-feedback'];
+  const VALID_PRIORITIES = ['critical', 'high', 'normal'];
+  if (!VALID_TYPES.includes(intakeType)) {
+    console.error(`✗ --intake-type must be one of: ${VALID_TYPES.join(', ')}`);
+    process.exit(1);
+  }
+  if (!VALID_PRIORITIES.includes(intakePriority)) {
+    console.error(`✗ --intake-priority must be one of: ${VALID_PRIORITIES.join(', ')}`);
+    process.exit(1);
+  }
+
+  const items = getIntakeItems(slug);
+  const id = nextIntakeId(items);
+  const item = {
+    id,
+    type: intakeType,
+    priority: intakePriority,
+    status: 'pending',
+    source: 'user',
+    summary: intakeSummary,
+    body: intakeBody_ || null,
+    targetType: null,
+    targetRef: null,
+    taskIds: [],
+    uatRef: null,
+    uatOutcome: null,
+    createdAt: new Date().toISOString(),
+    triagedAt: null,
+    doneAt: null,
+  };
+  items.push(item);
+  setIntakeItems(slug, items);
+
+  console.log(JSON.stringify({ created: true, id, type: intakeType, priority: intakePriority, summary: intakeSummary,
+    hint: intakePriority === 'critical'
+      ? `⚠ CRITICAL — --next will be blocked until this is triaged. Run: node loop.mjs --triage ${id} --target-type EX`
+      : `Run triage when ready: node loop.mjs --triage ${id} --target-type EX`,
+  }, null, 2));
+}
+
+async function triageIntakeCommand(cfg, slug) {
+  if (!triageIntakeId) {
+    console.error('✗ --triage requires an intake item ID (e.g. INT-001)');
+    process.exit(1);
+  }
+  const items = getIntakeItems(slug);
+  const item = items.find(i => i.id === triageIntakeId);
+  if (!item) {
+    console.error(`✗ Intake item "${triageIntakeId}" not found for initiative "${slug}"`);
+    console.error(`  Run --intake-status to list available items.`);
+    process.exit(1);
+  }
+  if (item.status === 'done') {
+    console.log(`[skip] ${triageIntakeId} is already done.`);
+    return;
+  }
+
+  const tasks = await readBoard(cfg);
+
+  if (triageTargetRef) {
+    // Mode A: add context to an existing task as a comment
+    const target = tasks.find(t => sddKey(t.title) === triageTargetRef) ||
+                   tasks.find(t => t.id === triageTargetRef);
+    if (!target) {
+      console.error(`✗ Target task "${triageTargetRef}" not found on this board`);
+      process.exit(1);
+    }
+    if (dryRun) {
+      console.log(JSON.stringify({
+        dryRun: true, intakeId: triageIntakeId,
+        action: 'append-context-to-existing-task',
+        targetTask: { id: target.id, key: sddKey(target.title), title: target.title },
+      }, null, 2));
+      return;
+    }
+    const ts = new Date().toISOString();
+    const commentText = [
+      `**[INTAKE ${triageIntakeId}] ${item.type} — ${item.priority} priority** | ${ts}`,
+      ``,
+      `**Summary:** ${item.summary}`,
+      ...(item.body ? [``, item.body] : []),
+    ].join('\n');
+    await postComment(cfg, target.id, commentText);
+    item.status = 'triaged';
+    item.targetType = triageTargetType;
+    item.targetRef = triageTargetRef;
+    item.taskIds = [target.id];
+    item.triagedAt = new Date().toISOString();
+    setIntakeItems(slug, items);
+    console.log(JSON.stringify({
+      triaged: true, intakeId: triageIntakeId,
+      action: 'context-appended',
+      targetTask: { id: target.id, key: sddKey(target.title), title: target.title },
+    }, null, 2));
+    return;
+  }
+
+  // Mode B: create new EX+VA pair from intake
+  if (dryRun) {
+    const allExNums = tasks.filter(t => sddType(t.title) === 'EX' && sddNum(t.title) < 900).map(t => sddNum(t.title));
+    const allVaNums = tasks.filter(t => sddType(t.title) === 'VA' && sddNum(t.title) < 900).map(t => sddNum(t.title));
+    const exNum = (allExNums.length > 0 ? Math.max(...allExNums) : 0) + 1;
+    const vaNum = (allVaNums.length > 0 ? Math.max(...allVaNums) : 0) + 1;
+    console.log(JSON.stringify({
+      dryRun: true, intakeId: triageIntakeId, summary: item.summary,
+      action: 'create-new-tasks',
+      wouldCreate: { exKey: `EX-${pad3(exNum)}`, vaKey: `VA-${pad3(vaNum)}` },
+    }, null, 2));
+    return;
+  }
+
+  process.stdout.write(`→ Creating board tasks for ${triageIntakeId}... `);
+  const result = await createIntakeTasks(cfg, item, tasks);
+
+  item.status = 'triaged';
+  item.targetType = 'EX';
+  item.targetRef = result.exKey;
+  item.taskIds = [result.exId, result.vaId].filter(Boolean);
+  item.triagedAt = new Date().toISOString();
+  setIntakeItems(slug, items);
+
+  console.log('✅');
+  console.log(JSON.stringify({
+    triaged: true, intakeId: triageIntakeId,
+    action: 'tasks-created',
+    tasks: { exKey: result.exKey, exId: result.exId, vaKey: result.vaKey, vaId: result.vaId },
+    nextStep: `node loop.mjs --next will pick up ${result.exKey} when it is the next incomplete task.`,
+  }, null, 2));
+}
+
+async function intakeStatusCommand(cfg, slug) {
+  const tasks = await readBoard(cfg);
+  await sweepIntakeDone(cfg, slug, tasks);
+
+  const items = getIntakeItems(slug);
+  const filtered = intakePendingOnly ? items.filter(i => i.status === 'pending') : items;
+
+  const PRIORITY_ORDER = { critical: 0, high: 1, normal: 2 };
+  const STATUS_ORDER = { pending: 0, triaged: 1, done: 2, skipped: 3 };
+  filtered.sort((a, b) =>
+    (STATUS_ORDER[a.status] ?? 9) - (STATUS_ORDER[b.status] ?? 9) ||
+    (PRIORITY_ORDER[a.priority] ?? 9) - (PRIORITY_ORDER[b.priority] ?? 9)
+  );
+
+  console.log(`\n━━━ all-dai-sdd INTAKE QUEUE: ${slug} ━━━`);
+  console.log(`  Total: ${items.length} | Pending: ${items.filter(i=>i.status==='pending').length} | Triaged: ${items.filter(i=>i.status==='triaged').length} | Done: ${items.filter(i=>i.status==='done').length}\n`);
+
+  if (filtered.length === 0) {
+    console.log('  (no items)');
+  } else {
+    for (const item of filtered) {
+      const flag = item.priority === 'critical' ? ' ⚠ CRITICAL' : item.priority === 'high' ? ' ↑' : '';
+      console.log(`  ${item.id}  [${item.status.toUpperCase().padEnd(7)}] [${item.type}]${flag}`);
+      console.log(`         ${item.summary.slice(0, 90)}`);
+      if (item.taskIds?.length > 0) console.log(`         → tasks: ${item.taskIds.slice(0, 3).join(', ')}`);
+    }
+  }
+  console.log(`\n  To add: node loop.mjs --intake --intake-summary "..." --intake-priority normal`);
+  console.log(`  To triage: node loop.mjs --triage INT-NNN --target-type EX`);
+  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+}
+
+async function uatCommand(cfg, iState, slug) {
+  if (!uatTaskId) { console.error('✗ --uat requires a VA task ID or key'); process.exit(1); }
+  if (!uatOutcome) { console.error('✗ --uat requires --outcome <pass|fail>'); process.exit(1); }
+  if (!evidenceText) { console.error('✗ --uat requires --evidence "..."'); process.exit(1); }
+  if (!['pass', 'fail'].includes(uatOutcome)) {
+    console.error('✗ --outcome must be "pass" or "fail"'); process.exit(1);
+  }
+
+  const tasks = await readBoard(cfg);
+  const task = tasks.find(t => t.id === uatTaskId) ||
+               tasks.find(t => sddKey(t.title) === uatTaskId);
+  if (!task) {
+    console.error(`✗ Task "${uatTaskId}" not found. Pass a task ID or key (VA-NNN).`);
+    process.exit(1);
+  }
+
+  const items = getIntakeItems(slug);
+  const uatIntakeId = nextIntakeId(items);
+  const ts = new Date().toISOString();
+
+  if (uatOutcome === 'pass') {
+    if (task.isDone) {
+      console.log(`[skip] ${sddKey(task.title)} is already Done.`);
+    } else {
+      // Same path as --advance but stamped as UAT
+      const ticked = tickAll(task.content);
+      if (ticked !== task.content) await patchContent(cfg, task.id, ticked);
+      await postComment(cfg, task.id, `[all-dai-sdd-system-message]\n\n**UAT Gate: PASS** | ${ts}\n\n${evidenceText}`);
+      await createArtifact(cfg, task, tasks);
+      await moveDone(cfg, task.id);
+      console.log(`✅ ${sddKey(task.title)} UAT PASS → Done`);
+    }
+
+    // Record intake item
+    items.push({
+      id: uatIntakeId, type: 'uat-result', priority: 'normal',
+      status: 'done', source: 'uat-runner',
+      summary: `UAT PASS: ${task.title.slice(0, 80)}`,
+      body: evidenceText.slice(0, 500),
+      targetType: 'VA', targetRef: sddKey(task.title) || task.id,
+      taskIds: [task.id], uatRef: task.id, uatOutcome: 'pass',
+      createdAt: ts, triagedAt: ts, doneAt: ts,
+    });
+    setIntakeItems(slug, items);
+    console.log(JSON.stringify({ uatOutcome: 'pass', intakeId: uatIntakeId, taskKey: sddKey(task.title) }, null, 2));
+
+  } else {
+    // UAT fail: create remediation tasks
+    const issues = evidenceText.split(/[;\n]/).map(s => s.trim()).filter(s => s.length > 10).slice(0, 5);
+    if (issues.length === 0) issues.push('UAT validation failed — see evidence for details');
+
+    process.stdout.write(`→ UAT FAIL on ${sddKey(task.title)} — creating remediation tasks... `);
+    const result = await createRemediationTasks(cfg, task, issues, tasks);
+    console.log('✅');
+
+    items.push({
+      id: uatIntakeId, type: 'uat-result', priority: 'high',
+      status: 'triaged', source: 'uat-runner',
+      summary: `UAT FAIL: ${task.title.slice(0, 80)}`,
+      body: evidenceText.slice(0, 500),
+      targetType: 'EX', targetRef: result.exKey,
+      taskIds: [result.exId, result.vaId].filter(Boolean),
+      uatRef: task.id, uatOutcome: 'fail',
+      createdAt: ts, triagedAt: ts, doneAt: null,
+    });
+    setIntakeItems(slug, items);
+    console.log(JSON.stringify({
+      uatOutcome: 'fail', intakeId: uatIntakeId, taskKey: sddKey(task.title),
+      remediation: { exKey: result.exKey, exId: result.exId, vaKey: result.vaKey, vaId: result.vaId },
+      nextStep: `node loop.mjs --next will pick up ${result.exKey} to fix the UAT failures.`,
+    }, null, 2));
+  }
+}
+
+// ── Initiative health check ───────────────────────────────────────────────────
+// Validates that the initiative configuration and board are structurally correct.
+// Run before starting any loop iteration on a new initiative, or after incidents.
+// Usage: node loop.mjs --health [--initiative <slug>]
+async function healthCheck(cfg, iState, slug) {
+  const ts = new Date().toISOString();
+  const results = [];
+  let pass = true;
+
+  function check(name, ok, detail) {
+    results.push({ name, ok, detail: ok ? '✅' : `❌ ${detail}` });
+    if (!ok) pass = false;
+  }
+
+  // 1. All 7 status groups present
+  const REQUIRED_GROUPS = ['Research', 'North Stars', 'Epics', 'Execution', 'Validation', 'Artifacts', 'Done'];
+  const sg = iState.statusGroups || {};
+  for (const g of REQUIRED_GROUPS) {
+    check(`statusGroups.${g} defined`, !!(sg[g] || sg[g.toLowerCase()]), `Missing group "${g}" in .sdd-state.json → run node sdd-conductor.mjs init to regenerate`);
+  }
+
+  // 2. dashboardSlug registered
+  check('dashboardSlug registered', !!iState.dashboardSlug, 'Missing dashboardSlug → add to .sdd-state.json before advancing any tasks');
+
+  // 3. readBoard scoping — allGroupIds should have exactly 7 groups
+  const groupIds = await ensureGroupIds(cfg);
+  check('allGroupIds populated (≥7)', groupIds.size >= 7, `Only ${groupIds.size} group IDs loaded — readBoard may return tasks from other initiatives`);
+
+  // 4. Board reads correctly
+  let tasks = [];
+  try {
+    tasks = await readBoard(cfg);
+    check('readBoard returns >0 tasks', tasks.length > 0, 'No tasks found — check dsId and planModeId');
+  } catch (e) {
+    check('readBoard succeeds', false, e.message.slice(0, 80));
+  }
+
+  // 5. No tasks with sddNum=999 (non-standard naming) — warns but doesn't fail
+  const nonStandard = tasks.filter(t => sddType(t.title) !== null && sddNum(t.title) >= 900);
+  check('no non-standard task numbering (sddNum < 900)', nonStandard.length === 0,
+    `${nonStandard.length} task(s) with non-standard titles: ${nonStandard.slice(0,2).map(t=>t.title.slice(0,40)).join(', ')}`);
+
+  // 6. AR tasks use standard AR-NNN naming (not LG-AR-NNN or prefixed)
+  const badArTasks = tasks.filter(t => {
+    const c = t.content || '';
+    return c.includes('validation_ref:') && !t.title.match(/^AR-\d+/);
+  });
+  check('AR tasks use standard AR-NNN naming', badArTasks.length === 0,
+    `Non-standard AR titles: ${badArTasks.slice(0,2).map(t=>t.title.slice(0,40)).join(', ')}`);
+
+  // 7. No orphaned remediation tasks (auto_generated tasks not in Execution/Validation)
+  const orphaned = tasks.filter(t => (t.content||'').includes('auto_generated: true') && t.isDone);
+  check('no orphaned auto-generated tasks stuck Done', orphaned.length === 0,
+    `${orphaned.length} auto-generated task(s) marked Done without verification: ${orphaned.slice(0,2).map(t=>t.title.slice(0,40)).join(', ')}`);
+
+  // 8. Progress
+  const nonAR = tasks.filter(t => sddType(t.title) !== 'AR');
+  const doneCount = nonAR.filter(t => t.isDone).length;
+  const pct = nonAR.length > 0 ? Math.round(doneCount / nonAR.length * 100) : 0;
+
+  console.log(`\n━━━ all-dai-sdd HEALTH CHECK: ${slug} ━━━`);
+  console.log(`  Initiative: ${slug}`);
+  console.log(`  Plan mode:  ${cfg.planModeId}`);
+  console.log(`  Progress:   ${doneCount}/${nonAR.length} (${pct}%)`);
+  console.log(`  Board scope: ${tasks.length} tasks (${groupIds.size} status groups)\n`);
+
+  for (const r of results) {
+    console.log(`  ${r.detail.startsWith('❌') ? '❌' : '✅'} ${r.name}: ${r.detail.startsWith('❌') ? r.detail.slice(2) : 'OK'}`);
+  }
+
+  const failCount = results.filter(r => !r.ok).length;
+  console.log(`\n  ${pass ? '✅ HEALTHY' : `❌ ${failCount} issue(s) found`}`);
+  if (!pass) {
+    console.log(`  Fix the issues above before running --next or --advance.`);
+    process.exit(1);
+  }
+  return { pass, tasks, doneCount, total: nonAR.length, pct };
+}
+
+// ── AI-driven: --create-fix (Ralph reasoning mode) ───────────────────────────
+// Called when --advance fails and Claude has diagnosed the problem.
+// Creates an EX+VA remediation pair and posts BLOCKED on the failing task.
+// Usage: node loop.mjs --create-fix <taskId|taskKey> --reason "issue1; issue2"
+async function createFixMode(cfg, iState, slug) {
+  if (!createFixTaskId) {
+    console.error('✗ --create-fix requires a task ID or key');
+    process.exit(1);
+  }
+  if (!createFixReason) {
+    console.error('✗ --create-fix requires --reason "description of what failed"');
+    process.exit(1);
+  }
+
+  const tasks = await readBoard(cfg);
+  const task = tasks.find(t => t.id === createFixTaskId) ||
+               tasks.find(t => sddKey(t.title) === createFixTaskId);
+  if (!task) {
+    console.error(`✗ Task "${createFixTaskId}" not found on this board`);
+    process.exit(1);
+  }
+
+  const issues = createFixReason.split(/[;|]+/).map(s => s.trim()).filter(Boolean);
+  if (issues.length === 0) {
+    console.error('✗ --reason was empty after parsing');
+    process.exit(1);
+  }
+
+  if (dryRun) {
+    const allExNums = tasks.filter(t => sddType(t.title) === 'EX' && sddNum(t.title) < 900).map(t => sddNum(t.title));
+    const allVaNums = tasks.filter(t => sddType(t.title) === 'VA' && sddNum(t.title) < 900).map(t => sddNum(t.title));
+    const exNum = (allExNums.length > 0 ? Math.max(...allExNums) : 0) + 1;
+    const vaNum = (allVaNums.length > 0 ? Math.max(...allVaNums) : 0) + 1;
+    console.log(JSON.stringify({
+      dryRun: true,
+      failingTask: { id: task.id, key: sddKey(task.title), title: task.title },
+      wouldCreate: { exKey: `EX-${pad3(exNum)}`, vaKey: `VA-${pad3(vaNum)}` },
+      issues,
+    }, null, 2));
+    return;
+  }
+
+  process.stdout.write(`→ Creating remediation tasks for ${sddKey(task.title) || task.title.slice(0,30)}... `);
+  const result = await createRemediationTasks(cfg, task, issues, tasks);
+
+  console.log(`✅ Done`);
+  console.log(JSON.stringify({
+    created: true,
+    failingTask: { id: task.id, key: sddKey(task.title), title: task.title },
+    remediation: {
+      exKey: result.exKey, exId: result.exId,
+      vaKey: result.vaKey, vaId: result.vaId,
+    },
+    nextStep: `Run --next to pick up ${result.exKey} and fix the issues.`,
+  }, null, 2));
+}
+
 // ── AI-driven: --next ─────────────────────────────────────────────────────────
 // Outputs the next incomplete task as JSON so Claude can read, execute, and
 // substantiate it before calling --advance. No board modifications.
 async function findNextTask(cfg, iState, slug) {
-  const tasks = await readBoard(cfg, iState);
+  const tasks = await readBoard(cfg);
   const nonAR = tasks.filter(t => sddType(t.title) !== 'AR');
   const total = nonAR.length;
   const done = nonAR.filter(t => t.isDone).length;
+
+  // Intake queue: auto-sweep triaged → done, then check for blockers
+  await sweepIntakeDone(cfg, slug, tasks);
+  const intakeItems = getIntakeItems(slug);
+  const criticalBlocking = intakeItems.filter(i => i.status === 'pending' && i.priority === 'critical');
+  if (criticalBlocking.length > 0) {
+    process.stdout.write(JSON.stringify({
+      status: 'intake-blocked',
+      done, total, pct: Math.round(done / total * 100),
+      reason: `${criticalBlocking.length} critical intake item(s) must be triaged before advancing`,
+      pendingIntake: criticalBlocking.map(i => ({ id: i.id, summary: i.summary, priority: i.priority, type: i.type })),
+      action: `node loop.mjs --triage ${criticalBlocking[0].id} --target-type EX`,
+    }, null, 2));
+    return;
+  }
+  const advisoryIntake = intakeItems.filter(i => i.status === 'pending');
+
   const next = findNextIncomplete(tasks);
 
   if (!next) {
@@ -631,6 +1501,8 @@ async function findNextTask(cfg, iState, slug) {
       status: 'complete',
       done, total,
       pct: Math.round(done / total * 100),
+      generateNextStepsPage: true,
+      instruction: 'All tasks Done — immediately switch to DONE mode: generate the Next Steps & UAT page as specified in the all-dai-sdd SKILL.md DONE mode section. Do not wait for user input.',
       dashboardUrl: iState.dashboardSlug
         ? `${BASE}/pages/${cfg.dsUri || cfg.dsId}/${iState.dashboardSlug}` : null,
       plannerUrl: `${BASE}/app/${cfg.dsUri || cfg.dsId}/planner?mode=${cfg.planModeId}`,
@@ -651,6 +1523,7 @@ async function findNextTask(cfg, iState, slug) {
     refreshDashboard(iState);
   } catch { /* non-fatal */ }
 
+  const nextType = sddType(next.title);
   process.stdout.write(JSON.stringify({
     status: 'next',
     done, total,
@@ -659,9 +1532,21 @@ async function findNextTask(cfg, iState, slug) {
       id: next.id,
       title: next.title,
       key: sddKey(next.title),
-      type: sddType(next.title),
+      type: nextType,
       content: next.content,
     },
+    // Flags telling Claude what kind of substantiation is required before --advance
+    requiresResearch: nextType === 'RS',
+    requiresAcVerification: nextType === 'EP' || nextType === 'NS',
+    requiresScreenshots: nextType === 'VA' && /gallery|modal|builder|view|form|upload|component|render|survey|page|badge|button|layout|nav|feed|dashboard/i.test(next.title),
+    requiresVisualDescription: nextType === 'VA' && /synthesis|transfer|garment|character|render|inpaint|upscale|pipeline|tryon|try.on|outfit|cloth|generat|wears?|image/i.test(next.title),
+    isAutoGeneratedFix: /auto_generated: true/.test(next.content || ''),
+    fixFor: (next.content || '').match(/fix_for:\s*([A-Z]+-\d+)/)?.[1] || null,
+    intakeRef: (next.content || '').match(/intake_ref:\s*(INT-\d+)/)?.[1] || null,
+    // Advisory: pending intake items that haven't been triaged yet (not blockers, just FYI)
+    pendingIntake: advisoryIntake.length > 0
+      ? advisoryIntake.map(i => ({ id: i.id, summary: i.summary, priority: i.priority, type: i.type }))
+      : undefined,
     taskIndex,
   }, null, 2));
 }
@@ -709,12 +1594,32 @@ async function advanceTask(cfg, iState, slug) {
     /output\s+(saved|written)\s+to\s+outputs\//i,
   ];
   if (evidenceText.length < MIN_EVIDENCE_LEN) {
-    console.error(`✗ Evidence too short (${evidenceText.length} chars, min ${MIN_EVIDENCE_LEN}). Provide real output.`);
+    const msg = `Evidence too short (${evidenceText.length} chars, min ${MIN_EVIDENCE_LEN}). Provide real output.`;
+    console.error(`✗ ${msg}`);
+    if (autoFix) {
+      const tasks_af = await readBoard(cfg);
+      const task_af = tasks_af.find(t => t.id === advanceTaskId) ||
+                      tasks_af.find(t => sddKey(t.title) === advanceTaskId);
+      if (task_af) {
+        const result = await createRemediationTasks(cfg, task_af, [msg], tasks_af);
+        console.error(`\n  ✅ Remediation tasks created: ${result.exKey} + ${result.vaKey}`);
+      }
+    }
     process.exit(1);
   }
   for (const pattern of BOILERPLATE_PATTERNS) {
     if (pattern.test(evidenceText)) {
-      console.error('✗ Evidence matches known boilerplate. Replace with real command output, file paths, or measured results.');
+      const msg = 'Evidence matches known boilerplate. Replace with real command output, file paths, or measured results.';
+      console.error(`✗ ${msg}`);
+      if (autoFix) {
+        const tasks_af = await readBoard(cfg);
+        const task_af = tasks_af.find(t => t.id === advanceTaskId) ||
+                        tasks_af.find(t => sddKey(t.title) === advanceTaskId);
+        if (task_af) {
+          const result = await createRemediationTasks(cfg, task_af, [msg], tasks_af);
+          console.error(`\n  ✅ Remediation tasks created: ${result.exKey} + ${result.vaKey}`);
+        }
+      }
       process.exit(1);
     }
   }
@@ -724,9 +1629,8 @@ async function advanceTask(cfg, iState, slug) {
   //   1. A visual description of what is actually visible in the output
   //   2. Not just job IDs, file paths, or "no errors"
   // Claude MUST use the Read tool to view the output image before calling --advance.
-  // Narrowed to ComfyUI/diffusion-specific terms — "pipeline" is too generic (matches survey pipelines).
-  const IMAGE_VA_PATTERN = /synthesis|garment|render|inpaint|upscale|tryon|try.on|outfit|cloth|wears?|comfyui|stable.diff|tensorrt|liveportrait|spout2|faceless|avatar|talking.head/i;
-  const tasks_check = await readBoard(cfg, iState);
+  const IMAGE_VA_PATTERN = /synthesis|transfer|garment|character|render|inpaint|upscale|pipeline|tryon|try.on|outfit|cloth|generat|wears?|image/i;
+  const tasks_check = await readBoard(cfg);
   const task_check = tasks_check.find(t => t.id === advanceTaskId) ||
                      tasks_check.find(t => sddKey(t.title) === advanceTaskId);
   if (task_check && sddType(task_check.title) === 'VA' && IMAGE_VA_PATTERN.test(task_check.title)) {
@@ -752,9 +1656,45 @@ async function advanceTask(cfg, iState, slug) {
     }
   }
 
+  // ── UI/frontend screenshot gate for visual VA tasks ─────────────────────
+  // Any VA task with UI-related keywords in the title must include at least one
+  // screenshot file path (.png/.jpg) in the evidence — same principle as the
+  // image-gen visual gate above but for frontend/component work.
+  const UI_VA_PATTERN = /gallery|modal|builder|view|form|upload|component|render|survey|page|badge|button|layout|nav|feed|dashboard/i;
+  if (task_check && sddType(task_check.title) === 'VA' && UI_VA_PATTERN.test(task_check.title)) {
+    const SCREENSHOT_RE = /\.(png|jpg|jpeg|gif|webp)(\s|"|'|\)|]|,|$)/i;
+    if (!SCREENSHOT_RE.test(evidenceText)) {
+      console.error('✗ GATE FAIL — UI/frontend VA task requires screenshot evidence.');
+      console.error('');
+      console.error('  Include at least one screenshot file path (.png/.jpg/.webp) in your --evidence.');
+      console.error('  Steps:');
+      console.error('    1. Run Playwright tests: npx playwright test --reporter=list');
+      console.error('    2. Capture screenshots with page.screenshot({ path: "tests/e2e/screenshots/..." })');
+      console.error('    3. Paste the screenshot paths and describe what is visible in each');
+      console.error('');
+      console.error('  Example evidence format:');
+      console.error('    "tests/e2e/screenshots/feature/01-modal-open.png — modal visible with 2 tabs.');
+      console.error('     tests/e2e/screenshots/feature/02-upload-done.png — success checkmark shown."');
+      console.error('');
+      console.error('  If --auto-fix is set, a remediation EX+VA pair will be created instead.');
+      if (autoFix) {
+        const tasks_af = await readBoard(cfg);
+        const task_af = tasks_af.find(t => t.id === advanceTaskId) ||
+                        tasks_af.find(t => sddKey(t.title) === advanceTaskId);
+        if (task_af) {
+          const result = await createRemediationTasks(cfg, task_af, ['UI VA task missing screenshot evidence — include .png/.jpg paths describing what is visible'], tasks_af);
+          console.error(`\n  ✅ Remediation tasks created: ${result.exKey} + ${result.vaKey}`);
+          console.error(`  Next: capture screenshots, then advance ${result.exKey} with screenshot evidence.`);
+        }
+      }
+      process.exit(1);
+    }
+  }
+
   // ── validation_command gate ──────────────────────────────────────────────────
-  // If the task front-matter contains `validation_command:`, run it as a subprocess.
-  // The task cannot advance unless the command exits 0.
+  // If the task front-matter has `validation_command: <cmd>`, run it as a subprocess.
+  // Advancement is blocked if the command exits non-zero. On success, output is prepended
+  // to evidence so it appears in the gate comment.
   {
     const vcMatch = task_check?.content?.match(/validation_command:\s*(.+)/);
     const valCmd = vcMatch ? vcMatch[1].trim() : null;
@@ -763,7 +1703,6 @@ async function advanceTask(cfg, iState, slug) {
       try {
         const vcOut = execSync(valCmd, { encoding: 'utf-8', timeout: 120000 });
         process.stdout.write(`  ✅ validation_command exited 0\n`);
-        // Prepend validation output to evidence so it is part of the gate comment.
         evidenceText = `[validation_command: ${valCmd}]\nExit: 0\nOutput:\n${vcOut.slice(0, 2000)}\n\n${evidenceText}`;
       } catch (vcErr) {
         const failLog = path.join(findGitRoot(), '.sdd-failures.log');
@@ -779,7 +1718,7 @@ async function advanceTask(cfg, iState, slug) {
     }
   }
 
-  const tasks = await readBoard(cfg, iState);
+  const tasks = await readBoard(cfg);
   const task = tasks.find(t => t.id === advanceTaskId);
   if (!task) {
     // Also try matching by key (e.g. "VA-003")
@@ -826,7 +1765,7 @@ async function advanceTask(cfg, iState, slug) {
   } catch { /* non-fatal */ }
 
   // Print updated progress
-  const updated = await readBoard(cfg, iState);
+  const updated = await readBoard(cfg);
   const nonAR = updated.filter(t => sddType(t.title) !== 'AR');
   const done = nonAR.filter(t => t.isDone).length;
   const total = nonAR.length;
@@ -846,7 +1785,7 @@ async function backfillArtifacts(cfg, iState, slug) {
     process.exit(1);
   }
 
-  const tasks = await readBoard(cfg, iState);
+  const tasks = await readBoard(cfg);
   const vaTasks = tasks.filter(t => sddType(t.title) === 'VA' && t.isDone)
                        .sort((a, b) => sddNum(a.title) - sddNum(b.title));
 
@@ -886,14 +1825,14 @@ async function backfillArtifacts(cfg, iState, slug) {
     process.stdout.write(`  → ${dryRun ? '[DRY] ' : ''}Creating AR for ${vaKey}... `);
 
     if (dryRun) {
-      const arNum = tasks.filter(t => sddType(t.title) === 'AR').length + created + 1;
+      const arNum = tasks.filter(t => sddType(t.title) === 'AR' && sddNum(t.title) < 900).length + created + 1;
       console.log(`(would create AR-${pad3(arNum)} · ${exTask.title.replace(/^EX-\d+\s*·?\s*/, '').trim().slice(0, 40)})`);
       created++;
       continue;
     }
 
-    const arNum = tasks.filter(t => sddType(t.title) === 'AR').length + created + 1;
-    const arContent = buildArContent(arNum, vaNum, exTask, cfg);
+    const arNum = tasks.filter(t => sddType(t.title) === 'AR' && sddNum(t.title) < 900).length + created + 1;
+    const arContent = buildArContent(arNum, vaNum, exTask, cfg, null);
     const arKey = `AR-${pad3(arNum)}`;
 
     try {
@@ -929,6 +1868,8 @@ async function main() {
     console.error('✗ DATASPHERES_API_KEY not found. Set it in ~/.dataspheres.env or .env');
     process.exit(1);
   }
+  // Allow env file to override BASE at runtime (supports local dev + prod switching)
+  if (env.DATASPHERES_BASE_URL) BASE = env.DATASPHERES_BASE_URL;
   initHeaders(apiKey);
 
   const state = loadState();
@@ -940,12 +1881,19 @@ async function main() {
 
   const slug = initiativeOverride || state?.currentInitiative || 'unknown';
 
+  const sg = iState.statusGroups || {};
   const cfg = {
-    dsId:           iState.dsId,
-    dsUri:          iState.dsUri,
-    planModeId:     iState.planModeId,
-    doneGroupId:    iState.statusGroups?.Done || iState.statusGroups?.done || iState.doneGroupId,
-    artifactsGroupId: iState.statusGroups?.Artifacts || iState.statusGroups?.artifacts || iState.artifactsGroupId || null,
+    dsId:             iState.dsId,
+    dsUri:            iState.dsUri,
+    planModeId:       iState.planModeId,
+    doneGroupId:      sg.Done || sg.done || iState.doneGroupId,
+    artifactsGroupId: sg.Artifacts || sg.artifacts || iState.artifactsGroupId || null,
+    executionGroupId: sg.Execution || sg.execution || iState.executionGroupId || null,
+    validationGroupId:sg.Validation || sg.validation || iState.validationGroupId || null,
+    // All statusGroupIds for this plan — used by readBoard to scope client-side.
+    // ensureGroupIds() will auto-fetch from the API and back-fill state if this is empty.
+    allGroupIds:      new Set(Object.values(sg).filter(Boolean)),
+    _slug:            slug, // passed through so ensureGroupIds can update .sdd-state.json
   };
 
   if (!cfg.dsId || !cfg.planModeId || !cfg.doneGroupId) {
@@ -953,8 +1901,38 @@ async function main() {
     process.exit(1);
   }
 
+  if (healthMode) {
+    await healthCheck(cfg, iState, slug);
+    return;
+  }
+
+  if (intakeAdd) {
+    await addIntakeCommand(slug);
+    return;
+  }
+
+  if (triageIntakeId !== null) {
+    await triageIntakeCommand(cfg, slug);
+    return;
+  }
+
+  if (showIntakeStatus) {
+    await intakeStatusCommand(cfg, slug);
+    return;
+  }
+
+  if (uatTaskId !== null) {
+    await uatCommand(cfg, iState, slug);
+    return;
+  }
+
   if (nextMode) {
     await findNextTask(cfg, iState, slug);
+    return;
+  }
+
+  if (createFixTaskId !== null) {
+    await createFixMode(cfg, iState, slug);
     return;
   }
 
@@ -981,7 +1959,7 @@ async function main() {
   while (iteration < MAX_ITERATIONS) {
     iteration++;
 
-    const tasks = await readBoard(cfg, iState);
+    const tasks = await readBoard(cfg);
     const total = tasks.length;
     const doneCount = tasks.filter(t => t.isDone).length;
     const pct = Math.round(doneCount / total * 100);
@@ -1001,6 +1979,10 @@ async function main() {
       console.log(`  ${total}/${total} tasks in Done column (including ${tasks.filter(t=>sddType(t.title)==='AR').length} Artifact tasks)`);
       if (iState.dashboardSlug) console.log(`  Dashboard: ${BASE}/pages/${uri}/${iState.dashboardSlug}`);
       console.log(`  Planner:   ${BASE}/app/${uri}/planner?mode=${cfg.planModeId}`);
+      console.log(`\n  ⚡ NEXT ACTION — DONE MODE (mandatory, no user input needed):`);
+      console.log(`  Generate the Next Steps & UAT page now.`);
+      console.log(`  See: all-dai-sdd SKILL.md § "Mode: DONE" for the exact steps.`);
+      console.log(`  Do NOT stop here. The page IS the deliverable.`);
       console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
       break;
     }
@@ -1032,13 +2014,18 @@ async function main() {
         if (!pass) {
           console.log(`⚠ VERIFY FAIL (${issues.length} issue${issues.length>1?'s':''})`);
           issues.forEach(i => console.log(`    · ${i}`));
-          await postComment(cfg, next.id,
-            `**Gate: FAIL** | ${new Date().toISOString()}\n\nVerification failed before advancement:\n${issues.map(i=>`- ${i}`).join('\n')}\n\nFix these issues and the loop will retry.`
-          );
           stuckCount++;
           if (stuckCount >= 3) {
-            console.log(`  [loop] Task ${key} stuck after 3 verification failures — skipping to prevent infinite loop.`);
+            // After 3 failures, stop rubber-stamping and create explicit remediation tasks
+            console.log(`  [loop] Task ${key} stuck after 3 verification failures — creating remediation tasks.`);
+            const allForRemediation = await readBoard(cfg);
+            const result = await createRemediationTasks(cfg, next, issues, allForRemediation);
+            console.log(`  [loop] ✅ Remediation created: ${result.exKey} + ${result.vaKey} → ${key} is BLOCKED.`);
             stuckCount = 0;
+          } else {
+            await postComment(cfg, next.id,
+              `**Gate: FAIL** | ${new Date().toISOString()}\n\nVerification failed before advancement:\n${issues.map(i=>`- ${i}`).join('\n')}\n\nFix these issues and the loop will retry. (Attempt ${stuckCount}/3 — remediation tasks will be auto-created on attempt 3.)`
+            );
           }
           await sleep(2000);
           continue;
@@ -1066,7 +2053,7 @@ async function main() {
 
   if (iteration >= MAX_ITERATIONS) {
     console.log(`\n[LOOP] Max iterations (${MAX_ITERATIONS}) reached.`);
-    const tasks = await readBoard(cfg, iState);
+    const tasks = await readBoard(cfg);
     tasks.filter(t => sddType(t.title) !== 'AR' && !t.isDone)
          .forEach(t => console.log(`    - ${sddKey(t.title) || '?'} | ${t.title.slice(0, 60)}`));
   }

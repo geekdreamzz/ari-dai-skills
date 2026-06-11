@@ -340,31 +340,31 @@ Use this for: flag compatibility checks, version lookups, error messages. For fu
 
 ### Step 0 — State Assessment (always runs first)
 
-Before taking any action, answer these five questions:
+**Priority order — check from top, first match wins. Do not read further once a match is found.**
 
-1. **Is there an active datasphere?** → call `get_context()` or check for `targetDatasphere` in tasks.yaml
-2. **Does a plan mode already exist for this initiative?** → `list_plan_modes(dsId)`
-3. **Are there existing tasks on the board?** → `list_tasks(dsId, planModeId)`
-4. **Is there a local tasks.yaml?** → check `<project-dir>/tasks.yaml`
-5. **Are ALL tasks in the Done column?** → count tasks where `statusGroupId === doneGroupId`; if `done === total && total > 0` → **DONE mode is mandatory, runs immediately, no confirmation needed**
+| Priority | Condition | Mode |
+|---|---|---|
+| **1 — highest** | Any VA task in Validation column has ≥1 comment containing "Ralph loop" or "failed iteration" | **LOOP** — resume immediately; supersedes all other modes |
+| **2** | `done_count === total_count && total_count > 0` | **DONE** — generate Next Steps & UAT page immediately; no confirmation |
+| **3** | Board exists, no tasks.yaml | **AUDIT** |
+| **4** | Board exists, tasks.yaml exists | **SYNC** |
+| **5** | No board, tasks.yaml exists | **PUBLISH** |
+| **6** | No board, no tasks.yaml | **NEW** |
 
-The answers determine the mode:
+**LOOP supersedes everything.** A failing VA task means the system is mid-iteration — resume before doing anything else. Do not run AUDIT, SYNC, or NEW while a Ralph loop iteration is in flight.
 
-| Board exists? | tasks.yaml exists? | All tasks Done? | Mode |
-|---|---|---|---|
-| No | No | — | **NEW** — full 14-step publish from scratch |
-| No | Yes | — | **PUBLISH** — board doesn't exist yet, publish from local spec |
-| Yes | — | **YES** | **DONE** — 100% complete; generate Next Steps & UAT page immediately |
-| Yes | No | No | **AUDIT** — board exists, generate tasks.yaml from live state, then assess |
-| Yes | Yes | No | **SYNC** — compare board vs tasks.yaml, determine delta, apply |
+**DONE mode supersedes NEW/PUBLISH/AUDIT/SYNC.** When all tasks are Done, generate the Next Steps page before doing anything else.
 
-**DONE mode overrides everything.** When all tasks are Done, Claude does not ask, does not wait, does not skip — it generates the Next Steps & UAT page. This is a hard gate.
+Before taking any further action, answer these six questions:
 
-**Additionally, on every invocation, check for in-flight Validation tasks that have failed at least one iteration:**
+1. **Does any VA task in the Validation column have ≥1 failed iteration comment?** → if YES → **LOOP immediately** (skip remaining questions)
+2. **Is there an active datasphere?** → call `get_context()` or check for `targetDatasphere` in tasks.yaml
+3. **Does a plan mode already exist for this initiative?** → `list_plan_modes(dsId)`
+4. **Are there existing tasks on the board?** → `list_tasks(dsId, planModeId)`
+5. **Is there a local tasks.yaml?** → check `<project-dir>/tasks.yaml`
+6. **Are ALL tasks in the Done column?** → count tasks where `statusGroupId === doneGroupId`; if `done === total && total > 0` → **DONE mode is mandatory, runs immediately, no confirmation needed**
 
-| VA task state | Mode override |
-|---|---|
-| VA task in Validation column + at least one failed iteration comment | **LOOP** — resume Ralph loop, do not wait for user |
+**Session resume:** also check `.sdd-state.json` for `activeTaskId` — if set, Claude was mid-task when the last session ended. Run `node loop.mjs --next` to confirm it's still the right task, then resume from it rather than re-scanning the board from scratch.
 
 ### Mode: NEW (full publish)
 → Proceed to Step 1 of the 14-step publish protocol below.
@@ -449,8 +449,12 @@ node skills/all-dai-sdd/loop.mjs --next
 # Step 2 — Claude reads the task content and does the actual work:
 #   EX task: reads Implementation Files, verifies files exist, runs smoke test
 #   VA task: runs each AC criterion, measures actual results vs thresholds
-#   EP task: confirms all child EX+VA are Done, reads and validates epic AC
-#   RS task: runs start_research, populates findings, cites real URLs
+#   EP task: --next returns requiresAcVerification:true — read each AC/FR/NFR item,
+#            verify every criterion individually with real evidence (not "all child tasks Done")
+#   NS task: --next returns requiresAcVerification:true — same as EP, verify each item
+#   RS task: --next returns requiresResearch:true — invoke start_research() FIRST,
+#            poll get_research_messages(), populate Sources from webSearchResults,
+#            DO NOT call --advance without real search excerpts in the evidence
 
 # Step 3 — advance with REAL evidence (not boilerplate)
 node skills/all-dai-sdd/loop.mjs --advance <taskId> --evidence "
@@ -472,7 +476,10 @@ node skills/all-dai-sdd/loop.mjs --advance <taskId> --evidence "
 |---|---|
 | EX | File existence check (`ls -la path/to/file`), import or smoke test output |
 | VA | Actual measured value vs AC threshold (e.g. `denoise=0.90 → output saved at outputs/test.png`) |
-| EP | List of child task keys confirmed Done + epic AC cross-check |
+| EP | Each AC/FR/NFR item quoted + individual pass/fail verdict + child task keys confirmed Done |
+| NS | Each AC/FR/NFR item quoted + individual pass/fail verdict + all child Epics confirmed Done |
+| RS | ≥2 real URLs from `webSearchResults`, verbatim excerpts quoted, feasibility finding documented |
+| AR | **Embedded content only** — full file text in `<pre><code>` blocks for text files; uploaded URL or metadata.json (name + sha256 + size) for binaries; raw test output pasted verbatim. A path without content is a gate failure. |
 
 ---
 
@@ -500,8 +507,6 @@ Any VA task whose title contains: `synthesis`, `transfer`, `garment`, `character
 - `"pid = <uuid>"` alone — a job ID is not a visual confirmation
 
 **The failure this prevents:** advancing VA-022 (garment transfer) with `pid=0c7aa6ba` as evidence — only to discover the "garment transfer" output is the reference image plastered behind a naked character. The pipeline ran. The output was garbage. The gate should have caught it.
-| RS | At least 2 real URLs from search results + feasibility finding |
-| AR | **Embedded content only** — full file text in `<pre><code>` blocks for text files; uploaded URL or metadata.json (name + sha256 + size) for binaries; raw test output pasted verbatim. A path without content is a gate failure. |
 
 **What to do when a task fails:**
 1. Post a comment on the task documenting what failed and why
@@ -529,10 +534,59 @@ node skills/all-dai-sdd/loop.mjs --dry-run            # preview only
 #### Utility modes
 
 ```bash
-node loop.mjs --backfill-artifacts   # create AR tasks for Done VA tasks retroactively
+node loop.mjs --backfill-artifacts                      # create AR tasks for Done VA tasks retroactively
+node loop.mjs --health                                  # validate initiative config + board (13 structural checks)
+node loop.mjs --create-fix <taskId> --reason "..."     # create EX+VA remediation pair for a failing task
+node loop.mjs --create-fix <taskId> --reason "..." --dry-run  # preview without writing
 ```
 
+#### Continuous Intake (follow-up instructions, UAT results, stakeholder feedback)
+
+The intake queue (`/.sdd-intake.json`, scoped per initiative) is the structured way to feed new work into a running initiative without breaking traceability. Four commands:
+
+**Add a new intake item:**
+```bash
+node loop.mjs --intake \
+  --intake-type instruction \          # instruction | uat-result | stakeholder-feedback
+  --intake-priority high \             # critical | high | normal
+  --intake-summary "Short description" \
+  --intake-body "Full context or instructions"
+```
+- `critical` priority **blocks `--next`** until triaged — use for must-fix-before-continuing work
+- `high` / `normal` appear as `pendingIntake` advisory in the `--next` output (non-blocking)
+
+**Triage an item → board tasks:**
+```bash
+# Create new EX+VA board tasks from the intake item:
+node loop.mjs --triage INT-001 --target-type EX
+node loop.mjs --triage INT-001 --target-type EX --dry-run   # preview
+
+# Or add context to an existing task as a comment:
+node loop.mjs --triage INT-001 --target-ref EP-002
+```
+
+**Check the intake queue (auto-sweeps done triaged items):**
+```bash
+node loop.mjs --intake-status
+node loop.mjs --intake-status --pending-only
+```
+
+**Run UAT on a VA task:**
+```bash
+# UAT pass → moves VA to Done + creates AR artifact + logs intake uat-result:
+node loop.mjs --uat VA-003 --outcome pass --evidence "19/19 tests passed. Screenshot: tests/e2e/screenshots/..."
+
+# UAT fail → creates EX+VA remediation pair + logs intake uat-result:
+node loop.mjs --uat VA-003 --outcome fail --evidence "Modal close button not found; screenshot missing from AR-003"
+```
+
+**`--next` intake awareness:**
+- If any `critical` intake items are pending → returns `{ status: "intake-blocked", pendingIntake: [...] }` — triage them first
+- If `high`/`normal` items are pending → returns the normal next task but adds `pendingIntake: [...]` advisory field
+
 **LOOP mode is the default behavior — not an exception.** Not waiting for the user is the rule. But not waiting does not mean not verifying.
+
+**Loop completion → DONE mode is automatic.** When `node loop.mjs --next` returns `{ "status": "complete", "generateNextStepsPage": true }`, Claude must immediately transition to DONE mode — generate the Next Steps & UAT page as specified above. No user prompt required. No re-invocation of `/all-dai-sdd` required. The `generateNextStepsPage: true` flag IS the trigger. Stopping after loop completion without generating the page is an incomplete execution.
 
 ### Mode: REFACTOR
 Triggered when user says "refactor", "restructure", or "reorganize":
@@ -3380,18 +3434,10 @@ The Ralph loop is the enforcement mechanism that prevents SDD from stalling at a
 Each iteration follows this exact sequence — no step may be skipped:
 
 1. **Run** — Execute the validation task's measurement or test
-2. **Collect evidence** — Before calling validate, run auto-collection to upload real proof:
-   ```bash
-   node sdd-conductor.mjs collect-evidence <vaTaskId>
-   # Runs nvidia-smi, reads FPS logs/configs, uploads files, creates/updates AR task.
-   # Exit 0 = all evidence auto-collected. Exit 1 = some items need live session.
-   ```
-3. **Gate check** — Call `sdd-conductor validate` with the measured metric (see Conductor Call below). The conductor posts the board comment, creates the next iteration task, and exits 0 (pass) or 1 (continue).
-4. **Exit 0 (pass)** → conductor has already marked VA Done, propagated checklist, posted completion comment. Exit loop.
-5. **Exit 1 (fail)** → conductor has posted iteration comment and created the next EX iteration task on the board. Diagnose root cause, apply best known fix, loop.
-6. **Hard blocker check** — Does any condition below apply? If yes → post BLOCKED comment, set task BLOCKED, exit loop; do not apply a fix.
-
-**North-star reasoning before every iteration:** Before applying any fix, re-read the parent EX task, Epic, and North Star. Ask: "Is this fix aligned with the North Star, or am I thrashing on the wrong approach?" If the approach is wrong → restructure the plan (create new EX tasks, update Epic) before iterating.
+2. **Gate check** — Call `sdd-conductor validate` with the measured metric (see Conductor Call below). The conductor posts the board comment, creates the next iteration task, and exits 0 (pass) or 1 (continue).
+3. **Exit 0 (pass)** → conductor has already marked VA Done, propagated checklist, posted completion comment. Exit loop.
+4. **Exit 1 (fail)** → conductor has posted iteration comment and created the next EX iteration task on the board. Diagnose root cause, apply best known fix, loop.
+5. **Hard blocker check** — Does any condition below apply? If yes → post BLOCKED comment, set task BLOCKED, exit loop; do not apply a fix.
 
 **Conductor call (mandatory — replaces manual curl iteration comment):**
 
@@ -3454,15 +3500,18 @@ Only these conditions exit the loop with a BLOCKED status. Everything else conti
 | **Architectural mismatch** | The tool or approach is wrong for the data type at a fundamental level (e.g., GATK HaplotypeCaller on bisulfite-converted reads — produces 0 valid SNPs regardless of parameters) |
 | **Missing dependency — no alternative** | Required tool is not installed, cannot be installed in this environment, and no equivalent alternative exists |
 | **Max iterations reached** | `MAX_ITERS` exhausted (default: 8). Log best result, post final summary. |
-| **Evidence gate: live session items only** | `collect-evidence` was run and ALL remaining items require live GUI capture (OBS recordings, Spout2 output, camera feed). These cannot be auto-collected — only a live session unblocks them. |
 
 **Not hard blockers:** "results are poor", "it might not work", "it's taking a long time", "uncertain which fix is best." These are reasons to iterate, not reasons to stop.
 
-**Evidence gate is NEVER a hard blocker until `collect-evidence` is run first.** Before declaring BLOCKED on evidence, always run:
-```bash
-node sdd-conductor.mjs collect-evidence <vaTaskId>
-```
-The conductor will auto-collect nvidia-smi output, FPS logs, config files, and upload them. Only block if the conductor itself reports human-required items. An evidence gate failure without first running `collect-evidence` is an error in the loop logic, not a legitimate block.
+### Iteration task lifecycle — EX-rwN and VA-rwN
+
+When the conductor creates a refinement EX task (e.g. `EX-003-rw2 · <title> — iteration 2`) after a VA failure:
+
+1. **EX-rwN is a full Execution task.** It appears in the Execution column and is picked up by `findNextIncomplete` before its parent VA task. Claude must execute it fully: read the Implementation Files, apply the fix, verify the output.
+2. **EX-rwN does NOT get its own VA task.** The original VA task (e.g. VA-003) re-validates the EX-rwN fix. After advancing EX-rwN to Done, the loop returns to VA-003 in the next `--next` call.
+3. **VA-003 stays open until it passes.** The loop advances VA-003 only when the EX-rwN fix makes all AC criteria pass. If EX-rw2 fails, the conductor creates EX-003-rw3, and the cycle repeats.
+4. **Title convention:** `EX-NNN-rwN · <original title> — iteration N`. The `-rwN` suffix is what `sddKey()` strips when matching `VA-NNN` to its parent EX — do not use other suffixes.
+5. **MAX_ITERS is shared.** The iteration count in the VA comment header tracks all rw cycles. When iteration N hits MAX_ITERS, the VA is BLOCKED regardless of which EX-rwN task was most recent.
 
 On hard blocker, post this comment and stop:
 
@@ -3485,16 +3534,9 @@ The loop distinguishes two levels — passing the gate does NOT stop the loop:
 | Level | Threshold | Behavior on pass |
 |---|---|---|
 | **Gate** | Minimum acceptable (e.g., F1 ≥ 0.95) | Close VA task → Done, continue iterating toward North Star |
-| **North Star** | Exceeds published benchmark (e.g., F1 > 0.97) | Close VA task &rarr; Done, run `create-next-steps`, exit to summary page |
+| **North Star** | Exceeds published benchmark (e.g., F1 > 0.97) | Close VA task → Done, post celebration comment, exit loop |
 
 The loop runs past gate pass because SDD's goal is not minimum compliance — it is to surpass the benchmark. Close the task when the gate passes (the board reflects reality), but keep running until North Star is hit or MAX_ITERS is reached.
-
-**Loop exit = next-steps page, not the dashboard.** When all North Stars are Done, the conductor's `drive` command calls `create-next-steps` (creates/updates `<initiative>-next-steps`) and exits with its URL. The dashboard (`<initiative>-dashboard`) stays up as the live tracker — it is never the exit target. The summary page can be regenerated on every run as the board evolves.
-
-```bash
-# Run manually at any time to rebuild the close-out summary page
-node sdd-conductor.mjs create-next-steps
-```
 
 ---
 
@@ -3544,10 +3586,11 @@ pgrep -af "drive_<va-task-id>"   # verify it's running
 ```
 
 **Agent behavior while drive script runs:**
-- Schedule check-ins every 45–90 minutes (within 5-min cache window: 270s; longer if idle)
-- On each check-in: read log tail, check for gate pass / North Star / BLOCKER
-- On gate pass or North Star: confirm VA task was closed on the board, report to user
-- On BLOCKER: diagnose immediately — apply a fix if possible, relaunch the drive script
+- **Immediately after launching:** call `ScheduleWakeup(delaySeconds=270, reason="checking drive script progress for <va-task-id>")`. Without this, a session timeout silently kills monitoring. Re-schedule at the end of every check-in so the chain is unbroken.
+- Check-in interval: 270s while the script is actively producing output; 1200s if waiting for a long compute step with no new log lines expected yet
+- On each check-in: read log tail (`Get-Content drive_<id>.log -Tail 40`), check for gate pass / North Star / BLOCKER
+- On gate pass or North Star: confirm VA task was closed on the board, report to user, cancel the next ScheduleWakeup
+- On BLOCKER: diagnose immediately — apply a fix if possible, relaunch the drive script, re-schedule ScheduleWakeup
 - Never report "waiting for the script to finish" as a completed action — keep iterating
 
 **`close_<va-task-id>.py` requirements (called by drive script on gate pass):**
