@@ -509,6 +509,16 @@ node skills/all-dai-sdd/loop.mjs --advance <taskId> --evidence "
 #   RS task: requiresResearch:true — start_research() FIRST, Sources from webSearchResults
 ```
 
+**`validation_kind` front matter routes VA evidence gates.** A VA task whose title pattern-matches UI keywords gets the screenshot gate by default. When the validation is NOT visual, declare it in the VA front matter (or stamp it at triage with `--validation-kind`):
+
+| `validation_kind` | Evidence gate requires |
+|---|---|
+| *(absent — UI default)* | Fresh on-disk screenshots (<24h), Playwright `N passed`, ≥2 shots for interaction flows |
+| `api` / `backend` | Quoted `/api/` endpoint paths + asserted HTTP status codes + test runner `N passed` — API tests are first-class artifacts |
+| `benchmark` | Measured values with units (ms, MB, %, req/s) compared against AC thresholds + runner output |
+
+**Decorator linkage is exact-key, enforced at --advance.** Every file in an EX task's Implementation Files must reference THIS spec's key — `// artifact: EX-NNN` in the header for new files, or an inline decorator at the change site for shared files (`// spec: EX-NNN | initiative: <slug> — what this change does`). A header citing some other spec does not link the file. Front matter refs (`execution_ref`, `epic_ref`, `north_star_ref`) must resolve to real tasks on the board, and the `<!-- #ac -->` heading anchor must be present — all three are hard advance gates.
+
 **Evidence must contain real substance:**
 
 | Task type | Evidence must include |

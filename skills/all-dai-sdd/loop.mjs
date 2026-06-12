@@ -32,6 +32,7 @@
  *   node loop.mjs --triage <intakeId>            # turn intake item into board tasks
  *     --target-type <EX|VA|NS|EP>               # task type to create (default: EX)
  *     --target-ref <EP-NNN>                      # add context to existing task instead of creating new
+ *     --validation-kind <api|backend|benchmark>  # stamp the VA's evidence gate kind (default: UI when title matches)
  *     --dry-run                                  # preview without writing
  *   node loop.mjs --intake-status               # list intake queue with auto-done sweep
  *     --pending-only                             # filter to pending items only
@@ -94,6 +95,7 @@ let uatTaskId = null;
 let uatOutcome = null;
 let checkItemTaskId = null;
 let checkItemMatch = null;
+let validationKindArg = null;
 
 for (let i = 2; i < process.argv.length; i++) {
   if (process.argv[i] === '--initiative' && process.argv[i + 1]) {
@@ -144,6 +146,8 @@ for (let i = 2; i < process.argv.length; i++) {
     checkItemTaskId = process.argv[++i];
   } else if (process.argv[i] === '--item' && process.argv[i + 1]) {
     checkItemMatch = process.argv[++i];
+  } else if (process.argv[i] === '--validation-kind' && process.argv[i + 1]) {
+    validationKindArg = process.argv[++i];
   }
 }
 
@@ -1082,6 +1086,7 @@ async function createIntakeTasks(cfg, item, allTasks) {
     `spec_id: ${vaKey}`,
     `execution_ref: ${exKey}`,
     `intake_ref: ${item.id}`,
+    ...(validationKindArg ? [`validation_kind: ${validationKindArg}`] : []),
     `plan_mode_id: ${cfg.planModeId}`,
     `created: ${today}`,
     `auto_generated: true`,
@@ -1837,7 +1842,39 @@ async function advanceTask(cfg, iState, slug) {
   const tasks_check = await readBoard(cfg);
   const task_check = tasks_check.find(t => t.id === advanceTaskId) ||
                      tasks_check.find(t => sddKey(t.title) === advanceTaskId);
-  if (task_check && sddType(task_check.title) === 'VA' && IMAGE_VA_PATTERN.test(task_check.title)) {
+
+  // validation_kind front matter routes VA tasks to the right evidence gate:
+  //   (absent)        → UI gate when the title pattern-matches UI keywords
+  //   api | backend   → request/response evidence instead of screenshots
+  //   benchmark       → measured values vs thresholds instead of screenshots
+  const validationKind = (task_check?.content || '')
+    .match(/validation_kind:\s*([a-z-]+)/i)?.[1]?.toLowerCase() || null;
+  const isNonUiVa = validationKind === 'api' || validationKind === 'backend' || validationKind === 'benchmark';
+
+  // ── API/backend VA evidence gate ─────────────────────────────────────────────
+  // API tests are first-class artifacts: the evidence must show real request/
+  // response assertions, not screenshots of unrelated UI.
+  if (task_check && sddType(task_check.title) === 'VA' && isNonUiVa) {
+    const apiIssues = [];
+    if (validationKind === 'benchmark') {
+      if (!/\d+(\.\d+)?\s*(ms|s|MB|GB|%|fps|req\/s|ops)/i.test(evidenceText)) {
+        apiIssues.push('benchmark VA requires measured values with units (ms, MB, %, req/s …) compared against thresholds');
+      }
+    } else {
+      if (!/\/api\//.test(evidenceText)) apiIssues.push('no /api/ endpoint path in evidence — quote the requests that were asserted');
+      if (!/\b[1-5]\d\d\b/.test(evidenceText)) apiIssues.push('no HTTP status codes in evidence — assert the actual response codes');
+    }
+    if (!/\b\d+\s+passed\b/i.test(evidenceText) && !/\bok\b.*\b\d+\b/i.test(evidenceText)) {
+      apiIssues.push('no test runner output — run the spec and paste the "N passed" result');
+    }
+    if (apiIssues.length > 0) {
+      console.error(`✗ GATE FAIL — ${validationKind} VA task evidence is not verifiable.`);
+      for (const ai of apiIssues) console.error(`  · ${ai}`);
+      process.exit(1);
+    }
+  }
+
+  if (task_check && sddType(task_check.title) === 'VA' && !isNonUiVa && IMAGE_VA_PATTERN.test(task_check.title)) {
     // Must contain a visual description — not just "job ran / file saved / pid = ..."
     const VISUAL_KEYWORDS = /shows?|displays?|visible|appears?|look[si]|wearing|dressed|garment\s+on|character\s+(is|has|wears?|shows?|appears?)|image\s+shows?|output\s+shows?|can\s+see|identity\s+(match|lock|preserv)|face\s+(match|lock|preserv)|correctly|incorrect|wrong|broken|succeed|fail/i;
     const evidenceHasJobOnly = /^[\s\S]{0,300}(pid\s*=|job\s+id|prompt_id)[^a-z]*$/i;
@@ -1865,7 +1902,7 @@ async function advanceTask(cfg, iState, slug) {
   // screenshot file path (.png/.jpg) in the evidence — same principle as the
   // image-gen visual gate above but for frontend/component work.
   const UI_VA_PATTERN = /gallery|modal|builder|view|form|upload|component|render|survey|page|badge|button|layout|nav|feed|dashboard/i;
-  if (task_check && sddType(task_check.title) === 'VA' && UI_VA_PATTERN.test(task_check.title)) {
+  if (task_check && sddType(task_check.title) === 'VA' && !isNonUiVa && UI_VA_PATTERN.test(task_check.title)) {
     const gateIssues = [];
 
     // 1. Extract screenshot paths and verify each EXISTS on disk and is FRESH.
@@ -1943,6 +1980,7 @@ async function advanceTask(cfg, iState, slug) {
     const gitRoot = findGitRoot();
     const missingFiles = [];
     const missingFrontMatter = [];
+    const missingExactKey = [];
 
     for (const fp of codePaths) {
       const absPath = fp.match(/^[A-Z]:\\|^\//) ? fp : path.join(gitRoot, fp);
@@ -1951,9 +1989,17 @@ async function advanceTask(cfg, iState, slug) {
         continue;
       }
       try {
-        const head = fs.readFileSync(absPath, 'utf-8').split('\n').slice(0, 15).join('\n');
+        const fileText = fs.readFileSync(absPath, 'utf-8');
+        const head = fileText.split('\n').slice(0, 15).join('\n');
         const hasRef = /(?:artifact|spec):\s*(?:[A-Z]+-)?(?:EX|VA|AR|EP|NS|RS)-\d+|initiative:/i.test(head);
         if (!hasRef) missingFrontMatter.push(fp);
+        // Decorator linkage: THIS task's key must appear somewhere in the file —
+        // header front matter for new files, or an inline decorator comment at
+        // the change site for shared files. A header referencing some OTHER spec
+        // does not link the file to this work.
+        if (exKey && !new RegExp(`(?:artifact|spec(?:_trace)?):[^\\n]*\\b${exKey}\\b`).test(fileText)) {
+          missingExactKey.push(fp);
+        }
       } catch { /* unreadable — skip */ }
     }
 
@@ -1980,6 +2026,17 @@ async function advanceTask(cfg, iState, slug) {
           console.error(`\n  ✅ Remediation tasks created: ${r.exKey} + ${r.vaKey}`);
         }
       }
+      process.exit(1);
+    }
+
+    if (missingExactKey.length > 0) {
+      console.error(`\n✗ GATE FAIL — decorator linkage broken for ${exKey}.`);
+      console.error(`  ${missingExactKey.length} implementation file(s) never reference ${exKey}:`);
+      missingExactKey.forEach(f => console.error(`  · ${f}`));
+      console.error(`\n  For new files: add "// artifact: ${exKey} | initiative: <slug>" to the header.`);
+      console.error(`  For shared files: add an inline decorator at the change site, e.g.`);
+      console.error(`    // spec: ${exKey} | initiative: <slug> — <one line on what this change does>`);
+      console.error(`  This is what makes code → spec tracing real: every listed file must name THIS spec.`);
       process.exit(1);
     }
 
@@ -2072,6 +2129,34 @@ async function advanceTask(cfg, iState, slug) {
     console.error('  Each --check-item posts an evidence comment (visible in the live activity feed)');
     console.error('  and ticks exactly one box. --advance only succeeds when every box was earned.');
     process.exit(1);
+  }
+
+  // ── Trace-linkage gate: front matter refs must resolve, heading anchors must exist ──
+  // Front matter is only traceability if the refs point at real tasks and the
+  // section anchors that downstream tooling navigates by are actually present.
+  {
+    const byKeyLink = {};
+    tasks.forEach(t => { const k = sddKey(t.title); if (k) byKeyLink[k] = t; });
+    const linkIssues = [];
+    const c = task.content || '';
+    if (type === 'VA') {
+      const exRef = c.match(/execution_ref:\s*((?:[A-Z]+-)?EX-\d+)/)?.[1];
+      if (!exRef) linkIssues.push('missing execution_ref front matter — every VA must link its parent EX');
+      else if (!byKeyLink[exRef]) linkIssues.push(`execution_ref ${exRef} does not resolve to any task on this board`);
+    }
+    if (type === 'EX' || type === 'VA') {
+      const epRef = c.match(/epic_ref:\s*(EP-\d+)/)?.[1];
+      if (epRef && !byKeyLink[epRef]) linkIssues.push(`epic_ref ${epRef} does not resolve to any task on this board`);
+      const nsRefLink = c.match(/north_star_ref:\s*(NS-\d+)/)?.[1];
+      if (nsRefLink && !byKeyLink[nsRefLink]) linkIssues.push(`north_star_ref ${nsRefLink} does not resolve to any task on this board`);
+      if (!/<!--\s*#ac\s*-->/.test(c)) linkIssues.push('missing <!-- #ac --> anchor on the Acceptance Criteria heading — section anchors are required for spec navigation');
+    }
+    if (linkIssues.length > 0) {
+      console.error(`✗ GATE FAIL — trace linkage broken on ${key}:`);
+      linkIssues.forEach(li => console.error(`  · ${li}`));
+      console.error('  Fix the front matter / anchors via PATCH, then re-run --advance.');
+      process.exit(1);
+    }
   }
 
   process.stdout.write(`→ ${dryRun ? '[DRY] ' : ''}Advancing ${key} with AI evidence... `);
