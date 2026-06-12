@@ -509,6 +509,16 @@ node skills/all-dai-sdd/loop.mjs --advance <taskId> --evidence "
 #   RS task: requiresResearch:true — start_research() FIRST, Sources from webSearchResults
 ```
 
+**Every VA MUST carry `validation_command` front matter — and it EXECUTES at advance time.** A runnable regression command (Playwright spec, pytest, benchmark) that proves the requirement end-to-end and exits non-zero on failure. `--advance` refuses VA tasks without one, runs it live, and blocks on failure. Descriptions of testing are not testing.
+
+```yaml
+validation_command: npx playwright test tests/e2e/specs/<requirement>.spec.ts --reporter=line
+```
+
+The command must test the REQUIREMENT, not the component: "modal shows success state" is a component test; "anonymous guest uploads an image and it renders in the gallery after reload" is the requirement. Write requirement-level specs.
+
+**The regression wall: `--regress` gates "complete".** `node loop.mjs --regress` executes every VA's validation_command across the whole board and records the result in `.sdd-state.json`. `--next` will NOT report `complete` — and DONE mode cannot start — without a fresh all-pass at the current done-count (status `regress-required` otherwise). Any task advancing after the last pass invalidates it. No green suite, no complete, no Next Steps page.
+
 **`validation_kind` front matter routes VA evidence gates.** A VA task whose title pattern-matches UI keywords gets the screenshot gate by default. When the validation is NOT visual, declare it in the VA front matter (or stamp it at triage with `--validation-kind`):
 
 | `validation_kind` | Evidence gate requires |

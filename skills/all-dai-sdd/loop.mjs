@@ -96,6 +96,7 @@ let uatOutcome = null;
 let checkItemTaskId = null;
 let checkItemMatch = null;
 let validationKindArg = null;
+let regressMode = false;
 
 for (let i = 2; i < process.argv.length; i++) {
   if (process.argv[i] === '--initiative' && process.argv[i + 1]) {
@@ -148,6 +149,8 @@ for (let i = 2; i < process.argv.length; i++) {
     checkItemMatch = process.argv[++i];
   } else if (process.argv[i] === '--validation-kind' && process.argv[i + 1]) {
     validationKindArg = process.argv[++i];
+  } else if (process.argv[i] === '--regress') {
+    regressMode = true;
   }
 }
 
@@ -1495,6 +1498,77 @@ async function checkItemCommand(cfg, iState, slug) {
   }, null, 2));
 }
 
+// ── Full-board regression: --regress ──────────────────────────────────────────
+// Executes every VA task's validation_command against the live system. The
+// result is recorded in .sdd-state.json; --next will NOT report "complete"
+// without a fresh all-pass at the current done-count. This is the final wall:
+// an initiative cannot close while any requirement-level regression fails or
+// any VA lacks a runnable command.
+async function regressCommand(cfg, iState, slug) {
+  const tasks = await readBoard(cfg);
+  const vaTasks = tasks.filter(t => sddType(t.title) === 'VA')
+    .sort((a, b) => sddNum(a.title) - sddNum(b.title));
+
+  const entries = [];
+  const missingCmd = [];
+  for (const va of vaTasks) {
+    const m = (va.content || '').match(/validation_command:\s*(.+)/);
+    if (m) entries.push({ key: sddKey(va.title), cmd: m[1].trim() });
+    else missingCmd.push(sddKey(va.title));
+  }
+  // Dedupe identical commands — several VAs may share one spec file
+  const seen = new Set();
+  const unique = entries.filter(e => !seen.has(e.cmd) && seen.add(e.cmd));
+
+  console.log(`\n━━━ all-dai-sdd REGRESSION: ${slug} ━━━`);
+  console.log(`  VA tasks: ${vaTasks.length} | commands: ${unique.length} unique | missing: ${missingCmd.length}\n`);
+
+  const failures = [];
+  let passed = 0;
+  for (const e of unique) {
+    process.stdout.write(`  → [${e.key}] ${e.cmd.slice(0, 90)} ... `);
+    try {
+      execSync(e.cmd, { encoding: 'utf-8', timeout: 600000, stdio: 'pipe' });
+      console.log('✅');
+      passed++;
+    } catch (err) {
+      console.log('✗ FAIL');
+      failures.push({ key: e.key, cmd: e.cmd, err: ((err.stderr || '') + (err.stdout || '') || err.message || '').slice(-400) });
+    }
+  }
+
+  // Snapshot the SAME task set findNextTask compares against (non-AR), or the
+  // complete-gate will see a perpetual count mismatch.
+  const nonArTasks = tasks.filter(t => sddType(t.title) !== 'AR');
+  const allPass = failures.length === 0 && missingCmd.length === 0;
+  const state = loadState();
+  if (state?.initiatives?.[slug]) {
+    state.initiatives[slug].regress = {
+      at: new Date().toISOString(),
+      commands: unique.length, passed,
+      missingCommands: missingCmd,
+      boardDone: nonArTasks.filter(t => t.isDone).length,
+      boardTotal: nonArTasks.length,
+      pass: allPass,
+    };
+    saveState(state);
+  }
+
+  if (missingCmd.length > 0) {
+    console.log(`\n  ✗ ${missingCmd.length} VA task(s) have NO validation_command: ${missingCmd.join(', ')}`);
+    console.log('    PATCH each with a runnable command in its front matter, then re-run --regress.');
+  }
+  for (const f of failures) {
+    console.log(`\n  ✗ [${f.key}] FAILED: ${f.cmd}`);
+    console.log(`    ${f.err.split('\n').slice(-5).join('\n    ')}`);
+  }
+  console.log(`\n  ${allPass ? '✅ REGRESSION PASS' : `❌ REGRESSION FAIL`} — ${passed}/${unique.length} commands green${missingCmd.length ? `, ${missingCmd.length} missing` : ''}`);
+  if (!allPass) {
+    console.log('  The board cannot report "complete" until --regress passes clean.');
+    process.exit(1);
+  }
+}
+
 // ── Initiative health check ───────────────────────────────────────────────────
 // Validates that the initiative configuration and board are structurally correct.
 // Run before starting any loop iteration on a new initiative, or after incidents.
@@ -1690,6 +1764,27 @@ async function findNextTask(cfg, iState, slug) {
         action: `node loop.mjs --triage ${advisoryIntake[0].id} --target-type EX`,
       }, null, 2));
       return;
+    }
+    // Regression wall — "complete" requires a fresh all-pass of every VA's
+    // validation_command at the CURRENT board state. Tasks moving after the
+    // last regress invalidates it. No green suite, no complete, no Next Steps.
+    {
+      const freshState2 = loadState();
+      const reg = freshState2?.initiatives?.[slug]?.regress;
+      const stale = !reg || !reg.pass || reg.boardDone !== done || reg.boardTotal !== total;
+      if (stale) {
+        process.stdout.write(JSON.stringify({
+          status: 'regress-required',
+          done, total, pct: 100,
+          reason: reg
+            ? (reg.pass ? 'Board changed since the last passing regression — re-run it.' : 'Last regression FAILED — fix and re-run.')
+            : 'No regression has ever been recorded for this board.',
+          lastRegress: reg || null,
+          instruction: 'Run the full requirement-level regression. Every VA validation_command must exit 0. Fix failures (or PATCH missing commands), then re-run until clean.',
+          action: 'node loop.mjs --regress',
+        }, null, 2));
+        return;
+      }
     }
     process.stdout.write(JSON.stringify({
       status: 'complete',
@@ -2118,12 +2213,27 @@ async function advanceTask(cfg, iState, slug) {
   }
 
   // ── validation_command gate ──────────────────────────────────────────────────
-  // If the task front-matter has `validation_command: <cmd>`, run it as a subprocess.
-  // Advancement is blocked if the command exits non-zero. On success, output is prepended
-  // to evidence so it appears in the gate comment.
+  // VA tasks MUST carry `validation_command: <cmd>` front matter — a runnable
+  // regression command (Playwright spec, pytest, benchmark script) that exits 0.
+  // It runs HERE, at advance time, against the real system. This is the
+  // mechanism that makes fake success impossible: no command, no advance;
+  // command fails, no advance. Descriptions of testing are not testing.
   {
     const vcMatch = task_check?.content?.match(/validation_command:\s*(.+)/);
     const valCmd = vcMatch ? vcMatch[1].trim() : null;
+    if (!valCmd && task_check && sddType(task_check.title) === 'VA') {
+      console.error('✗ GATE FAIL — VA task has no validation_command front matter.');
+      console.error('');
+      console.error('  Every VA must carry a runnable regression command that proves the');
+      console.error('  requirement end-to-end. Add to the front-matter YAML block:');
+      console.error('    validation_command: npx playwright test tests/e2e/specs/<spec>.spec.ts --reporter=line');
+      console.error('  (or a pytest/benchmark/curl-assert script — anything that exits non-zero on failure)');
+      console.error('');
+      console.error(`  PATCH the task content, then re-run --advance. The command will be`);
+      console.error('  EXECUTED here and must exit 0 — this is what was missing when tasks');
+      console.error('  advanced on described-but-never-run testing.');
+      process.exit(1);
+    }
     if (valCmd) {
       process.stdout.write(`\n→ Running validation_command: ${valCmd}\n`);
       try {
@@ -2412,6 +2522,11 @@ async function main() {
 
   if (checkItemTaskId !== null) {
     await checkItemCommand(cfg, iState, slug);
+    return;
+  }
+
+  if (regressMode) {
+    await regressCommand(cfg, iState, slug);
     return;
   }
 
