@@ -41,6 +41,39 @@ Everything else: Claude solves it. Silently. Until 100% done.
 
 ---
 
+## Schema v2 — Product Lifecycle Board (preferred for NEW initiatives)
+
+Ten tiers; **each column IS the parent of the next**. Items NEVER move columns — the column is the item's type and permanent home; `task.status` carries lifecycle state (`TODO → IN_PROGRESS → DONE` / `BLOCKED`). Scaffold with:
+
+```bash
+node loop.mjs --scaffold-v2 <slug> --name "<Initiative Name>"
+```
+
+| Tier | Column | Holds |
+|---|---|---|
+| `IN` | Intake | Raw USER PROMPTS, verbatim — the chain's root. Created by `--intake`; stakeholders queue here even while the loop runs |
+| `RS` | Research & References | Web search synthesis, code analysis of existing modules/libs — SPEC reference material |
+| `PC` | Problem & Customer Segment | Ties research to the core pain point and the persona experiencing it |
+| `VP` | Value Proposition | The value the solution promises and why it's worth solving |
+| `SS` | Solution Specs & Scenarios | Functional + non-functional requirements; the typed artifacts needed (code, media, reports) |
+| `DO` | Desired Outcomes | Success metrics — retention/growth/sales — and the final outcomes if successful |
+| `EP` | Epics | Core milestones |
+| `TK` | Tasks | Micro steps with FR/NFR + ATC checklist; belongs to an epic |
+| `VC` | Validation Criteria | THE work unit of the Ralph loop — dedicated acceptance criteria typed per artifact (frontend/backend/data/media/report) |
+| `AR` | Artifacts | Final shipped deliverables — verified code with tracing decorators, media with sha256 metadata, or reports with citations |
+
+**The UUID chain (machine-gated, not doctrine):** every item except `IN` MUST carry `parent_uuid:` front matter resolving to a live item of the EXACT parent tier (`RS→IN, PC→RS, VP→PC, SS→VP, DO→SS, EP→DO, TK→EP, VC→TK, AR→VC`). `uuid:` is the item's own board id — run `--stamp-uuids` after creating items. `--advance` fails on a missing/dangling/wrong-tier parent. `--trace-audit` sweeps the whole board for ghosts (duplicates, dangling refs, broken chains, uncited artifacts, missing stamps) and exits non-zero on any.
+
+**Column templates are advance gates** — each tier has required sections (`verifyV2Template`): IN needs the verbatim Origin Prompt blockquote; RS needs Search Results/Sources/Codebase Context/Synthesis; PC needs Problem Statement + Customer Segment; VP needs Value Proposition + Why Worth Solving; SS needs FR/NFR/Artifacts Needed; DO needs Success Metrics + Final Outcomes; EP needs Milestone/Scope/Task Checklist; TK needs Steps/Files/AC; VC needs typed Acceptance Criteria + `validation_kind` + commands; AR needs Citations.
+
+**The Ralph loop is VC-centric with full hierarchy context.** `--next` on a v2 board returns the current item PLUS its entire parent chain (`hierarchy: [...]` — TK, EP, DO, SS, VP, PC, RS, IN with full content), so each validation runs with the requirements of every parent column in hand. A VC may take hundreds of turns; the loop course-corrects by filing intake (which lands as new `IN-NNN` items), creating items in any column (chained!), or asking the user — then keeps running.
+
+**Artifacts ship cited or not at all.** A VC pass scaffolds its AR with status TODO and a citation checklist; the AR cannot go DONE until `verifyV2Artifact` passes: `code` → every cited file exists on disk AND carries a decorator pointing at its VC; `media` → metadata per asset (file + sha256 + byte size); `report` → ≥2 resolvable links. Empty scaffolds can never count as shipped — that is the end of ghost artifacts.
+
+All schema-1 gates still apply on v2 boards: evidence quality, per-item `--check-item`, typed validation commands executed individually, screenshot freshness, dashboard template, regression wall before complete.
+
+---
+
 ## Eight-Column Lifecycle
 
 ```

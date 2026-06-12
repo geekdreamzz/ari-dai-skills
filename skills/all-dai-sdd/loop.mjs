@@ -8,7 +8,11 @@
  * Loops autonomously until 100% Done. No user input between iterations.
  *
  * Usage:
+ *   node loop.mjs --scaffold-v2 <slug> --name "<Initiative>"  # create a schema-2 product lifecycle board (10 tiers)
+ *   node loop.mjs --trace-audit                  # ghost-node sweep: dupes, dangling refs, broken chains, uncited artifacts
+ *   node loop.mjs --stamp-uuids                  # write uuid: <own id> into every item missing it
  *   node loop.mjs --next                         # output next incomplete task as JSON; marks it IN_PROGRESS + sdd-active
+ *                                                #   (schema 2: includes hierarchy[] — the full parent chain as context)
  *   node loop.mjs --check-item <taskId>          # tick ONE checklist item with its own evidence (per-item protocol)
  *     --item <N|"text">                          # REQUIRED: 1-based item number or unique text match
  *     --evidence "..."                           # REQUIRED: real output for THIS item (>=80 chars)
@@ -97,6 +101,10 @@ let checkItemTaskId = null;
 let checkItemMatch = null;
 let validationKindArg = null;
 let regressMode = false;
+let scaffoldV2Name = null;
+let scaffoldV2Slug = null;
+let traceAuditMode = false;
+let stampUuidsMode = false;
 
 for (let i = 2; i < process.argv.length; i++) {
   if (process.argv[i] === '--initiative' && process.argv[i + 1]) {
@@ -151,6 +159,14 @@ for (let i = 2; i < process.argv.length; i++) {
     validationKindArg = process.argv[++i];
   } else if (process.argv[i] === '--regress') {
     regressMode = true;
+  } else if (process.argv[i] === '--scaffold-v2' && process.argv[i + 1]) {
+    scaffoldV2Slug = process.argv[++i];
+  } else if (process.argv[i] === '--name' && process.argv[i + 1]) {
+    scaffoldV2Name = process.argv[++i];
+  } else if (process.argv[i] === '--trace-audit') {
+    traceAuditMode = true;
+  } else if (process.argv[i] === '--stamp-uuids') {
+    stampUuidsMode = true;
   }
 }
 
@@ -361,23 +377,137 @@ async function readBoard(cfg) {
     id: t.id,
     title: t.title,
     sgId: t.statusGroupId,
+    status: t.status || null,
     content: t.content || '',
-    isDone: t.statusGroupId === cfg.doneGroupId,
+    // schema 1: done = Done column. schema 2: items never move — status carries state.
+    isDone: cfg.schema === 2 ? t.status === 'DONE' : t.statusGroupId === cfg.doneGroupId,
   }));
 }
 
 // ── SDD title helpers ─────────────────────────────────────────────────────────
+// Schema 1 prefixes: RS NS EP EX VA AR. Schema 2 adds the product-lifecycle
+// tiers: IN PC VP SS DO TK VC (IN=intake prompt, PC=problem/customer,
+// VP=value proposition, SS=solution specs, DO=desired outcomes, TK=task,
+// VC=validation criteria). Two-letter prefixes are unambiguous across schemas.
+const SDD_PREFIX_RE = 'IN|RS|NS|PC|VP|SS|DO|EP|EX|TK|VA|VC|AR';
 function sddKey(title) {
-  const m = title.match(/^(RS|NS|EP|EX|VA|AR)-(\d+)/);
+  const m = title.match(new RegExp(`^(${SDD_PREFIX_RE})-(\\d+)`));
   return m ? `${m[1]}-${m[2]}` : null;
 }
 function sddType(title) {
-  const m = title.match(/^(RS|NS|EP|EX|VA|AR)/); return m ? m[1] : null;
+  const m = title.match(new RegExp(`^(${SDD_PREFIX_RE})(?=-\\d)`)); return m ? m[1] : null;
 }
 function sddNum(title) {
-  const m = title.match(/^(?:RS|NS|EP|EX|VA|AR)-(\d+)/); return m ? parseInt(m[1]) : 999;
+  const m = title.match(new RegExp(`^(?:${SDD_PREFIX_RE})-(\\d+)`)); return m ? parseInt(m[1]) : 999;
 }
 function pad3(n) { return String(n).padStart(3, '0'); }
+
+// ── Schema v2: product-lifecycle board ────────────────────────────────────────
+// Ten tiers; each column IS the parent of the next. Items NEVER move columns —
+// the column is the item's type/home, task.status carries lifecycle state
+// (TODO → IN_PROGRESS → DONE / BLOCKED). Every item except IN MUST carry
+// parent_uuid front matter resolving to an item of the parent tier.
+const V2_TIERS = ['IN', 'RS', 'PC', 'VP', 'SS', 'DO', 'EP', 'TK', 'VC', 'AR'];
+const V2_PARENT = { RS: 'IN', PC: 'RS', VP: 'PC', SS: 'VP', DO: 'SS', EP: 'DO', TK: 'EP', VC: 'TK', AR: 'VC' };
+const V2_COLUMNS = [
+  { key: 'IN', name: 'Intake',                     color: '#64748b' },
+  { key: 'RS', name: 'Research & References',      color: '#6366f1' },
+  { key: 'PC', name: 'Problem & Customer Segment', color: '#ec4899' },
+  { key: 'VP', name: 'Value Proposition',          color: '#f97316' },
+  { key: 'SS', name: 'Solution Specs & Scenarios', color: '#0891b2' },
+  { key: 'DO', name: 'Desired Outcomes',           color: '#7c3aed' },
+  { key: 'EP', name: 'Epics',                      color: '#3b82f6' },
+  { key: 'TK', name: 'Tasks',                      color: '#2563eb' },
+  { key: 'VC', name: 'Validation Criteria',        color: '#f59e0b' },
+  { key: 'AR', name: 'Artifacts',                  color: '#22c55e' },
+];
+// Required template sections per tier — the structure box C in the system
+// diagram: "this structure must be forced in the templating and gate checks".
+const V2_TEMPLATES = {
+  IN: { sections: ['Origin Prompt'],                 frontMatter: ['type'] },
+  RS: { sections: ['Search Results', 'Sources', 'Codebase Context', 'Synthesis'], frontMatter: ['type', 'parent_uuid'] },
+  PC: { sections: ['Problem Statement', 'Customer Segment'], frontMatter: ['type', 'parent_uuid'] },
+  VP: { sections: ['Value Proposition', 'Why Worth Solving'], frontMatter: ['type', 'parent_uuid'] },
+  SS: { sections: ['Functional Requirements', 'Non-Functional Requirements', 'Artifacts Needed'], frontMatter: ['type', 'parent_uuid'] },
+  DO: { sections: ['Success Metrics', 'Final Outcomes'], frontMatter: ['type', 'parent_uuid'] },
+  EP: { sections: ['Milestone', 'Scope', 'Task Checklist'], frontMatter: ['type', 'parent_uuid'] },
+  TK: { sections: ['Implementation Steps', 'Implementation Files', 'Acceptance Criteria'], frontMatter: ['type', 'parent_uuid'] },
+  VC: { sections: ['Acceptance Criteria'],           frontMatter: ['type', 'parent_uuid', 'validation_kind'] },
+  AR: { sections: ['Citations'],                     frontMatter: ['type', 'parent_uuid', 'artifact_type'] },
+};
+
+function v2ParentUuid(content) {
+  return (content || '').match(/parent_uuid:[ \t]*(\S+)/)?.[1] || null;
+}
+
+function verifyV2Template(type, task) {
+  const tpl = V2_TEMPLATES[type];
+  if (!tpl) return { pass: true, issues: [] };
+  const c = task.content || '';
+  const issues = [];
+  for (const s of tpl.sections) {
+    if (!new RegExp(s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i').test(c)) {
+      issues.push(`missing required section: ${s}`);
+    }
+  }
+  for (const f of tpl.frontMatter) {
+    if (!new RegExp(`${f}:[ \\t]*\\S`).test(c)) issues.push(`missing front matter: ${f}`);
+  }
+  return { pass: issues.length === 0, issues };
+}
+
+// Walk the parent chain bottom-up. Returns ancestors nearest-first; flags breaks.
+function v2Hierarchy(task, byId) {
+  const chain = [];
+  let cur = task;
+  const visited = new Set([task.id]);
+  while (cur) {
+    const pUuid = v2ParentUuid(cur.content);
+    if (!pUuid) break;
+    const parent = byId.get(pUuid);
+    if (!parent || visited.has(parent.id)) { chain.push({ broken: pUuid }); break; }
+    visited.add(parent.id);
+    chain.push(parent);
+    cur = parent;
+  }
+  return chain;
+}
+
+// AR citation gates per artifact_type — what "clean artifacts" means:
+//   code   → every cited file exists AND carries the parent VC uuid/key in a
+//            decorator comment (heading front matter or inline)
+//   media  → metadata block per asset: file name + sha256 + byte size
+//   report → at least 2 resolvable links (page URLs or task refs)
+function verifyV2Artifact(task, gitRoot) {
+  const c = task.content || '';
+  const issues = [];
+  const aType = c.match(/artifact_type:[ \t]*(\S+)/)?.[1]?.toLowerCase() || null;
+  const parentUuid = v2ParentUuid(c);
+  if (!aType) issues.push('missing artifact_type front matter (code|media|report)');
+  if (!parentUuid) issues.push('missing parent_uuid (the VC this artifact ships)');
+  for (const p of STUB_PATTERNS) { if (p.test(c)) { issues.push(`stub placeholder: ${p.source}`); break; } }
+
+  if (aType === 'code') {
+    const paths = [...c.matchAll(/<code[^>]*>([^<]+)<\/code>/g)].map(m => m[1].trim())
+      .filter(p => /^[A-Z]:\\|^\/|^(src|tests|prisma|scripts)[\\/]/.test(p) && !/\.(png|jpg|jpeg|webp|mp4)$/i.test(p));
+    if (paths.length === 0) issues.push('code artifact lists no file paths');
+    for (const fp of paths) {
+      const abs = /^[A-Z]:\\|^\//.test(fp) ? fp : path.join(gitRoot, fp);
+      if (!fs.existsSync(abs)) { issues.push(`cited file missing on disk: ${fp}`); continue; }
+      const text = fs.readFileSync(abs, 'utf-8');
+      const vcKey = c.match(/parent_key:[ \t]*((?:VC|VA)-\d+)/)?.[1];
+      const linked = (parentUuid && text.includes(parentUuid)) || (vcKey && text.includes(vcKey));
+      if (!linked) issues.push(`cited file lacks a decorator pointing at its validation criteria (${vcKey || parentUuid}): ${fp}`);
+    }
+  } else if (aType === 'media') {
+    if (!/sha256[:=][ \t]*[a-f0-9]{16,}/i.test(c)) issues.push('media artifact needs a metadata block: file + sha256 + size per asset');
+    if (!/\b\d+\s*(bytes|KB|MB)\b/i.test(c)) issues.push('media artifact metadata missing byte size');
+  } else if (aType === 'report' || aType === 'doc') {
+    const links = (c.match(/href="[^"]+"/g) || []).length + (c.match(/\/pages\/[\w-]+\/[\w-]+/g) || []).length;
+    if (links < 2) issues.push(`report artifact needs >=2 resolvable citations/links (found ${links})`);
+  }
+  return { pass: issues.length === 0, issues };
+}
 
 // ── Lifecycle ordering ────────────────────────────────────────────────────────
 function epRefForEx(exTask) {
@@ -1222,13 +1352,27 @@ async function addIntakeCommand(cfg, slug) {
   if (cfg?.intakeGroupId) {
     try {
       const esc = s => (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      // v2: intake cards ARE first-class IN-tier items — verbatim prompt, uuid
+      // stamped, ready to parent the RS chain. v1: plain INT-prefixed card.
+      const num = parseInt(id.replace('INT-', ''), 10) || 1;
+      const isV2 = cfg.schema === 2;
       const created = await api('POST', `/api/v2/dataspheres/${cfg.dsId}/tasks`, {
-        title: `${id} · [${intakePriority.toUpperCase()}] ${intakeSummary.slice(0, 70)}`,
-        content: `<p><strong>Intake ${id}</strong> — ${esc(intakeType)}, ${esc(intakePriority)} priority</p><p>${esc(intakeBody_ || intakeSummary)}</p><p><em>Queued for triage. Run: node loop.mjs --triage ${id}</em></p>`,
+        title: isV2
+          ? `IN-${pad3(num)} · ${intakeSummary.slice(0, 70)}`
+          : `${id} · [${intakePriority.toUpperCase()}] ${intakeSummary.slice(0, 70)}`,
+        content: isV2
+          ? `<pre><code class="language-yaml">\ntype: IN\nintake_ref: ${id}\npriority: ${esc(intakePriority)}\nplan_mode_id: ${cfg.planModeId}\n</code></pre>\n<h2>Origin Prompt <!-- #origin --></h2>\n<blockquote><p>${esc(intakeBody_ || intakeSummary)}</p></blockquote>`
+          : `<p><strong>Intake ${id}</strong> — ${esc(intakeType)}, ${esc(intakePriority)} priority</p><p>${esc(intakeBody_ || intakeSummary)}</p><p><em>Queued for triage. Run: node loop.mjs --triage ${id}</em></p>`,
         statusGroupId: cfg.intakeGroupId,
         planModeId: cfg.planModeId,
       });
       item.boardTaskId = created.task?.id || created.id || null;
+      if (isV2 && item.boardTaskId) {
+        await api('PATCH', `/api/v2/dataspheres/${cfg.dsId}/tasks/${item.boardTaskId}`, {
+          content: (await api('GET', `/api/v2/dataspheres/${cfg.dsId}/tasks/${item.boardTaskId}`)).task.content
+            .replace('type: IN', `type: IN\nuuid: ${item.boardTaskId}`),
+        }).catch(() => {});
+      }
     } catch { /* board card is best-effort — the JSON queue is authoritative */ }
   }
 
@@ -1324,10 +1468,15 @@ async function triageIntakeCommand(cfg, slug) {
   item.triagedAt = new Date().toISOString();
   setIntakeItems(slug, items);
 
-  // Close the Intake-column board card with a pointer to the created tasks
+  // Close the Intake-column board card with a pointer to the created tasks.
+  // v2: IN items never move — status DONE; they remain the chain's root parent.
   if (item.boardTaskId) {
     await postComment(cfg, item.boardTaskId, `**Triaged** → ${result.exKey} + ${result.vaKey}`);
-    await moveDone(cfg, item.boardTaskId).catch(() => {});
+    if (cfg.schema === 2) {
+      await api('PATCH', `/api/v2/dataspheres/${cfg.dsId}/tasks/${item.boardTaskId}`, { status: 'DONE' }).catch(() => {});
+    } else {
+      await moveDone(cfg, item.boardTaskId).catch(() => {});
+    }
   }
 
   console.log('✅');
@@ -1543,6 +1692,191 @@ async function checkItemCommand(cfg, iState, slug) {
   }, null, 2));
 }
 
+// ── V2 sequencer ──────────────────────────────────────────────────────────────
+// Tier-by-tier, status-based (items never leave their column). VC is the deep
+// work unit; an AR not yet DONE blocks completion (artifacts cannot be ghosts).
+function findNextIncompleteV2(tasks) {
+  const byTier = {};
+  for (const t of tasks) { const ty = sddType(t.title); if (ty) (byTier[ty] = byTier[ty] || []).push(t); }
+  for (const tier of ['RS', 'PC', 'VP', 'SS', 'DO', 'EP', 'TK']) {
+    for (const t of (byTier[tier] || []).sort((a, b) => sddNum(a.title) - sddNum(b.title))) {
+      if (!t.isDone) return t;
+    }
+  }
+  const byId = new Map(tasks.map(t => [t.id, t]));
+  for (const vc of (byTier.VC || []).sort((a, b) => sddNum(a.title) - sddNum(b.title))) {
+    if (vc.isDone) continue;
+    const parent = byId.get(v2ParentUuid(vc.content) || '');
+    if (!parent || parent.isDone) return vc;   // parent TK done (or broken — surface it)
+  }
+  for (const ar of (byTier.AR || []).sort((a, b) => sddNum(a.title) - sddNum(b.title))) {
+    if (!ar.isDone) return ar;
+  }
+  return null;
+}
+
+// VC pass → AR scaffold in the Artifacts column. Created with status TODO and a
+// citation checklist — verifyV2Artifact must pass before it can go DONE, so an
+// empty scaffold can never silently count as a shipped artifact.
+async function createArtifactV2(cfg, vcTask, allTasks) {
+  const arGroup = cfg.tiers?.AR;
+  if (!arGroup) { process.stdout.write('[no AR tier group] '); return; }
+  const existing = allTasks.find(t => sddType(t.title) === 'AR' && v2ParentUuid(t.content) === vcTask.id);
+  if (existing) return;
+  const arNum = allTasks.filter(t => sddType(t.title) === 'AR' && sddNum(t.title) < 900).length + 1;
+  const arKey = `AR-${pad3(arNum)}`;
+  const vcKey = sddKey(vcTask.title);
+  const kinds = [...vaEffectiveKinds(vcTask.content)];
+  const aType = kinds.includes('ui') || kinds.includes('api') || kinds.includes('data') ? 'code' : 'report';
+  const content = [
+    `<pre><code class="language-yaml">`,
+    `type: AR`,
+    `parent_uuid: ${vcTask.id}`,
+    `parent_key: ${vcKey}`,
+    `artifact_type: ${aType}`,
+    `plan_mode_id: ${cfg.planModeId}`,
+    `status: PENDING_CITATIONS`,
+    `</code></pre>`,
+    ``,
+    `<h2>Artifact <!-- #artifact --></h2>`,
+    `<p>Ships ${vcKey} — ${vcTask.title.replace(/^VC-\d+\s*[·•-]?\s*/, '').slice(0, 90)}</p>`,
+    ``,
+    `<h2>Citations <!-- #citations --></h2>`,
+    `<ul class="tiptap-bullet-list">`,
+    `  <li><p><em>REQUIRED before DONE — ${aType === 'code'
+      ? 'list every shipped file in <code> tags; each file must carry a decorator pointing at ' + vcKey
+      : 'embed metadata (file + sha256 + size) per asset, or >=2 resolvable links for reports'}</em></p></li>`,
+    `</ul>`,
+  ].join('\n');
+  try {
+    const created = await api('POST', `/api/v2/dataspheres/${cfg.dsId}/tasks`, {
+      title: `${arKey} · ${vcTask.title.replace(/^VC-\d+\s*[·•-]?\s*/, '').slice(0, 60)}`,
+      content, statusGroupId: arGroup, planModeId: cfg.planModeId,
+    });
+    const arId = created.task?.id || created.id;
+    if (arId) {
+      await api('PATCH', `/api/v2/dataspheres/${cfg.dsId}/tasks/${arId}`, {
+        content: content.replace('type: AR', `type: AR\nuuid: ${arId}`),
+      }).catch(() => {});
+      process.stdout.write(`[${arKey} scaffolded — citations pending] `);
+    }
+  } catch (e) { process.stdout.write(`[AR scaffold failed: ${e.message.slice(0, 40)}] `); }
+}
+
+// ── --scaffold-v2 <slug> --name "<Initiative>" ───────────────────────────────
+// Box A of the system diagram: creates the 10-column plan mode + state entry.
+async function scaffoldV2Command() {
+  if (!scaffoldV2Slug) { console.error('✗ --scaffold-v2 requires a slug'); process.exit(1); }
+  const state = loadState() || { initiatives: {} };
+  const anyInit = Object.values(state.initiatives || {})[0] || state;
+  const dsId = anyInit.dsId, dsUri = anyInit.dsUri;
+  if (!dsId) { console.error('✗ No dsId found in .sdd-state.json — run sdd-conductor init once first.'); process.exit(1); }
+  const name = scaffoldV2Name || scaffoldV2Slug;
+  const created = await api('POST', `/api/v2/dataspheres/${dsId}/tasks/plan-modes`, {
+    name, tagFilter: [scaffoldV2Slug],
+    columns: V2_COLUMNS.map(c => ({ name: c.name, color: c.color, isDoneState: false })),
+  });
+  const pm = created.planMode || created;
+  const groups = pm.statusGroups || [];
+  const tiers = {};
+  for (const col of V2_COLUMNS) {
+    const g = groups.find(x => x.name === col.name);
+    if (g) tiers[col.key] = g.id;
+  }
+  state.initiatives = state.initiatives || {};
+  state.initiatives[scaffoldV2Slug] = {
+    schema: 2, dsId, dsUri, planModeId: pm.id, tiers,
+    statusGroups: Object.fromEntries(groups.map(g => [g.name, g.id])),
+    intakeGroupId: tiers.IN || null,
+    dashboardSlug: null, trackerUrl: null,
+  };
+  state.currentInitiative = scaffoldV2Slug;
+  saveState(state);
+  console.log(JSON.stringify({
+    scaffolded: true, schema: 2, slug: scaffoldV2Slug, planModeId: pm.id,
+    tiers, plannerUrl: `${BASE}/app/${dsUri || dsId}/planner?mode=${pm.id}`,
+    nextSteps: [
+      'Create the dashboard page (Dashboard Page Template) and register dashboardSlug + trackerUrl',
+      'Stage IN items from user prompts, then build the chain: RS -> PC -> VP -> SS -> DO -> EP -> TK -> VC',
+      'Every item except IN needs parent_uuid front matter; run --stamp-uuids after creating items',
+      'Run --trace-audit before starting the Ralph loop',
+    ],
+  }, null, 2));
+}
+
+// ── --trace-audit ─────────────────────────────────────────────────────────────
+// Ghost-node detector for BOTH schemas: duplicates, dangling refs, broken
+// parent chains, uncited artifacts, missing uuid stamps. Exit 1 on any ghost.
+async function traceAuditCommand(cfg, iState, slug) {
+  const tasks = await readBoard(cfg);
+  const ghosts = [];
+  const keyMap = {};
+  tasks.forEach(t => { const k = sddKey(t.title); if (k) (keyMap[k] = keyMap[k] || []).push(t); });
+  for (const [k, list] of Object.entries(keyMap)) {
+    if (list.length > 1) ghosts.push({ kind: 'duplicate-key', key: k, ids: list.map(t => t.id) });
+  }
+  const allKeys = new Set(Object.keys(keyMap));
+  const byId = new Map(tasks.map(t => [t.id, t]));
+  for (const t of tasks) {
+    const c = t.content || '';
+    for (const m of c.matchAll(/(?:execution_ref|epic_ref|north_star_ref|research_ref|validation_ref):[ \t]*((?:[A-Z]+-)?[A-Z]+-\d+)/g)) {
+      if (!allKeys.has(m[1])) ghosts.push({ kind: 'dangling-ref', task: sddKey(t.title) || t.id, ref: m[0].trim() });
+    }
+    if ((iState.schema || 1) === 2) {
+      const ty = sddType(t.title);
+      if (ty && ty !== 'IN') {
+        const p = v2ParentUuid(c);
+        if (!p) ghosts.push({ kind: 'missing-parent-uuid', task: sddKey(t.title) || t.id });
+        else {
+          const parent = byId.get(p);
+          if (!parent) ghosts.push({ kind: 'broken-parent-chain', task: sddKey(t.title), parent_uuid: p });
+          else if (sddType(parent.title) !== V2_PARENT[ty]) {
+            ghosts.push({ kind: 'wrong-parent-tier', task: sddKey(t.title), expected: V2_PARENT[ty], actual: sddType(parent.title) });
+          }
+        }
+      }
+      if (ty && !/(^|\n)uuid:[ \t]*\S/.test(c)) ghosts.push({ kind: 'missing-uuid-stamp', task: sddKey(t.title) || t.id });
+      if (ty === 'AR' && t.isDone) {
+        const v = verifyV2Artifact(t, findGitRoot());
+        if (!v.pass) ghosts.push({ kind: 'uncited-artifact', task: sddKey(t.title), issues: v.issues });
+      }
+    } else {
+      const ty = sddType(t.title);
+      if (ty === 'AR' && !/validation_ref:[ \t]*(?:[A-Z]+-)?VA-\d+/.test(c)) {
+        ghosts.push({ kind: 'orphan-artifact', task: sddKey(t.title) || t.id });
+      }
+    }
+  }
+  console.log(JSON.stringify({ schema: iState.schema || 1, tasks: tasks.length, ghosts: ghosts.length, detail: ghosts }, null, 2));
+  if (ghosts.length > 0) {
+    console.error(`\n✗ TRACE AUDIT FAIL — ${ghosts.length} ghost(s). Fix every entry above; ghosts become unlinked nodes in the trace graph.`);
+    process.exit(1);
+  }
+  console.log('\n✅ TRACE AUDIT CLEAN — every node links, every artifact cites.');
+}
+
+// ── --stamp-uuids ─────────────────────────────────────────────────────────────
+// Writes uuid: <own board id> into every item's front matter that lacks it —
+// the uuid half of box C; parent_uuid is authored, uuid is mechanical.
+async function stampUuidsCommand(cfg) {
+  const tasks = await readBoard(cfg);
+  let stamped = 0;
+  for (const t of tasks) {
+    if (!sddType(t.title)) continue;
+    const c = t.content || '';
+    if (/(^|\n)uuid:[ \t]*\S/.test(c)) continue;
+    let nc;
+    if (/<pre><code class="language-yaml">/.test(c)) {
+      nc = c.replace(/(<pre><code class="language-yaml">\s*\n?)/, `$1uuid: ${t.id}\n`);
+    } else {
+      nc = `<pre><code class="language-yaml">\nuuid: ${t.id}\n</code></pre>\n` + c;
+    }
+    await patchContent(cfg, t.id, nc);
+    stamped++;
+  }
+  console.log(JSON.stringify({ stamped, total: tasks.length }, null, 2));
+}
+
 // ── Full-board regression: --regress ──────────────────────────────────────────
 // Executes every VA task's validation_command against the live system. The
 // result is recorded in .sdd-state.json; --next will NOT report "complete"
@@ -1551,7 +1885,7 @@ async function checkItemCommand(cfg, iState, slug) {
 // any VA lacks a runnable command.
 async function regressCommand(cfg, iState, slug) {
   const tasks = await readBoard(cfg);
-  const vaTasks = tasks.filter(t => sddType(t.title) === 'VA')
+  const vaTasks = tasks.filter(t => ['VA', 'VC'].includes(sddType(t.title)))
     .sort((a, b) => sddNum(a.title) - sddNum(b.title));
 
   const entries = [];
@@ -1573,13 +1907,15 @@ async function regressCommand(cfg, iState, slug) {
   // must be covered by a companion VA that has commands. Frontend, backend, and
   // data-model validation each pass individually or the wall fails.
   const coverageGaps = [];
-  for (const ex of tasks.filter(t => sddType(t.title) === 'EX')) {
+  for (const ex of tasks.filter(t => ['EX', 'TK'].includes(sddType(t.title)))) {
     const req = exRequiredTypes(ex.content);
     if (req.length === 0) continue;
     const exK = sddKey(ex.title);
     const covered = new Set();
     for (const va of vaTasks) {
-      if (!new RegExp(`execution_ref:\\s*${exK}\\b`).test(va.content || '')) continue;
+      const companion = new RegExp(`execution_ref:\\s*${exK}\\b`).test(va.content || '') ||
+                        v2ParentUuid(va.content) === ex.id;   // v2: VC chains by parent_uuid
+      if (!companion) continue;
       if (extractValidationCommands(va.content).length === 0) continue;
       vaEffectiveKinds(va.content).forEach(k => covered.add(k));
     }
@@ -1818,7 +2154,16 @@ async function findNextTask(cfg, iState, slug) {
   }
   const advisoryIntake = intakeItems.filter(i => i.status === 'pending');
 
-  const next = findNextIncomplete(tasks);
+  // v2: empty board means the planning phases haven't run — say so instead of NaN%
+  if (cfg.schema === 2 && tasks.filter(t => sddType(t.title)).length === 0) {
+    process.stdout.write(JSON.stringify({
+      status: 'empty-board', schema: 2,
+      instruction: 'No items staged yet. Engage the user, run research, and build the chain: IN -> RS -> PC -> VP -> SS -> DO -> EP -> TK -> VC (parent_uuid on every item except IN). Then --stamp-uuids and --trace-audit before starting the loop.',
+    }, null, 2));
+    return;
+  }
+
+  const next = cfg.schema === 2 ? findNextIncompleteV2(tasks) : findNextIncomplete(tasks);
 
   if (!next) {
     // 100% Done is NOT terminal while intake items are pending. A user bug report
@@ -1892,10 +2237,21 @@ async function findNextTask(cfg, iState, slug) {
   } catch { /* non-fatal */ }
 
   const nextType = sddType(next.title);
+  // v2: ship the FULL parent hierarchy with the task — "requirements for each
+  // parent column to use as context as the AI aims to achieve its validation".
+  // The Ralph loop reads VC + TK + EP + DO + SS + VP + PC + RS + IN in one shot.
+  let hierarchy;
+  if (cfg.schema === 2) {
+    const byId = new Map(tasks.map(t => [t.id, t]));
+    hierarchy = v2Hierarchy(next, byId).map(a => a.broken
+      ? { broken: true, parent_uuid: a.broken, fix: 'parent_uuid does not resolve — repair the chain before working this item' }
+      : { type: sddType(a.title), key: sddKey(a.title), uuid: a.id, title: a.title, content: a.content });
+  }
   process.stdout.write(JSON.stringify({
     status: 'next',
     done, total,
     pct: Math.round(done / total * 100),
+    schema: cfg.schema,
     task: {
       id: next.id,
       title: next.title,
@@ -1903,6 +2259,7 @@ async function findNextTask(cfg, iState, slug) {
       type: nextType,
       content: next.content,
     },
+    ...(hierarchy ? { hierarchy } : {}),
     // Flags telling Claude what kind of substantiation is required before --advance
     requiresResearch: nextType === 'RS',
     requiresAcVerification: nextType === 'EP' || nextType === 'NS',
@@ -2074,7 +2431,7 @@ async function advanceTask(cfg, iState, slug) {
   const isNonUiVa = vaKinds ? !vaKinds.includes('ui') : false;
 
   // ── Typed VA evidence gates (api / data / benchmark) ─────────────────────────
-  if (task_check && sddType(task_check.title) === 'VA' && vaKinds) {
+  if (task_check && ['VA','VC'].includes(sddType(task_check.title)) && vaKinds) {
     const typedIssues = [];
     if (vaKinds.includes('api')) {
       if (!/\/api\//.test(evidenceText)) typedIssues.push('[api] no /api/ endpoint path in evidence — quote the requests that were asserted');
@@ -2101,7 +2458,7 @@ async function advanceTask(cfg, iState, slug) {
     }
   }
 
-  if (task_check && sddType(task_check.title) === 'VA' && !isNonUiVa && IMAGE_VA_PATTERN.test(task_check.title)) {
+  if (task_check && ['VA','VC'].includes(sddType(task_check.title)) && !isNonUiVa && IMAGE_VA_PATTERN.test(task_check.title)) {
     // Must contain a visual description — not just "job ran / file saved / pid = ..."
     const VISUAL_KEYWORDS = /shows?|displays?|visible|appears?|look[si]|wearing|dressed|garment\s+on|character\s+(is|has|wears?|shows?|appears?)|image\s+shows?|output\s+shows?|can\s+see|identity\s+(match|lock|preserv)|face\s+(match|lock|preserv)|correctly|incorrect|wrong|broken|succeed|fail/i;
     const evidenceHasJobOnly = /^[\s\S]{0,300}(pid\s*=|job\s+id|prompt_id)[^a-z]*$/i;
@@ -2131,7 +2488,7 @@ async function advanceTask(cfg, iState, slug) {
   const UI_VA_PATTERN = /gallery|modal|builder|view|form|upload|component|render|survey|page|badge|button|layout|nav|feed|dashboard/i;
   // UI gate fires when the VA declares kind 'ui', or (undeclared) when the title
   // pattern-matches UI keywords — declared kinds are authoritative over the title.
-  const uiGateApplies = task_check && sddType(task_check.title) === 'VA' &&
+  const uiGateApplies = task_check && ['VA','VC'].includes(sddType(task_check.title)) &&
     (vaKinds ? vaKinds.includes('ui') : UI_VA_PATTERN.test(task_check.title));
   if (uiGateApplies) {
     const gateIssues = [];
@@ -2196,7 +2553,7 @@ async function advanceTask(cfg, iState, slug) {
   //   2. Contain a spec ref in the first 15 lines: "artifact: EX-NNN", "spec: EX-NNN", or "initiative:"
   // This is the foreign-key mechanism that makes the spec→code trace graph work.
   // Binary files (.png/.jpg/.mp4 etc.) must instead be registered in .sdd-artifacts.json.
-  if (task_check && sddType(task_check.title) === 'EX') {
+  if (task_check && ['EX','TK'].includes(sddType(task_check.title))) {
     const exKey = sddKey(task_check.title);
     const implSection = (task_check.content || '').match(/Implementation Files[\s\S]*?(?=<h2|$)/i)?.[0] || '';
     const rawPaths = [...implSection.matchAll(/<code[^>]*>([^<]+)<\/code>/g)].map(m => m[1].trim());
@@ -2340,7 +2697,7 @@ async function advanceTask(cfg, iState, slug) {
   // no advance. Descriptions of testing are not testing.
   {
     const cmds = extractValidationCommands(task_check?.content);
-    if (cmds.length === 0 && task_check && sddType(task_check.title) === 'VA') {
+    if (cmds.length === 0 && task_check && ['VA','VC'].includes(sddType(task_check.title))) {
       console.error('✗ GATE FAIL — VA task has no validation command front matter.');
       console.error('');
       console.error('  Every VA must carry runnable regression commands — one per validation');
@@ -2413,10 +2770,43 @@ async function advanceTask(cfg, iState, slug) {
     process.exit(1);
   }
 
-  // ── Trace-linkage gate: front matter refs must resolve, heading anchors must exist ──
-  // Front matter is only traceability if the refs point at real tasks and the
-  // section anchors that downstream tooling navigates by are actually present.
-  {
+  // ── Schema 2: template + parent-chain + citation gates ──────────────────────
+  // Box C of the system diagram, ENFORCED: every item matches its column's
+  // template; parent_uuid resolves to a live item of the exact parent tier;
+  // artifacts ship cited or not at all.
+  if (cfg.schema === 2) {
+    const tplV = verifyV2Template(type, task);
+    if (!tplV.pass) {
+      console.error(`✗ GATE FAIL — ${key} does not match the ${type} column template:`);
+      tplV.issues.forEach(i => console.error(`  · ${i}`));
+      console.error('  PATCH the content to the template (SKILL.md § Schema v2), then re-run --advance.');
+      process.exit(1);
+    }
+    if (type !== 'IN') {
+      const pUuid = v2ParentUuid(task.content);
+      const parentItem = tasks.find(t => t.id === pUuid);
+      if (!parentItem) {
+        console.error(`✗ GATE FAIL — ${key} parent_uuid ${pUuid || '(none)'} does not resolve to a board item. Every item except IN must chain to its parent column.`);
+        process.exit(1);
+      }
+      if (sddType(parentItem.title) !== V2_PARENT[type]) {
+        console.error(`✗ GATE FAIL — ${key} parent must be tier ${V2_PARENT[type]}, got ${sddType(parentItem.title)} (${sddKey(parentItem.title)}).`);
+        process.exit(1);
+      }
+    }
+    if (type === 'AR') {
+      const arV = verifyV2Artifact(task, findGitRoot());
+      if (!arV.pass) {
+        console.error(`✗ GATE FAIL — ${key} citations incomplete:`);
+        arV.issues.forEach(i => console.error(`  · ${i}`));
+        console.error('  code → cited files exist + carry the VC decorator; media → sha256 metadata; report → resolvable links.');
+        process.exit(1);
+      }
+    }
+  }
+
+  // ── Trace-linkage gate (schema 1): refs must resolve, anchors must exist ────
+  if (cfg.schema !== 2) {
     const byKeyLink = {};
     tasks.forEach(t => { const k = sddKey(t.title); if (k) byKeyLink[k] = t; });
     const linkIssues = [];
@@ -2451,20 +2841,35 @@ async function advanceTask(cfg, iState, slug) {
   if (type === 'VA') {
     await createArtifact(cfg, task, tasks);
   }
+  if (cfg.schema === 2 && type === 'VC') {
+    await createArtifactV2(cfg, task, tasks);
+  }
 
-  await moveDone(cfg, task.id);
+  if (cfg.schema === 2) {
+    // v2: items never leave their column — DONE is a status, not a move.
+    await api('PATCH', `/api/v2/dataspheres/${cfg.dsId}/tasks/${task.id}`, { status: 'DONE' });
+  } else {
+    await moveDone(cfg, task.id);
+  }
   console.log(`✅ ${key} Done`);
 
-  // Milestone comment up the hierarchy — parents (EP, NS) get a progress note so
-  // the live activity feed shows milestone movement, not just leaf-task churn.
+  // Milestone comment up the hierarchy so the live activity feed shows movement
+  // at every level — v2 walks the parent_uuid chain, v1 uses the ref fields.
   try {
-    const byKeyAll = {};
-    tasks.forEach(t => { const k = sddKey(t.title); if (k) byKeyAll[k] = t; });
-    const epRef = (task.content || '').match(/epic_ref:\s*(EP-\d+)/)?.[1];
-    const nsRef = (task.content || '').match(/north_star_ref:\s*(NS-\d+)/)?.[1];
     const note = `**Milestone:** ${key} (${task.title.slice(0, 70)}) advanced to Done.\n\n${evidenceText.slice(0, 350)}${evidenceText.length > 350 ? '…' : ''}`;
-    if (epRef && byKeyAll[epRef]) await postComment(cfg, byKeyAll[epRef].id, note);
-    if (nsRef && byKeyAll[nsRef]) await postComment(cfg, byKeyAll[nsRef].id, note);
+    if (cfg.schema === 2) {
+      const byId2 = new Map(tasks.map(t => [t.id, t]));
+      for (const anc of v2Hierarchy(task, byId2).slice(0, 3)) {
+        if (!anc.broken) await postComment(cfg, anc.id, note);
+      }
+    } else {
+      const byKeyAll = {};
+      tasks.forEach(t => { const k = sddKey(t.title); if (k) byKeyAll[k] = t; });
+      const epRef = (task.content || '').match(/epic_ref:\s*(EP-\d+)/)?.[1];
+      const nsRef = (task.content || '').match(/north_star_ref:\s*(NS-\d+)/)?.[1];
+      if (epRef && byKeyAll[epRef]) await postComment(cfg, byKeyAll[epRef].id, note);
+      if (nsRef && byKeyAll[nsRef]) await postComment(cfg, byKeyAll[nsRef].id, note);
+    }
   } catch { /* non-fatal */ }
 
   // Clear the in-flight task from state, remove sdd-active tag, and refresh dashboard Current Focus.
@@ -2585,6 +2990,12 @@ async function main() {
   if (env.DATASPHERES_BASE_URL) BASE = env.DATASPHERES_BASE_URL;
   initHeaders(apiKey);
 
+  // scaffold-v2 creates the initiative — it must run before the iState requirement
+  if (scaffoldV2Slug !== null) {
+    await scaffoldV2Command();
+    return;
+  }
+
   const state = loadState();
   const iState = resolveInitiative(state);
   if (!iState) {
@@ -2604,15 +3015,27 @@ async function main() {
     executionGroupId: sg.Execution || sg.execution || iState.executionGroupId || null,
     validationGroupId:sg.Validation || sg.validation || iState.validationGroupId || null,
     intakeGroupId:    sg.Intake || sg.intake || iState.intakeGroupId || null,
+    schema:           iState.schema || 1,
+    tiers:            iState.tiers || null,
     // All statusGroupIds for this plan — used by readBoard to scope client-side.
     // ensureGroupIds() will auto-fetch from the API and back-fill state if this is empty.
     allGroupIds:      new Set(Object.values(sg).filter(Boolean)),
     _slug:            slug, // passed through so ensureGroupIds can update .sdd-state.json
   };
 
-  if (!cfg.dsId || !cfg.planModeId || !cfg.doneGroupId) {
+  if (!cfg.dsId || !cfg.planModeId || (cfg.schema === 1 && !cfg.doneGroupId)) {
     console.error('✗ .sdd-state.json missing required fields. Re-run: node sdd-conductor.mjs init');
     process.exit(1);
+  }
+
+  if (traceAuditMode) {
+    await traceAuditCommand(cfg, iState, slug);
+    return;
+  }
+
+  if (stampUuidsMode) {
+    await stampUuidsCommand(cfg);
+    return;
   }
 
   if (healthMode) {
