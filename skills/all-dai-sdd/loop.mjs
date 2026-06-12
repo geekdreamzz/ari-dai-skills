@@ -2660,8 +2660,11 @@ async function advanceTask(cfg, iState, slug) {
     {
       const requiredTypes = exRequiredTypes(task_check.content);
       if (requiredTypes.length > 0) {
-        const companions = tasks_check.filter(t => sddType(t.title) === 'VA' &&
-          new RegExp(`execution_ref:\\s*${exKey}\\b`).test(t.content || ''));
+        // companions: v1 VAs link by execution_ref key; v2 VCs link by parent_uuid
+        const companions = tasks_check.filter(t => ['VA', 'VC'].includes(sddType(t.title)) && (
+          new RegExp(`execution_ref:\\s*${exKey}\\b`).test(t.content || '') ||
+          v2ParentUuid(t.content) === task_check.id
+        ));
         const covered = new Set();
         companions.forEach(va => vaEffectiveKinds(va.content).forEach(k => covered.add(k)));
         const missingTypes = requiredTypes.filter(t => !covered.has(t));
