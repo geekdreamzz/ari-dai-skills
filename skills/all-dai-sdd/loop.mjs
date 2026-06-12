@@ -1248,7 +1248,81 @@ async function createRemediationTasks(cfg, failingTask, issues, allTasks) {
 }
 
 // ── Create intake-driven EX+VA board tasks ───────────────────────────────────
+// HARDENING: on a schema-2 board, intake triage must produce native TK+VC chain
+// tasks (parent_uuid into an EP, proper tier columns). It used to emit v1-style
+// EX/VA cards into the AR column — untyped-for-v2 orphans that the advance
+// type-prefix gate rightly refuses, forcing manual conversion every time.
+async function createIntakeTasksV2(cfg, item, allTasks) {
+  const tkNums = allTasks.filter(t => sddType(t.title) === 'TK').map(t => sddNum(t.title));
+  const vcNums = allTasks.filter(t => sddType(t.title) === 'VC').map(t => sddNum(t.title));
+  const tkKey = `TK-${pad3((tkNums.length ? Math.max(...tkNums) : 0) + 1)}`;
+  const vcKey = `VC-${pad3((vcNums.length ? Math.max(...vcNums) : 0) + 1)}`;
+  const esc = s => (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const bodyHtml = item.body ? `<p>${esc(item.body).replace(/\n/g, '</p><p>')}</p>` : `<p>${esc(item.summary)}</p>`;
+
+  // Parent EP: prefer an open epic, else the highest-numbered one.
+  const eps = allTasks.filter(t => sddType(t.title) === 'EP').sort((a, b) => sddNum(a.title) - sddNum(b.title));
+  const ep = eps.find(e => !e.isDone) || eps[eps.length - 1];
+  if (!ep) throw new Error('v2 triage needs at least one EP on the board to parent the TK under');
+
+  const tkContent = [
+    `<pre><code class="language-yaml">`,
+    `type: TK`,
+    `parent_uuid: ${ep.id}`,
+    `intake_ref: ${item.id}`,
+    `intake_priority: ${item.priority}`,
+    `plan_mode_id: ${cfg.planModeId}`,
+    `auto_generated: true`,
+    `</code></pre>`,
+    `<h2>Context <!-- #context --></h2>`,
+    `<p><strong>Intake ${item.id} (${item.type}, ${item.priority} priority):</strong></p>`,
+    bodyHtml,
+    `<h2>Implementation Steps <!-- #steps --></h2>`,
+    `<ol class="tiptap-ordered-list"><li><p>Identify affected files from the intake context</p></li><li><p>Implement the change; add the ${tkKey} decorator at every change site</p></li><li><p>Write or extend the ${vcKey} spec; wire its validation_command</p></li></ol>`,
+    `<h2>Implementation Files <!-- #files --></h2>`,
+    `<ul class="tiptap-bullet-list"><li><p><em>PATCH this list with the real files (code tags) before advancing — the decorator gate verifies each one names ${tkKey}</em></p></li></ul>`,
+    `<h2>Acceptance Criteria <!-- #ac --></h2>`,
+    `<ul data-type="taskList"><li data-type="taskItem" data-checked="false"><p>Intake context satisfied: ${esc(item.summary.slice(0, 120))}</p></li><li data-type="taskItem" data-checked="false"><p>Changes verified end-to-end with real output; no regressions</p></li></ul>`,
+  ].join('\n');
+
+  const vcContentOf = (tkId) => [
+    `<pre><code class="language-yaml">`,
+    `type: VC`,
+    `parent_uuid: ${tkId}`,
+    `intake_ref: ${item.id}`,
+    `validation_kind: ${validationKindArg || 'ui'}`,
+    `plan_mode_id: ${cfg.planModeId}`,
+    `auto_generated: true`,
+    `</code></pre>`,
+    `<h2>Acceptance Criteria <!-- #ac --></h2>`,
+    `<ul data-type="taskList"><li data-type="taskItem" data-checked="false"><p>${tkKey} fully addresses: ${esc(item.summary.slice(0, 120))}</p></li><li data-type="taskItem" data-checked="false"><p>Validation command wired and green; no regressions in the wall</p></li></ul>`,
+    `<p><em>PATCH validation_command_${validationKindArg || 'ui'} into the front matter once the spec exists — --advance executes it live.</em></p>`,
+  ].join('\n');
+
+  const tkObj = await api('POST', `/api/v2/dataspheres/${cfg.dsId}/tasks`, {
+    title: `${tkKey} - ${item.summary.slice(0, 60)}`,
+    content: tkContent, statusGroupId: cfg.tiers.TK, planModeId: cfg.planModeId,
+  });
+  const tkId = tkObj.task?.id || tkObj.id;
+  await api('PATCH', `/api/v2/dataspheres/${cfg.dsId}/tasks/${tkId}`, {
+    content: tkContent.replace('type: TK', `type: TK\nuuid: ${tkId}`),
+  }).catch(loudCatch('TK uuid stamp'));
+
+  const vcContent = vcContentOf(tkId);
+  const vcObj = await api('POST', `/api/v2/dataspheres/${cfg.dsId}/tasks`, {
+    title: `${vcKey} - Validate: ${item.summary.slice(0, 55)}`,
+    content: vcContent, statusGroupId: cfg.tiers.VC, planModeId: cfg.planModeId,
+  });
+  const vcId = vcObj.task?.id || vcObj.id;
+  await api('PATCH', `/api/v2/dataspheres/${cfg.dsId}/tasks/${vcId}`, {
+    content: vcContent.replace('type: VC', `type: VC\nuuid: ${vcId}`),
+  }).catch(loudCatch('VC uuid stamp'));
+
+  return { exKey: tkKey, vaKey: vcKey, exId: tkId, vaId: vcId };
+}
+
 async function createIntakeTasks(cfg, item, allTasks) {
+  if (cfg.schema === 2 && cfg.tiers?.TK && cfg.tiers?.VC) return createIntakeTasksV2(cfg, item, allTasks);
   const allExNums = allTasks.filter(t => sddType(t.title) === 'EX' && sddNum(t.title) < 900).map(t => sddNum(t.title));
   const allVaNums = allTasks.filter(t => sddType(t.title) === 'VA' && sddNum(t.title) < 900).map(t => sddNum(t.title));
   const nextExNum = (allExNums.length > 0 ? Math.max(...allExNums) : 0) + 1;
