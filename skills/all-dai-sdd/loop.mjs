@@ -299,7 +299,7 @@ function refreshDashboard(iState) {
       stdio: 'ignore', detached: true,
     });
     child.unref();
-  }).catch(() => {});
+  }).catch(loudCatch('dashboard refresh spawn'));
 }
 
 function resolveInitiative(state) {
@@ -316,6 +316,18 @@ function initHeaders(apiKey) {
 }
 
 async function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+// HARDENING: no silent failures on board writes. A swallowed 400 hid the
+// tags-endpoint body bug ({name} vs {tagName}) project-wide — Current Focus
+// never lit up and nothing said why. Every best-effort write now WARNS with
+// the operation name and the server's reason. Still non-fatal (the write is
+// best-effort) but never invisible.
+function loudCatch(label) {
+  return (e) => {
+    console.error(`  ⚠ board write failed [${label}]: ${String(e?.message || e).slice(0, 160)}`);
+    return null;
+  };
+}
 
 async function api(method, urlPath, body) {
   for (let attempt = 1; attempt <= 3; attempt++) {
@@ -1399,7 +1411,7 @@ async function addIntakeCommand(cfg, slug) {
         await api('PATCH', `/api/v2/dataspheres/${cfg.dsId}/tasks/${item.boardTaskId}`, {
           content: (await api('GET', `/api/v2/dataspheres/${cfg.dsId}/tasks/${item.boardTaskId}`)).task.content
             .replace('type: IN', `type: IN\nuuid: ${item.boardTaskId}`),
-        }).catch(() => {});
+        }).catch(loudCatch('IN uuid stamp'));
       }
     } catch { /* board card is best-effort — the JSON queue is authoritative */ }
   }
@@ -1501,9 +1513,9 @@ async function triageIntakeCommand(cfg, slug) {
   if (item.boardTaskId) {
     await postComment(cfg, item.boardTaskId, `**Triaged** → ${result.exKey} + ${result.vaKey}`);
     if (cfg.schema === 2) {
-      await api('PATCH', `/api/v2/dataspheres/${cfg.dsId}/tasks/${item.boardTaskId}`, { status: 'DONE' }).catch(() => {});
+      await api('PATCH', `/api/v2/dataspheres/${cfg.dsId}/tasks/${item.boardTaskId}`, { status: 'DONE' }).catch(loudCatch('intake card DONE'));
     } else {
-      await moveDone(cfg, item.boardTaskId).catch(() => {});
+      await moveDone(cfg, item.boardTaskId).catch(loudCatch('intake card moveDone'));
     }
   }
 
@@ -1757,12 +1769,19 @@ async function reconcileV2(cfg) {
       const kids = tasks.filter(x => v2ParentUuid(x.content) === t.id);
       if (kids.length === 0) continue;                 // leaf — own status governs
       const allDone = kids.every(k => k.isDone);
+      // HARDENING: local rollup state flips ONLY after the board PATCH succeeds.
+      // Previously a failed PATCH was swallowed and the loop still reported the
+      // rollup — progress % and the board could silently disagree.
       if (allDone && !t.isDone) {
-        await api('PATCH', `/api/v2/dataspheres/${cfg.dsId}/tasks/${t.id}`, { status: 'DONE' }).catch(() => {});
+        const ok = await api('PATCH', `/api/v2/dataspheres/${cfg.dsId}/tasks/${t.id}`, { status: 'DONE' })
+          .then(() => true).catch(loudCatch(`rollup DONE ${sddKey(t.title)}`));
+        if (!ok) continue;
         t.status = 'DONE'; t.isDone = true; changed = true;
         changes.push({ key: sddKey(t.title), to: 'DONE (children complete)' });
       } else if (!allDone && t.isDone) {
-        await api('PATCH', `/api/v2/dataspheres/${cfg.dsId}/tasks/${t.id}`, { status: 'IN_PROGRESS' }).catch(() => {});
+        const ok = await api('PATCH', `/api/v2/dataspheres/${cfg.dsId}/tasks/${t.id}`, { status: 'IN_PROGRESS' })
+          .then(() => true).catch(loudCatch(`rollup RE-OPEN ${sddKey(t.title)}`));
+        if (!ok) continue;
         t.status = 'IN_PROGRESS'; t.isDone = false; changed = true;
         const open = kids.filter(k => !k.isDone).map(k => sddKey(k.title)).join(', ');
         changes.push({ key: sddKey(t.title), to: `RE-OPENED (open children: ${open})` });
@@ -1826,7 +1845,7 @@ async function createArtifactV2(cfg, vcTask, allTasks) {
     if (arId) {
       await api('PATCH', `/api/v2/dataspheres/${cfg.dsId}/tasks/${arId}`, {
         content: content.replace('type: AR', `type: AR\nuuid: ${arId}`),
-      }).catch(() => {});
+      }).catch(loudCatch('AR uuid stamp'));
       process.stdout.write(`[${arKey} scaffolded — citations pending] `);
     }
   } catch (e) { process.stdout.write(`[AR scaffold failed: ${e.message.slice(0, 40)}] `); }
@@ -1888,6 +1907,16 @@ async function traceAuditCommand(cfg, iState, slug) {
   }
   const allKeys = new Set(Object.keys(keyMap));
   const byId = new Map(tasks.map(t => [t.id, t]));
+  // CHAR CLEANLINESS gate — titles are PLAIN TEXT, so HTML entities (&apos; &mdash;
+  // &middot; &rarr; &#39; …) render LITERALLY, and fancy unicode punctuation
+  // (smart quotes, em/en dashes, arrows) keeps causing encoding breakage. Use
+  // common ASCII chars only in titles. This is the recurring char-issue, gated.
+  const ENTITY_RE = /&(?:[a-zA-Z]+|#\d+);/;
+  const FANCY_RE = /[‘’“”–—→←↑↓…]/;
+  for (const t of tasks) {
+    if (ENTITY_RE.test(t.title)) ghosts.push({ kind: 'html-entity-in-title', task: sddKey(t.title) || t.id, title: t.title.slice(0, 60), fix: 'replace HTML entities with plain ASCII (&apos; -> apostrophe, &mdash; -> -, &rarr; -> ->)' });
+    else if (FANCY_RE.test(t.title)) ghosts.push({ kind: 'fancy-unicode-in-title', task: sddKey(t.title) || t.id, title: t.title.slice(0, 60), fix: 'use common ASCII punctuation (straight quotes, hyphens, ->) in titles' });
+  }
   for (const t of tasks) {
     const c = t.content || '';
     for (const m of c.matchAll(/(?:execution_ref|epic_ref|north_star_ref|research_ref|validation_ref):[ \t]*((?:[A-Z]+-)?[A-Z]+-\d+)/g)) {
@@ -2449,11 +2478,11 @@ async function findNextTask(cfg, iState, slug) {
     // The tags endpoint expects `tagName` (NOT `name`) — a silent .catch hid this
     // for the whole project, so Current Focus never lit up. Idempotent find-or-create.
     await api('POST', `/api/v2/dataspheres/${cfg.dsId}/tasks/${next.id}/tags`, { tagName: 'sdd-active' })
-      .catch(() => {});
+      .catch(loudCatch('sdd-active tag'));
     // Mark IN_PROGRESS on the board so the current ticket is visibly in flight
     // (Kanban card state + Current Focus widget both read this).
     await api('PATCH', `/api/v2/dataspheres/${cfg.dsId}/tasks/${next.id}`, { status: 'IN_PROGRESS' })
-      .catch(() => {});
+      .catch(loudCatch('mark IN_PROGRESS'));
     refreshDashboard(iState);
   } catch { /* non-fatal */ }
 
@@ -2648,6 +2677,24 @@ async function advanceTask(cfg, iState, slug) {
   const tasks_check = await readBoard(cfg);
   const task_check = tasks_check.find(t => t.id === advanceTaskId) ||
                      tasks_check.find(t => sddKey(t.title) === advanceTaskId);
+
+  // HARDENING: refuse to advance a task whose title carries no recognized SDD
+  // type prefix. An untyped task bypasses every typed gate (decorator linkage,
+  // VA evidence matrix, AR citations) — advancing it would be an unguarded
+  // status flip, exactly the hole "impossible to break the loop" closes.
+  if (task_check) {
+    const tType = sddType(task_check.title);
+    const V2_SET = ['IN','RS','PC','VP','SS','DO','EP','TK','VC','AR'];
+    const V1_SET = ['RS','NS','EP','EX','VA','AR'];
+    const allowed = cfg.schema === 2 ? V2_SET : V1_SET;
+    if (!tType || !allowed.includes(tType)) {
+      console.error(`✗ GATE FAIL — task "${task_check.title.slice(0, 60)}" has ${tType ? `unrecognized type prefix "${tType}"` : 'no SDD type prefix'} for schema v${cfg.schema === 2 ? 2 : 1}.`);
+      console.error(`  Allowed prefixes: ${allowed.join(', ')}`);
+      console.error('  Rename the task to "<TYPE>-NNN · <title>" (or fix its column) before advancing.');
+      console.error('  Untyped tasks bypass the typed gates — they cannot be advanced.');
+      process.exit(1);
+    }
+  }
 
   // validation_kind front matter declares the VA's validation TYPES (comma list):
   //   ui        → rendered browser flow: Playwright run + fresh screenshots
@@ -3156,7 +3203,7 @@ async function advanceTask(cfg, iState, slug) {
   // Clear the in-flight task from state, remove sdd-active tag, and refresh dashboard Current Focus.
   try {
     await api('DELETE', `/api/v2/dataspheres/${cfg.dsId}/tasks/${task.id}/tags/sdd-active`)
-      .catch(() => {});
+      .catch(loudCatch('sdd-active untag'));
     const freshState = loadState();
     const freshSlug = initiativeOverride || freshState?.currentInitiative;
     if (freshState && freshSlug) setActiveTask(freshState, freshSlug, null);
