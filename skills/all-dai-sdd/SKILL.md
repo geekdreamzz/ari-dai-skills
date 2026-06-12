@@ -1214,22 +1214,22 @@ All 5 sections are required. Replace `<dsId>`, `<uri>`, `<planModeId>`, `<Projec
 <h1><Project> &mdash; Initiative Dashboard</h1>
 <p><one-line description of the initiative></p>
 
-<!-- SECTION 2: Initiative Summary widget -->
-<h2>Initiative Summary</h2>
+<!-- SECTION 2: Initiative Summary — ONE widget. progress-summary embeds the
+     Current Focus subtree internally: donut ring + counts + the in-flight
+     validation ticket's subtree (scoped via the live sdd-active tag; compact
+     idle card when the loop is idle). Do NOT add a separate focus-tree widget
+     or a "Current Focus" heading — that duplicates the section and doubles
+     the page weight. -->
+<h2>Initiative Summary <!-- #focus --></h2>
 <div data-type="plannerWidget"
      data-widget-type="progress-summary"
      data-datasphere-id="<dsId>"
      data-datasphere-uri="<uri>"
      data-plan-mode-id="<planModeId>"
      data-refresh-interval="60"></div>
+<!-- /focus -->
 
-<!-- SECTION 3: Current Focus — conductor-generated in-progress hierarchy -->
-<!-- Run: node sdd-conductor.mjs update-dashboard <dsUri> <slug> to regenerate -->
-<!-- Shows: NS → Epic → Active EX → Pending VA with status for every in-progress item -->
-<h2>Current Focus <!-- #focus --></h2>
-<!-- sdd-conductor inserts hierarchy table here — do not edit manually -->
-
-<!-- SECTION 4: Trace Graph widget — 6-tier swimlane (Research > NS > EP > EX > VA > Artifacts) -->
+<!-- SECTION 3: Trace Graph widget — 6-tier swimlane (Research > NS > EP > EX > VA > Artifacts) -->
 <h2>Trace Graph</h2>
 <div data-type="plannerWidget"
      data-widget-type="trace-graph"
@@ -1237,17 +1237,16 @@ All 5 sections are required. Replace `<dsId>`, `<uri>`, `<planModeId>`, `<Projec
      data-datasphere-uri="<uri>"
      data-plan-mode-id="<planModeId>"></div>
 
-<!-- SECTION 5: Activity feed -->
+<!-- SECTION 4: Activity feed -->
 <h2>Live Activity</h2>
 <div data-type="plannerWidget"
      data-widget-type="task-activity-feed"
      data-datasphere-id="<dsId>"
      data-datasphere-uri="<uri>"
      data-plan-mode-id="<planModeId>"></div>
-
-<!-- SECTION 6: doc-footer — ALWAYS LAST -->
-<div data-type="doc-footer"></div>
 ```
+
+**The dashboard template is a hard --advance gate.** loop.mjs fetches the registered dashboard before any task advances and fails on: missing h1; missing or duplicate `progress-summary`/`trace-graph`/`task-activity-feed` widgets; a standalone `focus-tree` widget (it duplicates the focus subtree already embedded in progress-summary); a standalone "Current Focus" heading. A drifted dashboard blocks the entire loop until fixed. (doc-footer is not gated: the server strips it from saved content and renders the platform footer at view time.)
 
 The `data-datasphere-uri` attribute enables deep links from the activity feed — each comment card links to its task in the planner at `/app/<uri>/planner?mode=<planModeId>&taskId=<taskId>`.
 

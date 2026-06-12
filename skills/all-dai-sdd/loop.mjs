@@ -1522,6 +1522,18 @@ async function healthCheck(cfg, iState, slug) {
     console.log('    "Intake" status group to the plan mode and register it in .sdd-state.json.');
   }
 
+  // 1b. Done + Artifacts groups must carry isDoneState=true — dashboards count
+  // completion by it, so a false flag renders a 0% donut on a finished board.
+  try {
+    const sgList = await api('GET', `/api/v2/dataspheres/${cfg.dsId}/tasks/status-groups?planModeId=${cfg.planModeId}`);
+    const groupsLive = sgList.statusGroups || sgList;
+    for (const name of ['Done', 'Artifacts']) {
+      const g = Array.isArray(groupsLive) ? groupsLive.find(x => x.name === name) : null;
+      if (g) check(`statusGroups.${name}.isDoneState === true`, g.isDoneState === true,
+        `"${name}" has isDoneState=${g.isDoneState} — PATCH /api/v2/dataspheres/${cfg.dsId}/tasks/status-groups/${g.id} {"isDoneState":true}`);
+    }
+  } catch { /* non-fatal — live fetch failed, structural checks above still apply */ }
+
   // 2. dashboardSlug registered
   check('dashboardSlug registered', !!iState.dashboardSlug, 'Missing dashboardSlug → add to .sdd-state.json before advancing any tasks');
 
@@ -1551,10 +1563,9 @@ async function healthCheck(cfg, iState, slug) {
   check('AR tasks use standard AR-NNN naming', badArTasks.length === 0,
     `Non-standard AR titles: ${badArTasks.slice(0,2).map(t=>t.title.slice(0,40)).join(', ')}`);
 
-  // 7. No orphaned remediation tasks (auto_generated tasks not in Execution/Validation)
-  const orphaned = tasks.filter(t => (t.content||'').includes('auto_generated: true') && t.isDone);
-  check('no orphaned auto-generated tasks stuck Done', orphaned.length === 0,
-    `${orphaned.length} auto-generated task(s) marked Done without verification: ${orphaned.slice(0,2).map(t=>t.title.slice(0,40)).join(', ')}`);
+  // 7. (removed) "auto-generated tasks stuck Done" predates the per-item gates —
+  // auto-generated EX/VA now reach Done only through --check-item + --advance
+  // evidence gates, so Done is the expected terminal state, not a red flag.
 
   // 8. Progress
   const nonAR = tasks.filter(t => sddType(t.title) !== 'AR');
@@ -1784,6 +1795,47 @@ async function advanceTask(cfg, iState, slug) {
       console.error(`    2. PATCH /api/v2/dataspheres/${iState.dsId}/tasks/plan-modes/${iState.planModeId}`);
       console.error(`       { "trackerUrl": "https://<host>/pages/${iState.dsUri || '<dsUri>'}/${iState.dashboardSlug}" }`);
       console.error('    Then re-run --advance.');
+      process.exit(1);
+    }
+  }
+
+  // Dashboard template gate — the registered dashboard must match the canonical
+  // template before ANY task can advance. This is what stops template drift
+  // (missing trace-graph, duplicate summary/focus sections, heavy idle trees).
+  {
+    // progress-summary EMBEDS the Current Focus subtree (FocusTree renders inside
+    // it, scoped to the sdd-active ticket, compact idle card when the loop is
+    // idle). A standalone focus-tree widget therefore DUPLICATES it — that
+    // duplication is exactly the drift this gate exists to stop.
+    const REQUIRED_WIDGETS = ['progress-summary', 'trace-graph', 'task-activity-feed'];
+    let pageHtml = null;
+    try {
+      const pg = await api('GET', `/api/v1/dataspheres/${cfg.dsUri || iState.dsUri}/pages/${iState.dashboardSlug}`);
+      pageHtml = pg?.content || pg?.page?.content || null;
+    } catch { /* fetch failure handled below */ }
+    if (!pageHtml) {
+      console.error(`✗ GATE FAIL — dashboard page "${iState.dashboardSlug}" could not be fetched. Create it (SKILL.md § Dashboard Page Template), then re-run --advance.`);
+      process.exit(1);
+    }
+    const dashIssues = [];
+    if (!/<h1[^>]*>/.test(pageHtml)) dashIssues.push('missing <h1> title');
+    for (const w of REQUIRED_WIDGETS) {
+      const count = (pageHtml.match(new RegExp(`data-widget-type="${w}"`, 'g')) || []).length;
+      if (count === 0) dashIssues.push(`missing required widget: ${w}`);
+      if (count > 1) dashIssues.push(`duplicate widget: ${w} appears ${count}x — exactly one allowed`);
+    }
+    if (/data-widget-type="focus-tree"/.test(pageHtml)) {
+      dashIssues.push('standalone focus-tree widget present — Current Focus is already embedded inside progress-summary; remove the duplicate');
+    }
+    if (/<h[23][^>]*>\s*Current Focus/i.test(pageHtml)) {
+      dashIssues.push('standalone "Current Focus" heading present — the focus subtree lives inside the Initiative Summary widget, not as its own section');
+    }
+    // NOTE: doc-footer is NOT checked — the server strips it from saved content
+    // and the page view renders the platform footer itself.
+    if (dashIssues.length > 0) {
+      console.error(`✗ GATE FAIL — dashboard "${iState.dashboardSlug}" has drifted from the template:`);
+      dashIssues.forEach(d => console.error(`  · ${d}`));
+      console.error('  Fix the dashboard page (SKILL.md § Dashboard Page Template), then re-run --advance.');
       process.exit(1);
     }
   }
