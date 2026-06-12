@@ -221,6 +221,19 @@ function saveState(state) {
   fs.writeFileSync(p, JSON.stringify(state, null, 2), 'utf-8');
 }
 
+// ── Board + dashboard links — surfaced on EVERY command ───────────────────────
+// The agent must keep these in front of the user constantly so they can jump to
+// the plan mode (board) and the live dashboard at any moment.
+function boardLinks(cfg, slug) {
+  const state = loadState();
+  const ist = state?.initiatives?.[slug] || {};
+  const uri = cfg?.dsUri || ist.dsUri || cfg?.dsId;
+  return {
+    plannerUrl: cfg?.planModeId ? `${BASE}/app/${uri}/planner?mode=${cfg.planModeId}` : null,
+    dashboardUrl: ist.dashboardSlug ? `${BASE}/pages/${uri}/${ist.dashboardSlug}` : null,
+  };
+}
+
 // ── Intake queue helpers (.sdd-intake.json) ───────────────────────────────────
 // Scoped per-initiative so multiple initiatives can share one repo.
 // Schema: { initiatives: { [slug]: { items: IntakeItem[] } } }
@@ -1764,6 +1777,7 @@ async function reconcileCommand(cfg, slug) {
   const changes = await reconcileV2(cfg);
   console.log(JSON.stringify({
     status: 'reconciled', initiative: slug, changes: changes.length, detail: changes,
+    links: boardLinks(cfg, slug),
     message: changes.length
       ? 'Parent completion re-rolled. Re-opened ancestors must complete their new subtree before they are DONE again.'
       : 'Board already consistent — every parent matches its children.',
@@ -1904,7 +1918,7 @@ async function traceAuditCommand(cfg, iState, slug) {
       }
     }
   }
-  console.log(JSON.stringify({ schema: iState.schema || 1, tasks: tasks.length, ghosts: ghosts.length, detail: ghosts }, null, 2));
+  console.log(JSON.stringify({ schema: iState.schema || 1, tasks: tasks.length, ghosts: ghosts.length, detail: ghosts, links: boardLinks(cfg, slug) }, null, 2));
   if (ghosts.length > 0) {
     console.error(`\n✗ TRACE AUDIT FAIL — ${ghosts.length} ghost(s). Fix every entry above; ghosts become unlinked nodes in the trace graph.`);
     process.exit(1);
@@ -2282,7 +2296,7 @@ async function greenlightCommand(cfg, iState, slug) {
     initiative: slug,
     message: '✅ GREEN-LIT — the Ralph loop may now run until every validation criterion is Done.',
     approvedAt: new Date().toISOString(),
-    plannerUrl: `${BASE}/app/${uri}/planner?mode=${cfg.planModeId}`,
+    links: boardLinks(cfg, slug),
     nextStep: `node loop.mjs --next --initiative ${slug}   (or: node ralph-run.mjs --initiative ${slug})`,
   }, null, 2));
 }
@@ -2305,6 +2319,7 @@ async function findNextTask(cfg, iState, slug) {
   // ancestor with an open child is re-opened, completed subtrees roll up.
   if (cfg.schema === 2) await reconcileV2(cfg);
 
+  const links = boardLinks(cfg, slug);   // every output below carries these
   const tasks = await readBoard(cfg);
   const nonAR = tasks.filter(t => sddType(t.title) !== 'AR');
   const total = nonAR.length;
@@ -2318,6 +2333,7 @@ async function findNextTask(cfg, iState, slug) {
     const st = reviewStatus(iState);
     process.stdout.write(JSON.stringify({
       status: 'awaiting-review',
+      links,
       reviewState: st,
       done, total, pct: total ? Math.round(done / total * 100) : 0,
       reason: st === 'awaiting'
@@ -2344,6 +2360,7 @@ async function findNextTask(cfg, iState, slug) {
   if (criticalBlocking.length > 0) {
     process.stdout.write(JSON.stringify({
       status: 'intake-blocked',
+      links,
       done, total, pct: Math.round(done / total * 100),
       reason: `${criticalBlocking.length} critical intake item(s) must be triaged before advancing`,
       pendingIntake: criticalBlocking.map(i => ({ id: i.id, summary: i.summary, priority: i.priority, type: i.type })),
@@ -2357,6 +2374,7 @@ async function findNextTask(cfg, iState, slug) {
   if (cfg.schema === 2 && tasks.filter(t => sddType(t.title)).length === 0) {
     process.stdout.write(JSON.stringify({
       status: 'empty-board', schema: 2,
+      links,
       instruction: 'No items staged yet. Engage the user, run research, and build the chain: IN -> RS -> PC -> VP -> SS -> DO -> EP -> TK -> VC (parent_uuid on every item except IN). Then --stamp-uuids and --trace-audit before starting the loop.',
     }, null, 2));
     return;
@@ -2372,6 +2390,7 @@ async function findNextTask(cfg, iState, slug) {
     if (advisoryIntake.length > 0) {
       process.stdout.write(JSON.stringify({
         status: 'intake-pending',
+        links,
         done, total, pct: 100,
         reason: `Board is 100% Done BUT ${advisoryIntake.length} intake item(s) are untriaged — the loop is NOT complete.`,
         pendingIntake: advisoryIntake.map(i => ({ id: i.id, summary: i.summary, priority: i.priority, type: i.type })),
@@ -2390,6 +2409,7 @@ async function findNextTask(cfg, iState, slug) {
       if (stale) {
         process.stdout.write(JSON.stringify({
           status: 'regress-required',
+          links,
           done, total, pct: 100,
           reason: reg
             ? (reg.pass ? 'Board changed since the last passing regression — re-run it.' : 'Last regression FAILED — fix and re-run.')
@@ -2403,6 +2423,7 @@ async function findNextTask(cfg, iState, slug) {
     }
     process.stdout.write(JSON.stringify({
       status: 'complete',
+      links,
       done, total,
       pct: Math.round(done / total * 100),
       generateNextStepsPage: true,
@@ -2448,6 +2469,7 @@ async function findNextTask(cfg, iState, slug) {
   }
   process.stdout.write(JSON.stringify({
     status: 'next',
+    links,
     done, total,
     pct: Math.round(done / total * 100),
     schema: cfg.schema,
@@ -3284,6 +3306,14 @@ async function main() {
   if (!cfg.dsId || !cfg.planModeId || (cfg.schema === 1 && !cfg.doneGroupId)) {
     console.error('✗ .sdd-state.json missing required fields. Re-run: node sdd-conductor.mjs init');
     process.exit(1);
+  }
+
+  // ALWAYS surface the board + dashboard links, on every command, to stderr (so
+  // it never pollutes JSON stdout). The agent MUST relay these to the user every
+  // time. This is the "constantly link" rule made mechanical.
+  {
+    const { plannerUrl, dashboardUrl } = boardLinks(cfg, slug);
+    process.stderr.write(`\n━━ ${slug} ━━\n📋 Plan mode (board): ${plannerUrl || '(no plan mode)'}\n📊 Dashboard:         ${dashboardUrl || '(not created yet — build + register the dashboard)'}\n\n`);
   }
 
   if (traceAuditMode) {

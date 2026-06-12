@@ -5,6 +5,12 @@ Drive feature implementation from a living spec hosted on Dataspheres AI. Seven-
 
 ---
 
+## Always surface the links — every interaction
+
+**On EVERY loop interaction, relay the board (plan mode) link and the dashboard link to the user.** Every `loop.mjs` command prints them as a stderr footer, and the machine-readable commands (`--next`, `--reconcile`, `--trace-audit`, `--greenlight`, `--request-review`) include a `links: { plannerUrl, dashboardUrl }` field in their JSON. Do not make the user ask "where's the board" — keep both links in front of them as you report progress, advance tasks, file intake, or pause for review. The board is where they watch the Ralph loop work; the dashboard is the live stakeholder view. Both, every time.
+
+---
+
 ## Claude-as-Executor — The Prime Directive
 
 **Claude Code is the engineer. Not the user.**
