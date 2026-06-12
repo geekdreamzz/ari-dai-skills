@@ -3793,7 +3793,7 @@ async function cmdDashboardCheck(dsUri, pageSlug) {
       const putRes = await fetch(`${baseUrl}/api/v1/dataspheres/${dsUri}/pages/${pageSlug}`, {
         method: 'PUT',
         headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content: fixedContent }),
+        body: JSON.stringify({ content: fixedContent, isInternal: true }),
       });
       if (putRes.ok) {
         ok(`Template drift fixed: Live Activity now appears before Trace Graph (HTTP ${putRes.status})`);
@@ -3995,7 +3995,7 @@ async function cmdUpdateDashboard(dsUri, pageSlug) {
   const putRes = await fetch(`${baseUrl}/api/v1/dataspheres/${dsUri}/pages/${pageSlug}`, {
     method: 'PUT',
     headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ content }),
+    body: JSON.stringify({ content, isInternal: true }),
   });
   if (!putRes.ok) {
     const t = await putRes.text();
@@ -4156,7 +4156,7 @@ ${arLines ? `<h2>Artifacts</h2>\n<ul class="tiptap-bullet-list">${arLines}</ul>`
     pageId = existing.page?.id || existing.id;
   }
 
-  const body = JSON.stringify({ title: `${slug} &mdash; Next Steps &amp; UAT`, content, status: 'PUBLISHED', isPubliclyVisible: false });
+  const body = JSON.stringify({ title: `${slug} &mdash; Next Steps &amp; UAT`, content, status: 'PUBLISHED', isPubliclyVisible: false, isInternal: true });
 
   if (pageId) {
     // Update existing page
@@ -4173,7 +4173,7 @@ ${arLines ? `<h2>Artifacts</h2>\n<ul class="tiptap-bullet-list">${arLines}</ul>`
     // Create new page
     const postRes = await fetch(`${baseUrl}/api/v1/dataspheres/${dsUri}/pages`, {
       method: 'POST', headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title: `${slug} &mdash; Next Steps &amp; UAT`, content, status: 'PUBLISHED', isPubliclyVisible: false, slug: nextStepsSlug }),
+      body: JSON.stringify({ title: `${slug} &mdash; Next Steps &amp; UAT`, content, status: 'PUBLISHED', isPubliclyVisible: false, isInternal: true, slug: nextStepsSlug }),
     });
     if (!postRes.ok) {
       const t = await postRes.text().catch(() => '');

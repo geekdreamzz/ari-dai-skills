@@ -41,13 +41,38 @@ Everything else: Claude solves it. Silently. Until 100% done.
 
 ---
 
-## Seven-Column Lifecycle
+## Eight-Column Lifecycle
 
 ```
-Research  →  North Stars  →  Epics  →  Execution  →  Validation  →  Artifacts  →  Done
+Intake  →  Research  →  North Stars  →  Epics  →  Execution  →  Validation  →  Artifacts  →  Done
 ```
 
-Every SDD project uses exactly these seven columns, in this order. When you create a plan mode for an initiative, you must create seven status groups with these exact names — do NOT use the planner's default columns (To Do / In Progress / Done).
+Every SDD project uses exactly these eight columns, in this order. When you create a plan mode for an initiative, you must create eight status groups with these exact names — do NOT use the planner's default columns (To Do / In Progress / Done).
+
+**The Intake column is the visible front door.** Any prompt, bug report, UAT result, or stakeholder feedback that arrives WHILE the loop is running becomes a card in the Intake column (`node loop.mjs --intake ...` creates both the `.sdd-intake.json` queue entry and the board card). Stakeholders see the queue; the loop processes it: critical items block `--next` until triaged, and `--triage INT-NNN` converts the card into an EX+VA pair and moves the intake card to Done. A board at "100% Done" with pending intake is NOT complete — `--next` returns `intake-pending`, not `complete`.
+
+### Roles & Responsibilities
+
+| Component | Owns | Must NOT do |
+|---|---|---|
+| **Claude (planner)** | Mode detection, asking the user clarifying questions BEFORE board generation, authoring RS/NS/EP/EX/VA content with verbatim user instructions embedded | Generate the board from assumptions when requirements are ambiguous |
+| **Claude (executor)** | Working each checklist item: code → test → `--check-item` with evidence, then `--advance` | Asking the user anything during execution (see Prime Directive); mass-ticking checklists |
+| **loop.mjs** | Sequencing (`--next`), per-item gating (`--check-item`), task gates (`--advance`), intake queue, remediation scaffolding, AR creation, IN_PROGRESS + `sdd-active` tracking, milestone comments up the hierarchy | Advancing anything without evidence (the bare mechanical loop is disabled) |
+| **ralph-run.mjs** | The blind loop: fresh `claude --print` per task, sigil parsing, failure log injection | Bypassing loop.mjs gates |
+| **sdd-conductor.mjs** | init, verify-gates, dashboard-check, update-dashboard, checklist propagation cascades (EX→EP→NS) | Board task advancement |
+| **verify_gates.py** | The 12 structural invariants (trace chain, research gate, origin blockquotes…) | Behavioral verification (that is evidence gating in loop.mjs) |
+| **User** | Origin prompts, clarity answers, UAT verdicts (`--uat <id> --outcome pass|fail`), intake submissions | — |
+
+### User Clarity Protocol (planning phases only)
+
+During **NEW / PUBLISH / APPEND** modes — before generating board content — Claude MUST surface ambiguities to the user instead of guessing:
+
+1. Extract the core functional and non-functional requirements from the user's prompt.
+2. List anything materially ambiguous (target platform? performance budget? auth model? visual style? scope boundary?).
+3. Ask the user those questions in ONE batch (not a drip). Wait for answers.
+4. Embed the original prompt AND every clarity answer **verbatim** into the tickets: RS/NS `Origin Prompts` sections quote them in `<blockquote>` with attribution + date; EX/VA inherit the relevant constraint lines in their FR/NFR sections.
+
+This protocol applies ONLY to planning. Once the board is published and the loop is running, the Claude-as-Executor Prime Directive applies: no questions, solve everything autonomously — new information arrives via the Intake column instead.
 
 **The Artifacts column is mandatory, not optional.** When a VA task passes its gate, the loop runner and conductor auto-create an AR (Artifact) task in the Artifacts column. AR tasks are the permanent, self-contained record of what was produced — they must be fully readable from the Dataspheres AI web UI with no local filesystem access required.
 
@@ -389,7 +414,7 @@ This mode runs **immediately and autonomously** — no user confirmation, no ski
    - Read every EX task's verdict comment for the UAT AC lines
    - Collect any known gaps from evidence comments tagged `[HARD BLOCKER]` or `[PARTIAL PASS]`
    - Build the full HTML following the exact template structure (hero → progress widget → epic cards → UAT → loose ends → CTA → attribution → footer)
-6. Publish the page as `status: PUBLISHED` with slug `<initiative>-next-steps`
+6. Publish the page as `status: PUBLISHED`, `isInternal: true`, slug `<initiative>-next-steps`
 7. Output the page URL to the user
 
 **This gate exists because:** 100% Done without a summary page means the work is invisible to stakeholders. Every completed initiative MUST have a human-readable close-out page.
@@ -442,21 +467,24 @@ The worst failure mode in SDD is an AI marking tasks Done without doing the work
 #### AI-Driven Loop Protocol (mandatory when Claude is active)
 
 ```bash
-# Step 1 — read the next task
+# Step 1 — read the next task (marks it IN_PROGRESS + sdd-active on the board)
 node skills/all-dai-sdd/loop.mjs --next
 # → outputs JSON: { status, done, total, pct, task: { id, title, key, type, content } }
 
-# Step 2 — Claude reads the task content and does the actual work:
-#   EX task: reads Implementation Files, verifies files exist, runs smoke test
-#   VA task: runs each AC criterion, measures actual results vs thresholds
-#   EP task: --next returns requiresAcVerification:true — read each AC/FR/NFR item,
-#            verify every criterion individually with real evidence (not "all child tasks Done")
-#   NS task: --next returns requiresAcVerification:true — same as EP, verify each item
-#   RS task: --next returns requiresResearch:true — invoke start_research() FIRST,
-#            poll get_research_messages(), populate Sources from webSearchResults,
-#            DO NOT call --advance without real search excerpts in the evidence
+# Step 2 — PER-ITEM PROTOCOL: work the checklist ONE ITEM AT A TIME.
+# For EACH unchecked item, in order: do the real work for that single item
+# (write the code, run the test, capture the screenshot), then verify it:
+node skills/all-dai-sdd/loop.mjs --check-item <taskId> --item <N|"text match"> --evidence "
+<real output for THIS item — command output, test result, file path, measured value>
+"
+# Each --check-item ticks exactly ONE box and posts a per-item evidence comment
+# (this is the item's artifact record; it appears in the live activity feed and
+# is aggregated into the AR task when the VA passes). Items mentioning
+# screenshot/playwright/e2e require a screenshot path or 'N passed' output.
+# On failure of an item: fix it, or if blocked / the plan is wrong, pivot:
+#   node loop.mjs --create-fix <taskId> --reason "what is wrong; what must change"
 
-# Step 3 — advance with REAL evidence (not boilerplate)
+# Step 3 — when EVERY box was earned, advance with overall evidence
 node skills/all-dai-sdd/loop.mjs --advance <taskId> --evidence "
 [EXECUTED]
 <command or test that was run>
@@ -467,7 +495,18 @@ node skills/all-dai-sdd/loop.mjs --advance <taskId> --evidence "
 [VERDICT]
 <what passed, what failed, what was fixed>
 "
-# Evidence is validated — min 200 chars, boilerplate patterns are rejected
+# --advance REJECTS the task if any checklist item is still unchecked — there is
+# no mass-ticking. Evidence is validated: min 200 chars, boilerplate rejected,
+# UI VA tasks require fresh on-disk screenshots + Playwright 'N passed' output.
+# On success the loop posts a milestone comment to the parent EP and NS so the
+# live activity feed shows hierarchy-level progress.
+#
+# Task-type specifics for step 2:
+#   EX task: implement code (with spec front-matter comments), verify files exist, smoke test
+#   VA task: run each AC criterion via --check-item; UI flows need real Playwright interactions
+#   EP task: requiresAcVerification:true — verify every AC/FR/NFR item individually
+#   NS task: same as EP
+#   RS task: requiresResearch:true — start_research() FIRST, Sources from webSearchResults
 ```
 
 **Evidence must contain real substance:**
@@ -824,7 +863,7 @@ Publish `001-*.md` as a DS reader page (status: PUBLISHED, isPubliclyVisible: fa
 curl -X POST "$DATASPHERES_BASE_URL/api/v1/dataspheres/<uri>/pages" \   # v1 uses URI not dsId
   -H "Authorization: Bearer $DATASPHERES_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"slug":"<slug>","title":"...","content":"...","status":"PUBLISHED","isPubliclyVisible":false,"folderName":"Feature Specs"}'
+  -d '{"slug":"<slug>","title":"...","content":"...","status":"PUBLISHED","isPubliclyVisible":false,"isInternal":true,"folderName":"Feature Specs"}'
 ```
 
 **Gate evidence required:** `slug=<slug> HTTP 200/201`
@@ -842,7 +881,7 @@ GET existing plan modes first. If none match `tagFilter: ["<initiative>"]`, POST
 curl -X POST "$DATASPHERES_BASE_URL/api/v2/dataspheres/<dsId>/tasks/plan-modes" \
   -H "Authorization: Bearer $DATASPHERES_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"name":"<Initiative Name>","tagFilter":["<initiative-slug>"],"columns":[{"name":"Research","color":"#6366f1","isDoneState":false},{"name":"North Stars","color":"#7c3aed","isDoneState":false},{"name":"Epics","color":"#0891b2","isDoneState":false},{"name":"Execution","color":"#3b82f6","isDoneState":false},{"name":"Validation","color":"#f59e0b","isDoneState":false},{"name":"Artifacts","color":"#8B5CF6","isDoneState":true},{"name":"Done","color":"#22c55e","isDoneState":true}]}'
+  -d '{"name":"<Initiative Name>","tagFilter":["<initiative-slug>"],"columns":[{"name":"Intake","color":"#64748b","isDoneState":false},{"name":"Research","color":"#6366f1","isDoneState":false},{"name":"North Stars","color":"#7c3aed","isDoneState":false},{"name":"Epics","color":"#0891b2","isDoneState":false},{"name":"Execution","color":"#3b82f6","isDoneState":false},{"name":"Validation","color":"#f59e0b","isDoneState":false},{"name":"Artifacts","color":"#8B5CF6","isDoneState":true},{"name":"Done","color":"#22c55e","isDoneState":true}]}'
 ```
 
 If the API does not accept `columns` on POST (older server version), omit it and clean up defaults in step 8:
@@ -1106,6 +1145,8 @@ Required sections (all mandatory, skip none):
 5. **`<div data-type="doc-footer"></div>`** — always last, no exceptions
 
 **Gate evidence required:** `slug=<dashboard-slug> HTTP 200/201` AND all 6 sections present (run `update-dashboard` to generate the Current Focus section before checking)
+
+**Required fields:** `status: PUBLISHED`, `isInternal: true`, `isPubliclyVisible: false` — SDD dashboards are always internal.
 
 ---
 
@@ -2227,7 +2268,7 @@ Planner: $DATASPHERES_PUBLIC_URL/app/<uri>/planner?mode=<planModeId>
 
 ## Next Steps Page Template
 
-When all tasks for an initiative are Done (100% completion), generate a close-out "Next Steps & UAT" page on the datasphere. This is published via `POST /api/v1/dataspheres/<uri>/pages` and uses the full platform feature set.
+When all tasks for an initiative are Done (100% completion), generate a close-out "Next Steps & UAT" page on the datasphere. This is published via `POST /api/v1/dataspheres/<uri>/pages` with `isInternal: true` and uses the full platform feature set.
 
 **Structural blocks (in order):**
 

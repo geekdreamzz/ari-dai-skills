@@ -94,13 +94,19 @@ ${failCtx}
 ## Instructions
 
 1. READ the task content above carefully. Understand what is required.
-2. DO the actual work:
-   - For EX tasks: implement the code, verify files exist, run a smoke test
-   - For VA tasks: run each acceptance criterion, measure actual results vs thresholds
+2. WORK THE CHECKLIST ONE ITEM AT A TIME. For EACH unchecked checklist item, in order:
+   a. Do the real work for that single item (write code, run the test, capture the screenshot)
+   b. Verify it with its own evidence:
+      node "${LOOP_MJS}" --check-item ${task.id} --item <N> --evidence "<real output for THIS item>"
+   c. Only move to the next item after --check-item succeeds.
+   --advance will REJECT the task if any box was not earned this way.
+3. Task-type specifics:
+   - For EX tasks: implement the code (add the spec front-matter comment to every file), verify files exist, run a smoke test
+   - For VA tasks: run each acceptance criterion via --check-item, measure actual results vs thresholds; UI flows need Playwright runs + fresh screenshots of before/during/after states
    - For RS tasks: search the web for evidence, populate all required sections with real findings
    - For EP tasks: confirm all child EX+VA tasks are Done, verify epic AC
    - For AR tasks: document the real produced artifacts with file paths and line counts
-3. When the work is complete, output the following sigil EXACTLY on its own line, followed by your evidence:
+4. When ALL checklist items are individually verified, output the following sigil EXACTLY on its own line, followed by your overall evidence:
 
 ADVANCE_READY
 [EXECUTED]
@@ -173,13 +179,22 @@ async function main() {
       process.exit(1);
     }
 
-    if (nextJson.status === 'done') {
+    if (nextJson.status === 'complete' || nextJson.status === 'done') {
       console.log(`\n✅ All tasks complete! ${nextJson.done}/${nextJson.total} (${nextJson.pct}%)`);
+      if (nextJson.generateNextStepsPage) {
+        console.log('  ⚡ DONE MODE pending — generate the Next Steps & UAT page (see SKILL.md § Mode: DONE).');
+      }
       break;
     }
 
+    if (nextJson.status === 'intake-blocked' || nextJson.status === 'intake-pending') {
+      console.error(`\n⚠ Loop paused — ${nextJson.reason}`);
+      console.error(`  ${nextJson.action || 'Triage pending intake items, then re-run.'}`);
+      process.exit(1);
+    }
+
     if (!nextJson.task) {
-      console.error('✗ --next returned no task but status != done. Board may be in an inconsistent state.');
+      console.error('✗ --next returned no task but status != complete. Board may be in an inconsistent state.');
       process.exit(1);
     }
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Z3 gate verifier for all-dai-sdd.
-Encodes all 12 gate rules as SMT constraints. UNSAT = all rules hold.
+Encodes all 14 gate rules as SMT constraints. UNSAT = all rules hold.
 SAT + model = counterexample showing exactly which task violates which rule.
 
 Usage:
@@ -153,6 +153,48 @@ def _has_codebase_snippet(content: str) -> bool:
     if section is None:
         return False
     return bool(re.search(r'<pre[^>]*>\s*<code', section, re.IGNORECASE))
+
+
+_AI_PIPELINE_TAGS = {'ai-pipeline', 'video-pipeline', 'face-animation'}
+
+# Patterns that satisfy the input-validation criterion:
+#   - explicit #input-validation anchor
+#   - text describing face detection on the driving/input video
+_INPUT_VALIDATION_PAT = re.compile(
+    r'<!--\s*#input-validation\s*-->|'
+    r'input.{0,40}validat|'
+    r'driving.{0,40}face|'
+    r'face.{0,40}detect|'
+    r'no.{0,20}face.{0,20}(in|on).{0,20}(input|driving|source)|'
+    r'(input|driving|source).{0,40}must.{0,30}(contain|have|include).{0,30}face',
+    re.IGNORECASE | re.DOTALL,
+)
+
+# Patterns that satisfy the output-quality criterion:
+#   - explicit #output-quality anchor
+#   - text describing visual inspection, frame-level quality check, or face animation quality
+_OUTPUT_QUALITY_PAT = re.compile(
+    r'<!--\s*#output-quality\s*-->|'
+    r'output.{0,40}quality|'
+    r'visual.{0,30}inspect|'
+    r'frame.{0,30}(check|review|quality|inspect)|'
+    r'face.{0,40}(animat|render|quality)|'
+    r'(not|never).{0,30}exit.{0,20}code|'
+    r'exit.{0,20}code.{0,30}(alone|insufficient|not enough|is not)',
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _is_ai_pipeline_task(task: 'SddTask') -> bool:
+    return bool(set(task.tags) & _AI_PIPELINE_TAGS)
+
+
+def _has_input_validation_criterion(content: str) -> bool:
+    return bool(_INPUT_VALIDATION_PAT.search(content))
+
+
+def _has_output_quality_criterion(content: str) -> bool:
+    return bool(_OUTPUT_QUALITY_PAT.search(content))
 
 
 # ---------------------------------------------------------------------------
@@ -481,6 +523,46 @@ def _check_rule(
             )
         return False, None
 
+    if rule_id == 'RULE-13':
+        # AI-PIPELINE-INPUT-VALIDATION: test-plan tasks tagged ai-pipeline/video-pipeline/face-animation
+        # must include an acceptance criterion that validates the driving video contains a detectable face.
+        # Prevents marking a run as "passed" when the input had no face (producing distorted output).
+        if task.spec_type != 'test-plan':
+            return False, None
+        if not _is_ai_pipeline_task(task):
+            return False, None
+        ok = _has_input_validation_criterion(task.content)
+        s = Solver()
+        s.add(Not(BoolVal(ok)))
+        if s.check() == sat:
+            return True, (
+                f'RULE-13 AI-PIPELINE-INPUT-VALIDATION: {task.spec_id} is a test-plan task '
+                f'tagged {list(set(task.tags) & _AI_PIPELINE_TAGS)} but has no input media '
+                f'validation criterion — the driving video must be verified to contain a detectable '
+                f'face before the pipeline run is accepted as valid'
+            )
+        return False, None
+
+    if rule_id == 'RULE-14':
+        # AI-PIPELINE-OUTPUT-QUALITY: test-plan tasks tagged ai-pipeline/video-pipeline/face-animation
+        # must include an acceptance criterion that requires visual output inspection —
+        # exit-code=0 alone is not a sufficient quality gate for AI inference pipelines.
+        if task.spec_type != 'test-plan':
+            return False, None
+        if not _is_ai_pipeline_task(task):
+            return False, None
+        ok = _has_output_quality_criterion(task.content)
+        s = Solver()
+        s.add(Not(BoolVal(ok)))
+        if s.check() == sat:
+            return True, (
+                f'RULE-14 AI-PIPELINE-OUTPUT-QUALITY: {task.spec_id} is a test-plan task '
+                f'tagged {list(set(task.tags) & _AI_PIPELINE_TAGS)} but has no output quality '
+                f'criterion — visual inspection of output frames is required; exit-code=0 alone '
+                f'does not prove the face animation produced a valid result'
+            )
+        return False, None
+
     raise ValueError(f'Unknown rule_id: {rule_id}')
 
 
@@ -501,6 +583,8 @@ RULES = [
     ('RULE-10', 'SEARCH-RESULTS'),
     ('RULE-11', 'CODEBASE-PATHS'),
     ('RULE-12', 'CODEBASE-SNIPPET'),
+    ('RULE-13', 'AI-PIPELINE-INPUT-VALIDATION'),
+    ('RULE-14', 'AI-PIPELINE-OUTPUT-QUALITY'),
 ]
 
 

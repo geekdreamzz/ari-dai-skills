@@ -8,8 +8,11 @@
  * Loops autonomously until 100% Done. No user input between iterations.
  *
  * Usage:
- *   node loop.mjs --next                         # output next incomplete task as JSON (no writes)
- *   node loop.mjs --advance <taskId>             # advance task to Done (requires --evidence)
+ *   node loop.mjs --next                         # output next incomplete task as JSON; marks it IN_PROGRESS + sdd-active
+ *   node loop.mjs --check-item <taskId>          # tick ONE checklist item with its own evidence (per-item protocol)
+ *     --item <N|"text">                          # REQUIRED: 1-based item number or unique text match
+ *     --evidence "..."                           # REQUIRED: real output for THIS item (>=80 chars)
+ *   node loop.mjs --advance <taskId>             # advance task to Done (requires --evidence; REJECTS unchecked items)
  *     --evidence "..."                           # REQUIRED: real test output, file paths, measured results
  *     --auto-fix                                 # on gate fail: auto-create EX+VA remediation pair instead of just erroring
  *   node loop.mjs --create-fix <taskId>          # Ralph error mode: create EX+VA fix pair for a failing task
@@ -89,6 +92,8 @@ let showIntakeStatus = false;
 let intakePendingOnly = false;
 let uatTaskId = null;
 let uatOutcome = null;
+let checkItemTaskId = null;
+let checkItemMatch = null;
 
 for (let i = 2; i < process.argv.length; i++) {
   if (process.argv[i] === '--initiative' && process.argv[i + 1]) {
@@ -135,6 +140,10 @@ for (let i = 2; i < process.argv.length; i++) {
     uatTaskId = process.argv[++i];
   } else if (process.argv[i] === '--outcome' && process.argv[i + 1]) {
     uatOutcome = process.argv[++i];
+  } else if (process.argv[i] === '--check-item' && process.argv[i + 1]) {
+    checkItemTaskId = process.argv[++i];
+  } else if (process.argv[i] === '--item' && process.argv[i + 1]) {
+    checkItemMatch = process.argv[++i];
   }
 }
 
@@ -423,6 +432,24 @@ function findNextIncomplete(tasks) {
     }
 
     return ep;
+  }
+
+  // 3.5 Orphan EX/VA — intake + remediation tasks carry no epic_ref, so the
+  // epic walk above never sees them. Without this step the loop falsely reports
+  // "complete" at 30/32 while critical fix tasks sit in Execution forever.
+  const orphanEX = tasks
+    .filter(t => sddType(t.title) === 'EX' && !epRefForEx(t) && !t.isDone)
+    .sort((a, b) => sddNum(a.title) - sddNum(b.title));
+  if (orphanEX.length > 0) return orphanEX[0];
+
+  // Orphan VA: pair via execution_ref front matter (numbering is independent
+  // for intake-created pairs, so VA-004 may verify EX-006).
+  for (const va of tasks
+    .filter(t => sddType(t.title) === 'VA' && !t.isDone)
+    .sort((a, b) => sddNum(a.title) - sddNum(b.title))) {
+    const exRef = (va.content || '').match(/execution_ref:\s*(EX-\d+)/)?.[1];
+    const ex = exRef ? byKey[exRef] : null;
+    if (!ex || ex.isDone) return va;
   }
 
   // 4. Any AR tasks not yet in Done (stranded from prior runs or backfills)
@@ -888,6 +915,7 @@ async function createRemediationTasks(cfg, failingTask, issues, allTasks) {
     `<pre><code class="language-yaml">`,
     `spec_id: ${exKey}`,
     `fix_for: ${failKey}`,
+    `parent_uuid: ${failingTask.id}`,
     ...(epicRef ? [`epic_ref: ${epicRef}`] : []),
     `north_star_ref: ${nsRef}`,
     `plan_mode_id: ${cfg.planModeId}`,
@@ -925,6 +953,7 @@ async function createRemediationTasks(cfg, failingTask, issues, allTasks) {
     `spec_id: ${vaKey}`,
     `execution_ref: ${exKey}`,
     `fix_for: ${failKey}`,
+    `parent_uuid: ${failingTask.id}`,
     `plan_mode_id: ${cfg.planModeId}`,
     `created: ${today}`,
     `auto_generated: true`,
@@ -1099,7 +1128,7 @@ async function createIntakeTasks(cfg, item, allTasks) {
 
 // ── Intake commands ───────────────────────────────────────────────────────────
 
-async function addIntakeCommand(slug) {
+async function addIntakeCommand(cfg, slug) {
   if (!intakeSummary) {
     console.error('✗ --intake requires --intake-summary "..."');
     process.exit(1);
@@ -1134,10 +1163,27 @@ async function addIntakeCommand(slug) {
     triagedAt: null,
     doneAt: null,
   };
+  // Surface the intake item on the board: a card in the Intake column makes the
+  // queue visible to stakeholders while the loop is running. Non-SDD title (no
+  // RS/EX prefix) keeps it invisible to findNextIncomplete — triage converts it.
+  if (cfg?.intakeGroupId) {
+    try {
+      const esc = s => (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      const created = await api('POST', `/api/v2/dataspheres/${cfg.dsId}/tasks`, {
+        title: `${id} · [${intakePriority.toUpperCase()}] ${intakeSummary.slice(0, 70)}`,
+        content: `<p><strong>Intake ${id}</strong> — ${esc(intakeType)}, ${esc(intakePriority)} priority</p><p>${esc(intakeBody_ || intakeSummary)}</p><p><em>Queued for triage. Run: node loop.mjs --triage ${id}</em></p>`,
+        statusGroupId: cfg.intakeGroupId,
+        planModeId: cfg.planModeId,
+      });
+      item.boardTaskId = created.task?.id || created.id || null;
+    } catch { /* board card is best-effort — the JSON queue is authoritative */ }
+  }
+
   items.push(item);
   setIntakeItems(slug, items);
 
   console.log(JSON.stringify({ created: true, id, type: intakeType, priority: intakePriority, summary: intakeSummary,
+    boardTaskId: item.boardTaskId || null,
     hint: intakePriority === 'critical'
       ? `⚠ CRITICAL — --next will be blocked until this is triaged. Run: node loop.mjs --triage ${id} --target-type EX`
       : `Run triage when ready: node loop.mjs --triage ${id} --target-type EX`,
@@ -1224,6 +1270,12 @@ async function triageIntakeCommand(cfg, slug) {
   item.taskIds = [result.exId, result.vaId].filter(Boolean);
   item.triagedAt = new Date().toISOString();
   setIntakeItems(slug, items);
+
+  // Close the Intake-column board card with a pointer to the created tasks
+  if (item.boardTaskId) {
+    await postComment(cfg, item.boardTaskId, `**Triaged** → ${result.exKey} + ${result.vaKey}`);
+    await moveDone(cfg, item.boardTaskId).catch(() => {});
+  }
 
   console.log('✅');
   console.log(JSON.stringify({
@@ -1340,6 +1392,104 @@ async function uatCommand(cfg, iState, slug) {
   }
 }
 
+// ── Per-checklist-item verification: --check-item ─────────────────────────────
+// Ticks EXACTLY ONE checklist item after real evidence is provided for it.
+// This is the unit of work in the Ralph loop: read item → do the work → test →
+// --check-item with output → repeat. Each call posts an evidence comment that
+// appears in the live activity feed, so stakeholders see item-level progress.
+// --advance refuses to run until every box was earned this way.
+// Usage: node loop.mjs --check-item <taskId|key> --item "<1-based number | text match>" --evidence "..."
+async function checkItemCommand(cfg, iState, slug) {
+  if (!checkItemMatch) {
+    console.error('✗ --check-item requires --item "<number or text match>"');
+    process.exit(1);
+  }
+  if (!evidenceText || evidenceText.length < 80) {
+    console.error(`✗ --check-item requires --evidence with real output for THIS item (>=80 chars, got ${(evidenceText || '').length}).`);
+    console.error('  Acceptable: command output, test result lines, file paths created, measured values, screenshot paths.');
+    process.exit(1);
+  }
+
+  const tasks = await readBoard(cfg);
+  const task = tasks.find(t => t.id === checkItemTaskId) ||
+               tasks.find(t => sddKey(t.title) === checkItemTaskId);
+  if (!task) {
+    console.error(`✗ Task "${checkItemTaskId}" not found. Pass the task ID or key (VA-003).`);
+    process.exit(1);
+  }
+
+  // Parse checklist items in document order, preserving raw <li> for surgical replace
+  const itemRe = /<li(?=[^>]*data-type="taskItem")[^>]*data-checked="(false|true)"[^>]*>[\s\S]*?<p>([^<]+)<\/p>[\s\S]*?<\/li>/g;
+  const items = [];
+  let m;
+  while ((m = itemRe.exec(task.content || '')) !== null) {
+    items.push({ raw: m[0], checked: m[1] === 'true', text: m[2].trim(), index: items.length + 1 });
+  }
+  if (items.length === 0) {
+    console.error(`✗ No checklist items (data-type="taskItem") found in ${sddKey(task.title) || task.id}.`);
+    process.exit(1);
+  }
+
+  // Resolve target: 1-based number or case-insensitive substring
+  let target = null;
+  if (/^\d+$/.test(checkItemMatch.trim())) {
+    target = items[parseInt(checkItemMatch.trim()) - 1] || null;
+  } else {
+    const needle = checkItemMatch.toLowerCase();
+    const hits = items.filter(it => it.text.toLowerCase().includes(needle));
+    if (hits.length > 1) {
+      console.error(`✗ "--item ${checkItemMatch}" matches ${hits.length} items — be more specific or use the number:`);
+      hits.forEach(h => console.error(`  ${h.index}. ${h.text.slice(0, 100)}`));
+      process.exit(1);
+    }
+    target = hits[0] || null;
+  }
+  if (!target) {
+    console.error(`✗ No checklist item matches "--item ${checkItemMatch}". Items:`);
+    items.forEach(it => console.error(`  ${it.index}. [${it.checked ? 'x' : ' '}] ${it.text.slice(0, 100)}`));
+    process.exit(1);
+  }
+  if (target.checked) {
+    console.log(`[skip] Item ${target.index} is already checked: ${target.text.slice(0, 80)}`);
+    return;
+  }
+
+  // Items that promise screenshots/tests must include a real file path or pass-count
+  if (/screenshot|playwright|e2e|visual/i.test(target.text) &&
+      !/\.(png|jpg|jpeg|webp)\b/i.test(evidenceText) && !/\b\d+\s+passed\b/i.test(evidenceText)) {
+    console.error('✗ This item references screenshots/tests — evidence must include a screenshot path or "N passed" output.');
+    process.exit(1);
+  }
+
+  if (dryRun) {
+    console.log(JSON.stringify({ dryRun: true, wouldTick: { index: target.index, text: target.text } }, null, 2));
+    return;
+  }
+
+  // Tick exactly this item (replace its raw <li> only)
+  const tickedRaw = target.raw.replace('data-checked="false"', 'data-checked="true"');
+  const newContent = (task.content || '').replace(target.raw, tickedRaw);
+  await patchContent(cfg, task.id, newContent);
+
+  // Per-item evidence comment — this IS the item's artifact record and feeds
+  // the live activity feed. The AR task aggregates these when the VA passes.
+  const ts = new Date().toISOString();
+  await postComment(cfg, task.id,
+    `**[CHECK-ITEM ${target.index}/${items.length}] ${target.text.slice(0, 120)}** | ${ts}\n\n${evidenceText}`);
+
+  const remaining = items.filter(it => !it.checked && it.index !== target.index);
+  console.log(JSON.stringify({
+    checked: true,
+    task: sddKey(task.title) || task.id,
+    item: { index: target.index, text: target.text },
+    remaining: remaining.length,
+    remainingItems: remaining.map(it => ({ index: it.index, text: it.text.slice(0, 80) })),
+    nextStep: remaining.length > 0
+      ? `Verify the next item: node loop.mjs --check-item ${task.id} --item ${remaining[0].index} --evidence "..."`
+      : `All items verified — advance: node loop.mjs --advance ${task.id} --evidence "<overall summary with test output>"`,
+  }, null, 2));
+}
+
 // ── Initiative health check ───────────────────────────────────────────────────
 // Validates that the initiative configuration and board are structurally correct.
 // Run before starting any loop iteration on a new initiative, or after incidents.
@@ -1354,11 +1504,17 @@ async function healthCheck(cfg, iState, slug) {
     if (!ok) pass = false;
   }
 
-  // 1. All 7 status groups present
+  // 1. All 7 lifecycle status groups present (Intake is checked separately as a
+  //    soft warning so pre-Intake boards don't hard-fail health)
   const REQUIRED_GROUPS = ['Research', 'North Stars', 'Epics', 'Execution', 'Validation', 'Artifacts', 'Done'];
   const sg = iState.statusGroups || {};
   for (const g of REQUIRED_GROUPS) {
     check(`statusGroups.${g} defined`, !!(sg[g] || sg[g.toLowerCase()]), `Missing group "${g}" in .sdd-state.json → run node sdd-conductor.mjs init to regenerate`);
+  }
+  if (!(sg.Intake || sg.intake)) {
+    console.log('  ⚠ statusGroups.Intake missing — intake items will be queue-only (invisible to stakeholders).');
+    console.log('    New initiatives must create the 8-column board (Intake first). For this board, add an');
+    console.log('    "Intake" status group to the plan mode and register it in .sdd-state.json.');
   }
 
   // 2. dashboardSlug registered
@@ -1504,6 +1660,21 @@ async function findNextTask(cfg, iState, slug) {
   const next = findNextIncomplete(tasks);
 
   if (!next) {
+    // 100% Done is NOT terminal while intake items are pending. A user bug report
+    // (UAT fail, stakeholder feedback) re-opens the loop: triage → EX+VA remediation
+    // pair → findNextIncomplete picks them up. Returning "complete" here would let
+    // the initiative close with known-broken functionality.
+    if (advisoryIntake.length > 0) {
+      process.stdout.write(JSON.stringify({
+        status: 'intake-pending',
+        done, total, pct: 100,
+        reason: `Board is 100% Done BUT ${advisoryIntake.length} intake item(s) are untriaged — the loop is NOT complete.`,
+        pendingIntake: advisoryIntake.map(i => ({ id: i.id, summary: i.summary, priority: i.priority, type: i.type })),
+        instruction: 'Triage every pending intake item into EX+VA remediation tasks, then resume --next. Do NOT generate the Next Steps page until intake is empty.',
+        action: `node loop.mjs --triage ${advisoryIntake[0].id} --target-type EX`,
+      }, null, 2));
+      return;
+    }
     process.stdout.write(JSON.stringify({
       status: 'complete',
       done, total,
@@ -1521,12 +1692,20 @@ async function findNextTask(cfg, iState, slug) {
   const taskIndex = {};
   tasks.forEach(t => { const k = sddKey(t.title); if (k) taskIndex[k] = { id: t.id, title: t.title, isDone: t.isDone }; });
 
-  // Track the in-flight task in state so dashboards can scope their Current Focus widget.
-  // This is non-fatal — if state write fails the task briefing still works.
+  // Track the in-flight task in state + apply sdd-active tag so focus-tree widget scopes dynamically.
+  // Both are non-fatal — if they fail the task briefing still works.
   try {
     const freshState = loadState();
     const freshSlug = initiativeOverride || freshState?.currentInitiative;
     if (freshState && freshSlug) setActiveTask(freshState, freshSlug, next.id);
+    // Tag the next task with sdd-active so focus-tree can resolve it without a static data-active-task-id.
+    // Idempotent — the API finds-or-creates, so calling it multiple times is safe.
+    await api('POST', `/api/v2/dataspheres/${cfg.dsId}/tasks/${next.id}/tags`, { name: 'sdd-active' })
+      .catch(() => {});
+    // Mark IN_PROGRESS on the board so the current ticket is visibly in flight
+    // (Kanban card state + Current Focus widget both read this).
+    await api('PATCH', `/api/v2/dataspheres/${cfg.dsId}/tasks/${next.id}`, { status: 'IN_PROGRESS' })
+      .catch(() => {});
     refreshDashboard(iState);
   } catch { /* non-fatal */ }
 
@@ -1584,6 +1763,24 @@ async function advanceTask(cfg, iState, slug) {
     console.error('       { "trackerUrl": "<PUBLIC_URL>/pages/<uri>/<dashboard-slug>" }');
     console.error('    4. Then re-run --advance.');
     process.exit(1);
+  }
+  // trackerUrl gate — must point to the dashboard PAGE, not the planner or localhost.
+  // The plan mode button in the UI reads trackerUrl to open the dashboard; a planner URL is circular.
+  {
+    const tUrl = iState.trackerUrl || '';
+    const isPageUrl  = /\/pages\//.test(tUrl);
+    const isLocalhost = /localhost|127\.0\.0\.1/.test(tUrl);
+    if (!tUrl || !isPageUrl || isLocalhost) {
+      console.error('✗ GATE FAIL — trackerUrl must point to the dashboard PAGE on a public host.');
+      console.error(`  Current value: ${tUrl || '(not set)'}`);
+      console.error(`  Required form: https://<host>/pages/${iState.dsUri || '<dsUri>'}/${iState.dashboardSlug}`);
+      console.error('  Fix:');
+      console.error(`    1. Update trackerUrl in .sdd-state.json for initiative "${slug}"`);
+      console.error(`    2. PATCH /api/v2/dataspheres/${iState.dsId}/tasks/plan-modes/${iState.planModeId}`);
+      console.error(`       { "trackerUrl": "https://<host>/pages/${iState.dsUri || '<dsUri>'}/${iState.dashboardSlug}" }`);
+      console.error('    Then re-run --advance.');
+      process.exit(1);
+    }
   }
 
   // Evidence quality gate — must be substantive, not boilerplate
@@ -1669,29 +1866,56 @@ async function advanceTask(cfg, iState, slug) {
   // image-gen visual gate above but for frontend/component work.
   const UI_VA_PATTERN = /gallery|modal|builder|view|form|upload|component|render|survey|page|badge|button|layout|nav|feed|dashboard/i;
   if (task_check && sddType(task_check.title) === 'VA' && UI_VA_PATTERN.test(task_check.title)) {
-    const SCREENSHOT_RE = /\.(png|jpg|jpeg|gif|webp)(\s|"|'|\)|]|,|$)/i;
-    if (!SCREENSHOT_RE.test(evidenceText)) {
-      console.error('✗ GATE FAIL — UI/frontend VA task requires screenshot evidence.');
+    const gateIssues = [];
+
+    // 1. Extract screenshot paths and verify each EXISTS on disk and is FRESH.
+    //    A path mentioned in text proves nothing — the file must be real and from this session.
+    //    This is the hole that let live-gallery-form pass 30/30 with a broken upload modal.
+    const SCREENSHOT_RE = /([^\s"'()\[\],]+\.(?:png|jpg|jpeg|webp))/gi;
+    const shots = [...new Set([...evidenceText.matchAll(SCREENSHOT_RE)].map(m => m[1]))];
+    const gitRootUI = findGitRoot();
+    const MAX_SHOT_AGE_MS = 24 * 60 * 60 * 1000;
+    const missingShots = [];
+    const staleShots = [];
+    for (const sp of shots) {
+      const abs = sp.match(/^[A-Z]:\\|^\//) ? sp : path.join(gitRootUI, sp);
+      if (!fs.existsSync(abs)) { missingShots.push(sp); continue; }
+      if (Date.now() - fs.statSync(abs).mtimeMs > MAX_SHOT_AGE_MS) staleShots.push(sp);
+    }
+    if (shots.length === 0) gateIssues.push('no screenshot paths (.png/.jpg/.webp) in evidence');
+    if (missingShots.length > 0) gateIssues.push(`screenshot file(s) do NOT exist on disk: ${missingShots.join(', ')}`);
+    if (staleShots.length > 0) gateIssues.push(`screenshot file(s) older than 24h — re-run the test to capture fresh evidence: ${staleShots.join(', ')}`);
+
+    // 2. Interaction flows (upload/modal/form/builder) need ≥2 screenshots — a single static
+    //    frame cannot prove a multi-step flow works (e.g. modal stays mounted through upload).
+    const INTERACTION_PATTERN = /upload|modal|form|builder|drag|wizard|flow/i;
+    if (INTERACTION_PATTERN.test(task_check.title) && shots.length < 2) {
+      gateIssues.push(`interaction-flow VA needs >=2 screenshots (before/during/after states) — found ${shots.length}`);
+    }
+
+    // 3. Evidence must contain real Playwright run output — "N passed" from --reporter=list.
+    //    Descriptions of what a screenshot shows are not a test run.
+    if (!/\b\d+\s+passed\b/i.test(evidenceText)) {
+      gateIssues.push('no Playwright test output in evidence — run: npx playwright test <spec> --reporter=list and paste the "N passed" result');
+    }
+
+    if (gateIssues.length > 0) {
+      console.error('✗ GATE FAIL — UI/frontend VA task evidence is not verifiable.');
       console.error('');
-      console.error('  Include at least one screenshot file path (.png/.jpg/.webp) in your --evidence.');
-      console.error('  Steps:');
-      console.error('    1. Run Playwright tests: npx playwright test --reporter=list');
-      console.error('    2. Capture screenshots with page.screenshot({ path: "tests/e2e/screenshots/..." })');
-      console.error('    3. Paste the screenshot paths and describe what is visible in each');
+      for (const gi of gateIssues) console.error(`  · ${gi}`);
       console.error('');
-      console.error('  Example evidence format:');
-      console.error('    "tests/e2e/screenshots/feature/01-modal-open.png — modal visible with 2 tabs.');
-      console.error('     tests/e2e/screenshots/feature/02-upload-done.png — success checkmark shown."');
-      console.error('');
-      console.error('  If --auto-fix is set, a remediation EX+VA pair will be created instead.');
+      console.error('  Required for UI VA tasks:');
+      console.error('    1. A Playwright spec that exercises the actual user flow (not just page load)');
+      console.error('    2. Run it: npx playwright test <spec> --reporter=list — paste the "N passed" output');
+      console.error('    3. Screenshots captured DURING the run via page.screenshot() — files must exist and be <24h old');
+      console.error('    4. Interaction flows (upload/modal/form): screenshots of before, during, and after states');
       if (autoFix) {
         const tasks_af = await readBoard(cfg);
         const task_af = tasks_af.find(t => t.id === advanceTaskId) ||
                         tasks_af.find(t => sddKey(t.title) === advanceTaskId);
         if (task_af) {
-          const result = await createRemediationTasks(cfg, task_af, ['UI VA task missing screenshot evidence — include .png/.jpg paths describing what is visible'], tasks_af);
+          const result = await createRemediationTasks(cfg, task_af, gateIssues, tasks_af);
           console.error(`\n  ✅ Remediation tasks created: ${result.exKey} + ${result.vaKey}`);
-          console.error(`  Next: capture screenshots, then advance ${result.exKey} with screenshot evidence.`);
         }
       }
       process.exit(1);
@@ -1832,11 +2056,26 @@ async function advanceTask(cfg, iState, slug) {
   const type = sddType(task.title);
   const key = sddKey(task.title);
 
+  // Per-item gate — NO mass-ticking. Every checklist item must have been
+  // individually verified via --check-item with its own evidence comment.
+  // tickAll() on advance was the rubber-stamp engine: it checked every box
+  // in one regex pass regardless of whether anything was actually verified.
+  const untickedItems = [...(task.content || '').matchAll(
+    /<li(?=[^>]*data-type="taskItem")(?=[^>]*data-checked="false")[^>]*>[\s\S]*?<p>([^<]+)<\/p>/g
+  )].map(m => m[1].trim());
+  if (untickedItems.length > 0) {
+    console.error(`✗ GATE FAIL — ${untickedItems.length} checklist item(s) not yet individually verified:`);
+    untickedItems.forEach((u, i) => console.error(`  ${i + 1}. ${u.slice(0, 110)}`));
+    console.error('');
+    console.error('  Verify each item ONE AT A TIME with its own evidence:');
+    console.error(`    node loop.mjs --check-item ${task.id} --item "<number or text match>" --evidence "<real output for THIS item>"`);
+    console.error('  Each --check-item posts an evidence comment (visible in the live activity feed)');
+    console.error('  and ticks exactly one box. --advance only succeeds when every box was earned.');
+    process.exit(1);
+  }
+
   process.stdout.write(`→ ${dryRun ? '[DRY] ' : ''}Advancing ${key} with AI evidence... `);
   if (dryRun) { console.log('(skipped — dry run)'); return; }
-
-  const ticked = tickAll(task.content);
-  if (ticked !== task.content) await patchContent(cfg, task.id, ticked);
 
   const ts = new Date().toISOString();
   const comment = `[all-dai-sdd-system-message]\n\n**Gate: PASS — AI-substantiated** | ${ts}\n\n${evidenceText}`;
@@ -1849,8 +2088,22 @@ async function advanceTask(cfg, iState, slug) {
   await moveDone(cfg, task.id);
   console.log(`✅ ${key} Done`);
 
-  // Clear the in-flight task from state and refresh dashboard Current Focus.
+  // Milestone comment up the hierarchy — parents (EP, NS) get a progress note so
+  // the live activity feed shows milestone movement, not just leaf-task churn.
   try {
+    const byKeyAll = {};
+    tasks.forEach(t => { const k = sddKey(t.title); if (k) byKeyAll[k] = t; });
+    const epRef = (task.content || '').match(/epic_ref:\s*(EP-\d+)/)?.[1];
+    const nsRef = (task.content || '').match(/north_star_ref:\s*(NS-\d+)/)?.[1];
+    const note = `**Milestone:** ${key} (${task.title.slice(0, 70)}) advanced to Done.\n\n${evidenceText.slice(0, 350)}${evidenceText.length > 350 ? '…' : ''}`;
+    if (epRef && byKeyAll[epRef]) await postComment(cfg, byKeyAll[epRef].id, note);
+    if (nsRef && byKeyAll[nsRef]) await postComment(cfg, byKeyAll[nsRef].id, note);
+  } catch { /* non-fatal */ }
+
+  // Clear the in-flight task from state, remove sdd-active tag, and refresh dashboard Current Focus.
+  try {
+    await api('DELETE', `/api/v2/dataspheres/${cfg.dsId}/tasks/${task.id}/tags/sdd-active`)
+      .catch(() => {});
     const freshState = loadState();
     const freshSlug = initiativeOverride || freshState?.currentInitiative;
     if (freshState && freshSlug) setActiveTask(freshState, freshSlug, null);
@@ -1983,6 +2236,7 @@ async function main() {
     artifactsGroupId: sg.Artifacts || sg.artifacts || iState.artifactsGroupId || null,
     executionGroupId: sg.Execution || sg.execution || iState.executionGroupId || null,
     validationGroupId:sg.Validation || sg.validation || iState.validationGroupId || null,
+    intakeGroupId:    sg.Intake || sg.intake || iState.intakeGroupId || null,
     // All statusGroupIds for this plan — used by readBoard to scope client-side.
     // ensureGroupIds() will auto-fetch from the API and back-fill state if this is empty.
     allGroupIds:      new Set(Object.values(sg).filter(Boolean)),
@@ -2000,7 +2254,7 @@ async function main() {
   }
 
   if (intakeAdd) {
-    await addIntakeCommand(slug);
+    await addIntakeCommand(cfg, slug);
     return;
   }
 
@@ -2016,6 +2270,11 @@ async function main() {
 
   if (uatTaskId !== null) {
     await uatCommand(cfg, iState, slug);
+    return;
+  }
+
+  if (checkItemTaskId !== null) {
+    await checkItemCommand(cfg, iState, slug);
     return;
   }
 
@@ -2039,6 +2298,25 @@ async function main() {
     return;
   }
 
+  // MECHANICAL LOOP PERMANENTLY DISABLED.
+  // It mass-ticked checklists (tickAll), posted canned "Gate: PASS" comments, and
+  // moved tasks to Done with zero real verification — the fake-success engine.
+  // The ONLY supported drivers are:
+  //   AI-driven:  --next → work each checklist item → --check-item (per item,
+  //               with evidence) → --advance (with overall evidence)
+  //   Blind loop: node ralph-run.mjs  (fresh Claude instance per task, same gates)
+  console.error('✗ The bare mechanical loop is DISABLED — it rubber-stamps tasks without verification.');
+  console.error('');
+  console.error('  Use the AI-driven flow:');
+  console.error('    node loop.mjs --next                                     # get the current task');
+  console.error('    node loop.mjs --check-item <id> --item N --evidence "…"  # verify ONE checklist item');
+  console.error('    node loop.mjs --advance <id> --evidence "…"              # advance when all boxes earned');
+  console.error('');
+  console.error('  Or the blind Ralph loop (fresh Claude per task, same gates):');
+  console.error('    node ralph-run.mjs');
+  process.exit(1);
+
+  // eslint-disable-next-line no-unreachable -- kept for reference; remove after one release cycle
   console.log(`\n━━━ all-dai-sdd LOOP MODE: ${slug} ━━━`);
   if (dryRun) console.log('  DRY RUN — no writes will be made\n');
   console.log(`  Datasphere:  ${cfg.dsUri || cfg.dsId}`);
