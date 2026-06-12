@@ -187,6 +187,16 @@ async function main() {
       break;
     }
 
+    if (nextJson.status === 'awaiting-review') {
+      console.error(`\n⛔ Loop NOT started — board awaiting human review.`);
+      console.error(`  ${nextJson.reason}`);
+      if (nextJson.review?.board) console.error(`  Board:     ${nextJson.review.board}`);
+      if (nextJson.review?.dashboard) console.error(`  Dashboard: ${nextJson.review.dashboard}`);
+      console.error(`  The human must review and green-light before the loop runs:`);
+      console.error(`  ${nextJson.action || 'node loop.mjs --greenlight'}`);
+      process.exit(1);
+    }
+
     if (nextJson.status === 'intake-blocked' || nextJson.status === 'intake-pending') {
       console.error(`\n⚠ Loop paused — ${nextJson.reason}`);
       console.error(`  ${nextJson.action || 'Triage pending intake items, then re-run.'}`);

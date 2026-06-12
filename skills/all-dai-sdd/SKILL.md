@@ -68,6 +68,15 @@ node loop.mjs --scaffold-v2 <slug> --name "<Initiative Name>"
 
 **The Ralph loop is VC-centric with full hierarchy context.** `--next` on a v2 board returns the current item PLUS its entire parent chain (`hierarchy: [...]` — TK, EP, DO, SS, VP, PC, RS, IN with full content), so each validation runs with the requirements of every parent column in hand. A VC may take hundreds of turns; the loop course-corrects by filing intake (which lands as new `IN-NNN` items), creating items in any column (chained!), or asking the user — then keeps running.
 
+**HUMAN GREEN-LIGHT GATE — the loop does NOT start until a human reviews the board.** "When ready the dumb Ralph loop is initiated" — *when ready* is a human decision, not the agent's. After staging the full chain, building the dashboard, and getting `--trace-audit` clean:
+
+1. `node loop.mjs --request-review --initiative <slug>` — runs pre-flight checks (dashboard registered, trackerUrl set, trace audit clean) and surfaces the **board + dashboard links**. Sets `review.status = 'awaiting'`.
+2. **Surface those two links to the user and STOP.** Do not advance any task. Both `--next` and `--advance` return/refuse with `awaiting-review` until approved.
+3. The user reviews the planned board + dashboard. On their explicit go-ahead: `node loop.mjs --greenlight --initiative <slug>` — records `review.status = 'approved'` with `approvedAt` + `by` in `.sdd-state.json`.
+4. Only now does `--next` serve work and `ralph-run.mjs` start the autonomous loop, which runs until every validation criterion is Done.
+
+`--revoke-review` re-gates the loop if the plan changes materially mid-flight. New scaffolds default to `review.status: 'pending'` — gated from creation.
+
 **Artifacts ship cited or not at all.** A VC pass scaffolds its AR with status TODO and a citation checklist; the AR cannot go DONE until `verifyV2Artifact` passes: `code` → every cited file exists on disk AND carries a decorator pointing at its VC; `media` → metadata per asset (file + sha256 + byte size); `report` → ≥2 resolvable links. Empty scaffolds can never count as shipped — that is the end of ghost artifacts.
 
 All schema-1 gates still apply on v2 boards: evidence quality, per-item `--check-item`, typed validation commands executed individually, screenshot freshness, dashboard template, regression wall before complete.

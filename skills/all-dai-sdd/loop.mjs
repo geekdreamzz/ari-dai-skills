@@ -11,6 +11,9 @@
  *   node loop.mjs --scaffold-v2 <slug> --name "<Initiative>"  # create a schema-2 product lifecycle board (10 tiers)
  *   node loop.mjs --trace-audit                  # ghost-node sweep: dupes, dangling refs, broken chains, uncited artifacts
  *   node loop.mjs --stamp-uuids                  # write uuid: <own id> into every item missing it
+ *   node loop.mjs --request-review               # pre-flight checks + surface board/dashboard links for HUMAN review
+ *   node loop.mjs --greenlight                   # HUMAN approval — the Ralph loop is BLOCKED until this is run
+ *   node loop.mjs --revoke-review                # pull approval (plan changed materially mid-flight)
  *   node loop.mjs --next                         # output next incomplete task as JSON; marks it IN_PROGRESS + sdd-active
  *                                                #   (schema 2: includes hierarchy[] — the full parent chain as context)
  *   node loop.mjs --check-item <taskId>          # tick ONE checklist item with its own evidence (per-item protocol)
@@ -105,6 +108,9 @@ let scaffoldV2Name = null;
 let scaffoldV2Slug = null;
 let traceAuditMode = false;
 let stampUuidsMode = false;
+let requestReviewMode = false;
+let greenlightMode = false;
+let revokeReviewMode = false;
 
 for (let i = 2; i < process.argv.length; i++) {
   if (process.argv[i] === '--initiative' && process.argv[i + 1]) {
@@ -167,6 +173,12 @@ for (let i = 2; i < process.argv.length; i++) {
     traceAuditMode = true;
   } else if (process.argv[i] === '--stamp-uuids') {
     stampUuidsMode = true;
+  } else if (process.argv[i] === '--request-review') {
+    requestReviewMode = true;
+  } else if (process.argv[i] === '--greenlight') {
+    greenlightMode = true;
+  } else if (process.argv[i] === '--revoke-review') {
+    revokeReviewMode = true;
   }
 }
 
@@ -1789,6 +1801,7 @@ async function scaffoldV2Command() {
     statusGroups: Object.fromEntries(groups.map(g => [g.name, g.id])),
     intakeGroupId: tiers.IN || null,
     dashboardSlug: null, trackerUrl: null,
+    review: { status: 'pending' },   // loop is gated until human green-light
   };
   state.currentInitiative = scaffoldV2Slug;
   saveState(state);
@@ -1796,10 +1809,11 @@ async function scaffoldV2Command() {
     scaffolded: true, schema: 2, slug: scaffoldV2Slug, planModeId: pm.id,
     tiers, plannerUrl: `${BASE}/app/${dsUri || dsId}/planner?mode=${pm.id}`,
     nextSteps: [
-      'Create the dashboard page (Dashboard Page Template) and register dashboardSlug + trackerUrl',
       'Stage IN items from user prompts, then build the chain: RS -> PC -> VP -> SS -> DO -> EP -> TK -> VC',
       'Every item except IN needs parent_uuid front matter; run --stamp-uuids after creating items',
-      'Run --trace-audit before starting the Ralph loop',
+      'Create the dashboard page (Dashboard Page Template) and register dashboardSlug + trackerUrl',
+      'Run --trace-audit until clean, then --request-review to surface board + dashboard to the user',
+      'The Ralph loop is BLOCKED until the user reviews and you run --greenlight on their go-ahead',
     ],
   }, null, 2));
 }
@@ -2129,6 +2143,113 @@ async function createFixMode(cfg, iState, slug) {
   }, null, 2));
 }
 
+// ── Human review gate ─────────────────────────────────────────────────────────
+// The dumb Ralph loop does NOT start until a human has reviewed the planned
+// board + dashboard and explicitly green-lit it. Box E of the system diagram:
+// "when ready the dumb RALPH LOOP is initiated" — "when ready" is a human act.
+// State lives in .sdd-state.json under initiatives[slug].review:
+//   { status: 'pending' | 'awaiting' | 'approved', requestedAt, approvedAt, by }
+function reviewStatus(iState) {
+  return iState?.review?.status || 'pending';
+}
+
+// --request-review: run the pre-flight checks, surface the links, mark awaiting.
+async function requestReviewCommand(cfg, iState, slug) {
+  const checks = [];
+  let blocking = 0;
+  const add = (name, ok, detail) => { checks.push({ name, ok, detail }); if (!ok) blocking++; };
+
+  add('dashboard registered', !!iState.dashboardSlug, iState.dashboardSlug ? 'ok' : 'no dashboardSlug — create + register the dashboard page first');
+  add('trackerUrl set', !!iState.trackerUrl, iState.trackerUrl || 'plan mode has no trackerUrl');
+
+  // Trace audit inline (ghosts must be zero before a human is asked to review)
+  let ghostCount = null;
+  try {
+    const tasks = await readBoard(cfg);
+    const keyMap = {};
+    tasks.forEach(t => { const k = sddKey(t.title); if (k) (keyMap[k] = keyMap[k] || []).push(t); });
+    ghostCount = Object.values(keyMap).filter(v => v.length > 1).length;
+    const allKeys = new Set(Object.keys(keyMap));
+    for (const t of tasks) {
+      for (const m of (t.content || '').matchAll(/(?:execution_ref|epic_ref|north_star_ref|research_ref|validation_ref):[ \t]*((?:[A-Z]+-)?[A-Z]+-\d+)/g)) {
+        if (!allKeys.has(m[1])) ghostCount++;
+      }
+    }
+    add('trace audit clean', ghostCount === 0, ghostCount === 0 ? 'ok' : `${ghostCount} ghost(s) — run --trace-audit and fix before review`);
+  } catch (e) {
+    add('trace audit clean', false, `could not read board: ${e.message.slice(0, 60)}`);
+  }
+
+  const uri = cfg.dsUri || iState.dsUri || cfg.dsId;
+  const boardUrl = `${BASE}/app/${uri}/planner?mode=${cfg.planModeId}`;
+  const dashUrl = iState.dashboardSlug ? `${BASE}/pages/${uri}/${iState.dashboardSlug}` : null;
+
+  if (blocking > 0) {
+    console.error('✗ Cannot request review — pre-flight checks failed:');
+    checks.filter(c => !c.ok).forEach(c => console.error(`  · ${c.name}: ${c.detail}`));
+    console.error('  Fix these, then re-run --request-review.');
+    process.exit(1);
+  }
+
+  const state = loadState();
+  if (state?.initiatives?.[slug]) {
+    state.initiatives[slug].review = {
+      status: 'awaiting',
+      requestedAt: new Date().toISOString(),
+      boardUrl, dashboardUrl: dashUrl,
+    };
+    saveState(state);
+  }
+  console.log(JSON.stringify({
+    status: 'awaiting-review',
+    initiative: slug,
+    message: 'Board + dashboard staged and clean. A HUMAN must review before the Ralph loop runs.',
+    review: { board: boardUrl, dashboard: dashUrl },
+    checks: checks.map(c => `${c.ok ? '✓' : '✗'} ${c.name}`),
+    greenlight: `node loop.mjs --greenlight --initiative ${slug}`,
+    instruction: 'Surface the two links above to the user for review. Do NOT start the loop. The loop is blocked until the user runs --greenlight (or tells you to, and you run it on their behalf with their explicit go-ahead).',
+  }, null, 2));
+}
+
+// --greenlight: the human approval. Loop may run after this.
+async function greenlightCommand(cfg, iState, slug) {
+  if (!iState.dashboardSlug) {
+    console.error('✗ Refusing to green-light — no dashboard registered to review. Run --request-review first.');
+    process.exit(1);
+  }
+  const state = loadState();
+  if (state?.initiatives?.[slug]) {
+    const prev = state.initiatives[slug].review || {};
+    state.initiatives[slug].review = {
+      ...prev,
+      status: 'approved',
+      approvedAt: new Date().toISOString(),
+      by: process.env.SUDO_USER || process.env.USER || process.env.USERNAME || 'user',
+    };
+    saveState(state);
+  }
+  // Stamp the planner so the activity feed records the green-light for stakeholders
+  const uri = cfg.dsUri || iState.dsUri || cfg.dsId;
+  console.log(JSON.stringify({
+    status: 'approved',
+    initiative: slug,
+    message: '✅ GREEN-LIT — the Ralph loop may now run until every validation criterion is Done.',
+    approvedAt: new Date().toISOString(),
+    plannerUrl: `${BASE}/app/${uri}/planner?mode=${cfg.planModeId}`,
+    nextStep: `node loop.mjs --next --initiative ${slug}   (or: node ralph-run.mjs --initiative ${slug})`,
+  }, null, 2));
+}
+
+// --revoke-review: pull approval (e.g. plan changed materially mid-flight).
+async function revokeReviewCommand(slug) {
+  const state = loadState();
+  if (state?.initiatives?.[slug]) {
+    state.initiatives[slug].review = { status: 'pending', revokedAt: new Date().toISOString() };
+    saveState(state);
+  }
+  console.log(JSON.stringify({ status: 'pending', initiative: slug, message: 'Review approval revoked — loop is gated again until --request-review + --greenlight.' }, null, 2));
+}
+
 // ── AI-driven: --next ─────────────────────────────────────────────────────────
 // Outputs the next incomplete task as JSON so Claude can read, execute, and
 // substantiate it before calling --advance. No board modifications.
@@ -2137,6 +2258,33 @@ async function findNextTask(cfg, iState, slug) {
   const nonAR = tasks.filter(t => sddType(t.title) !== 'AR');
   const total = nonAR.length;
   const done = nonAR.filter(t => t.isDone).length;
+
+  // ── HUMAN REVIEW GATE ───────────────────────────────────────────────────────
+  // The dumb loop cannot serve work until a human green-lit the board. This is
+  // the explicit "when ready" gate before the Ralph loop starts.
+  if (reviewStatus(iState) !== 'approved') {
+    const uri = cfg.dsUri || iState.dsUri || cfg.dsId;
+    const st = reviewStatus(iState);
+    process.stdout.write(JSON.stringify({
+      status: 'awaiting-review',
+      reviewState: st,
+      done, total, pct: total ? Math.round(done / total * 100) : 0,
+      reason: st === 'awaiting'
+        ? 'Board + dashboard are staged and awaiting HUMAN review. The Ralph loop will not run until approved.'
+        : 'The board has not been submitted for human review yet.',
+      review: {
+        board: `${BASE}/app/${uri}/planner?mode=${cfg.planModeId}`,
+        dashboard: iState.dashboardSlug ? `${BASE}/pages/${uri}/${iState.dashboardSlug}` : null,
+      },
+      instruction: st === 'awaiting'
+        ? 'Surface the review links to the user. Once they approve, run --greenlight. Do NOT advance any task until approved.'
+        : 'Finish staging the board + dashboard, then run --request-review to surface it for the user.',
+      action: st === 'awaiting'
+        ? `node loop.mjs --greenlight --initiative ${slug}`
+        : `node loop.mjs --request-review --initiative ${slug}`,
+    }, null, 2));
+    return;
+  }
 
   // Intake queue: auto-sweep triaged → done, then check for blockers
   await sweepIntakeDone(cfg, slug, tasks);
@@ -2287,6 +2435,15 @@ async function advanceTask(cfg, iState, slug) {
   if (!evidenceText) {
     console.error('✗ --evidence is required. Provide real test output, file paths, or measured results.');
     console.error('  Do NOT advance a task without substantiation — that is the problem we are fixing.');
+    process.exit(1);
+  }
+
+  // Human review gate — no task advances until the board was green-lit. Belt to
+  // the --next suspenders: even hand-driven advances respect the gate.
+  if (reviewStatus(iState) !== 'approved') {
+    console.error('✗ GATE FAIL — board not green-lit. The Ralph loop (and any --advance) is blocked until a human reviews and approves.');
+    console.error(`  1. node loop.mjs --request-review --initiative ${slug}   # surface board + dashboard`);
+    console.error(`  2. Have the user review the links, then: node loop.mjs --greenlight --initiative ${slug}`);
     process.exit(1);
   }
 
@@ -3073,6 +3230,21 @@ async function main() {
 
   if (regressMode) {
     await regressCommand(cfg, iState, slug);
+    return;
+  }
+
+  if (requestReviewMode) {
+    await requestReviewCommand(cfg, iState, slug);
+    return;
+  }
+
+  if (greenlightMode) {
+    await greenlightCommand(cfg, iState, slug);
+    return;
+  }
+
+  if (revokeReviewMode) {
+    await revokeReviewCommand(slug);
     return;
   }
 
