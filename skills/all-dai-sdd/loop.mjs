@@ -111,6 +111,7 @@ let stampUuidsMode = false;
 let requestReviewMode = false;
 let greenlightMode = false;
 let revokeReviewMode = false;
+let reconcileMode = false;
 
 for (let i = 2; i < process.argv.length; i++) {
   if (process.argv[i] === '--initiative' && process.argv[i + 1]) {
@@ -179,6 +180,8 @@ for (let i = 2; i < process.argv.length; i++) {
     greenlightMode = true;
   } else if (process.argv[i] === '--revoke-review') {
     revokeReviewMode = true;
+  } else if (process.argv[i] === '--reconcile') {
+    reconcileMode = true;
   }
 }
 
@@ -437,7 +440,7 @@ const V2_COLUMNS = [
 // diagram: "this structure must be forced in the templating and gate checks".
 const V2_TEMPLATES = {
   IN: { sections: ['Origin Prompt'],                 frontMatter: ['type'] },
-  RS: { sections: ['Search Results', 'Sources', 'Codebase Context', 'Synthesis'], frontMatter: ['type', 'parent_uuid'] },
+  RS: { sections: ['Search Results', 'Sources', 'Codebase Context', 'Reusable Modules', 'Synthesis'], frontMatter: ['type', 'parent_uuid'] },
   PC: { sections: ['Problem Statement', 'Customer Segment'], frontMatter: ['type', 'parent_uuid'] },
   VP: { sections: ['Value Proposition', 'Why Worth Solving'], frontMatter: ['type', 'parent_uuid'] },
   SS: { sections: ['Functional Requirements', 'Non-Functional Requirements', 'Artifacts Needed'], frontMatter: ['type', 'parent_uuid'] },
@@ -1705,26 +1708,66 @@ async function checkItemCommand(cfg, iState, slug) {
 }
 
 // ── V2 sequencer ──────────────────────────────────────────────────────────────
-// Tier-by-tier, status-based (items never leave their column). VC is the deep
-// work unit; an AR not yet DONE blocks completion (artifacts cannot be ghosts).
+// Status-based (items never leave their column). A parent is NEVER complete
+// until ALL its descendants pass — completion rolls UP from the leaves. The
+// loop works the deepest ACTIONABLE item (non-DONE, all children DONE); parents
+// complete via reconcileV2's bottom-up rollup, so they rarely surface here.
+function v2ChildrenOf(tasks, id) {
+  return tasks.filter(t => v2ParentUuid(t.content) === id);
+}
 function findNextIncompleteV2(tasks) {
-  const byTier = {};
-  for (const t of tasks) { const ty = sddType(t.title); if (ty) (byTier[ty] = byTier[ty] || []).push(t); }
-  for (const tier of ['RS', 'PC', 'VP', 'SS', 'DO', 'EP', 'TK']) {
-    for (const t of (byTier[tier] || []).sort((a, b) => sddNum(a.title) - sddNum(b.title))) {
-      if (!t.isDone) return t;
-    }
-  }
-  const byId = new Map(tasks.map(t => [t.id, t]));
-  for (const vc of (byTier.VC || []).sort((a, b) => sddNum(a.title) - sddNum(b.title))) {
-    if (vc.isDone) continue;
-    const parent = byId.get(v2ParentUuid(vc.content) || '');
-    if (!parent || parent.isDone) return vc;   // parent TK done (or broken — surface it)
-  }
-  for (const ar of (byTier.AR || []).sort((a, b) => sddNum(a.title) - sddNum(b.title))) {
-    if (!ar.isDone) return ar;
+  const actionable = t => !t.isDone && v2ChildrenOf(tasks, t.id).every(c => c.isDone);
+  // Deepest tiers first: validation/artifact work surfaces before parent rollups.
+  for (const tier of ['AR', 'VC', 'TK', 'EP', 'DO', 'SS', 'VP', 'PC', 'RS', 'IN']) {
+    const items = tasks
+      .filter(t => sddType(t.title) === tier && actionable(t))
+      .sort((a, b) => sddNum(a.title) - sddNum(b.title));
+    if (items.length) return items[0];
   }
   return null;
+}
+
+// ── Completion reconciliation (the re-open rule) ──────────────────────────────
+// Bottom-up to fixpoint: a parent is DONE iff every child is DONE. Adding a new
+// child to a completed parent RE-OPENS it and cascades up the whole hierarchy
+// (DO → SS → VP → PC → RS → IN), because the upstream requirement is no longer
+// satisfied. Run standalone (--reconcile) and auto at the start of --next /
+// --regress / --request-review so board truth is always current.
+async function reconcileV2(cfg) {
+  let tasks = await readBoard(cfg);
+  const changes = [];
+  let changed = true, guard = 0;
+  while (changed && guard++ < 50) {
+    changed = false;
+    for (const t of tasks) {
+      if (!sddType(t.title)) continue;
+      const kids = tasks.filter(x => v2ParentUuid(x.content) === t.id);
+      if (kids.length === 0) continue;                 // leaf — own status governs
+      const allDone = kids.every(k => k.isDone);
+      if (allDone && !t.isDone) {
+        await api('PATCH', `/api/v2/dataspheres/${cfg.dsId}/tasks/${t.id}`, { status: 'DONE' }).catch(() => {});
+        t.status = 'DONE'; t.isDone = true; changed = true;
+        changes.push({ key: sddKey(t.title), to: 'DONE (children complete)' });
+      } else if (!allDone && t.isDone) {
+        await api('PATCH', `/api/v2/dataspheres/${cfg.dsId}/tasks/${t.id}`, { status: 'IN_PROGRESS' }).catch(() => {});
+        t.status = 'IN_PROGRESS'; t.isDone = false; changed = true;
+        const open = kids.filter(k => !k.isDone).map(k => sddKey(k.title)).join(', ');
+        changes.push({ key: sddKey(t.title), to: `RE-OPENED (open children: ${open})` });
+      }
+    }
+  }
+  return changes;
+}
+
+async function reconcileCommand(cfg, slug) {
+  if (cfg.schema !== 2) { console.log(JSON.stringify({ schema: 1, message: 'reconcile is a schema-2 operation.' }, null, 2)); return; }
+  const changes = await reconcileV2(cfg);
+  console.log(JSON.stringify({
+    status: 'reconciled', initiative: slug, changes: changes.length, detail: changes,
+    message: changes.length
+      ? 'Parent completion re-rolled. Re-opened ancestors must complete their new subtree before they are DONE again.'
+      : 'Board already consistent — every parent matches its children.',
+  }, null, 2));
 }
 
 // VC pass → AR scaffold in the Artifacts column. Created with status TODO and a
@@ -2155,6 +2198,10 @@ function reviewStatus(iState) {
 
 // --request-review: run the pre-flight checks, surface the links, mark awaiting.
 async function requestReviewCommand(cfg, iState, slug) {
+  // Reconcile first — the human must review the TRUE state, with any ancestors
+  // re-opened by newly-added children already reflected.
+  if (cfg.schema === 2) await reconcileV2(cfg);
+
   const checks = [];
   let blocking = 0;
   const add = (name, ok, detail) => { checks.push({ name, ok, detail }); if (!ok) blocking++; };
@@ -2254,6 +2301,10 @@ async function revokeReviewCommand(slug) {
 // Outputs the next incomplete task as JSON so Claude can read, execute, and
 // substantiate it before calling --advance. No board modifications.
 async function findNextTask(cfg, iState, slug) {
+  // v2: reconcile parent completion first so the board reflects truth — any
+  // ancestor with an open child is re-opened, completed subtrees roll up.
+  if (cfg.schema === 2) await reconcileV2(cfg);
+
   const tasks = await readBoard(cfg);
   const nonAR = tasks.filter(t => sddType(t.title) !== 'AR');
   const total = nonAR.length;
@@ -2963,6 +3014,35 @@ async function advanceTask(cfg, iState, slug) {
         process.exit(1);
       }
     }
+    // ── RESEARCH-REUSE gate ────────────────────────────────────────────────────
+    // The recurring failure: rebuilding things that already exist (bespoke
+    // VideoRecorder when useCamera/CameraCaptureModal exist; bespoke upload when
+    // AdvancedUploadModal exists). RS items MUST audit the codebase for reusable
+    // modules — every path cited in Codebase Context / Reusable Modules must
+    // EXIST on disk, proving a real audit happened (not "we'll look later").
+    if (type === 'RS') {
+      const c = task.content || '';
+      const reuseSection = c.match(/Reusable Modules[\s\S]*?(?=<h2|$)/i)?.[0] || '';
+      const codebaseSection = c.match(/Codebase Context[\s\S]*?(?=<h2|$)/i)?.[0] || '';
+      const cited = [...(reuseSection + codebaseSection).matchAll(/<code[^>]*>([^<]+)<\/code>/g)]
+        .map(m => m[1].trim())
+        .filter(p => /^(src|tests|prisma|scripts)[\\/]/.test(p) && !/\.(png|jpg|jpeg|webp|mp4)$/i.test(p));
+      const gitRoot = findGitRoot();
+      const missing = cited.filter(p => !fs.existsSync(path.join(gitRoot, p)));
+      if (cited.length === 0) {
+        console.error(`✗ GATE FAIL — ${key} research has no reusable-module audit.`);
+        console.error('  The Reusable Modules / Codebase Context sections must cite EXISTING src/ files');
+        console.error('  in <code> tags — proving you searched for what already solves this before building.');
+        console.error('  Use the Explore agent or grep for: existing modals, hooks, services, components.');
+        console.error('  If truly greenfield, cite the nearest analogous existing module and say why it does not fit.');
+        process.exit(1);
+      }
+      if (missing.length > 0) {
+        console.error(`✗ GATE FAIL — ${key} cites ${missing.length} file(s) that do NOT exist (audit is fabricated):`);
+        missing.forEach(p => console.error(`  · ${p}`));
+        process.exit(1);
+      }
+    }
   }
 
   // ── Trace-linkage gate (schema 1): refs must resolve, anchors must exist ────
@@ -3006,12 +3086,30 @@ async function advanceTask(cfg, iState, slug) {
   }
 
   if (cfg.schema === 2) {
-    // v2: items never leave their column — DONE is a status, not a move.
-    await api('PATCH', `/api/v2/dataspheres/${cfg.dsId}/tasks/${task.id}`, { status: 'DONE' });
+    // v2: items never leave their column — DONE is a status, not a move. AND a
+    // parent is only DONE when EVERY child is DONE: advancing an item whose
+    // gate passed but which still has open children marks it IN_PROGRESS
+    // (validated, awaiting subtree). reconcileV2 rolls it up later. A VC always
+    // scaffolds a pending AR child, so VC lands IN_PROGRESS until the AR is cited.
+    const fresh = await readBoard(cfg);
+    const kids = fresh.filter(t => v2ParentUuid(t.content) === task.id);
+    const subtreeComplete = kids.every(c => c.isDone);
+    await api('PATCH', `/api/v2/dataspheres/${cfg.dsId}/tasks/${task.id}`, {
+      status: subtreeComplete ? 'DONE' : 'IN_PROGRESS',
+    });
+    if (subtreeComplete) console.log(`✅ ${key} Done`);
+    else console.log(`✓ ${key} validated — IN_PROGRESS until children complete (${kids.filter(c => !c.isDone).map(c => sddKey(c.title)).join(', ')})`);
   } else {
     await moveDone(cfg, task.id);
+    console.log(`✅ ${key} Done`);
   }
-  console.log(`✅ ${key} Done`);
+
+  // v2: roll completion up the parent chain now that this item is DONE — a
+  // parent flips to DONE the instant its last child completes.
+  if (cfg.schema === 2) {
+    const rolled = await reconcileV2(cfg);
+    for (const r of rolled.filter(r => /DONE/.test(r.to))) console.log(`   ↑ rollup: ${r.key} ${r.to}`);
+  }
 
   // Milestone comment up the hierarchy so the live activity feed shows movement
   // at every level — v2 walks the parent_uuid chain, v1 uses the ref fields.
@@ -3245,6 +3343,11 @@ async function main() {
 
   if (revokeReviewMode) {
     await revokeReviewCommand(slug);
+    return;
+  }
+
+  if (reconcileMode) {
+    await reconcileCommand(cfg, slug);
     return;
   }
 
