@@ -468,6 +468,51 @@ function findNextIncomplete(tasks) {
   return null;
 }
 
+// ── Typed validation helpers ──────────────────────────────────────────────────
+// Commands: validation_command (general) + validation_command_<kind> (typed).
+// Kinds: a VA's effective kinds = declared validation_kind list ∪ kinds implied
+// by its typed commands. Required types for an EX derive from its CHANGED FILES
+// (noise-proof — instructions decay, file paths don't), overridable with an
+// explicit validation_types front-matter list.
+const VALIDATION_KIND_ALIASES = { backend: 'api', frontend: 'ui', db: 'data', model: 'data' };
+const normKind = k => VALIDATION_KIND_ALIASES[k] || k;
+
+function extractValidationCommands(content) {
+  const cmds = [];
+  const re = /validation_command(?:_([a-z]+))?:\s*(.+)/gi;
+  let m;
+  while ((m = re.exec(content || '')) !== null) {
+    cmds.push({ kind: m[1] ? normKind(m[1].toLowerCase()) : null, cmd: m[2].trim() });
+  }
+  return cmds;
+}
+
+function vaEffectiveKinds(content) {
+  // [ \t] only — \s would swallow the newline and capture the next front-matter
+  // key (e.g. "execution_ref" parsed as kind "execution")
+  const kinds = new Set(
+    ((content || '').match(/validation_kind:[ \t]*([a-z, -]+)/i)?.[1] || '')
+      .split(/[\s,]+/).map(s => normKind(s.trim().toLowerCase())).filter(Boolean)
+  );
+  for (const c of extractValidationCommands(content)) if (c.kind) kinds.add(c.kind);
+  return kinds;
+}
+
+function exRequiredTypes(content) {
+  const declared = ((content || '').match(/validation_types:[ \t]*([a-z, -]+)/i)?.[1] || '')
+    .split(/[\s,]+/).map(s => normKind(s.trim().toLowerCase())).filter(Boolean);
+  if (declared.length > 0) return declared;
+  const implSection = (content || '').match(/Implementation Files[\s\S]*?(?=<h2|$)/i)?.[0] || '';
+  const paths = [...implSection.matchAll(/<code[^>]*>([^<]+)<\/code>/g)].map(m => m[1].trim());
+  const inferred = new Set();
+  for (const p of paths) {
+    if (/^src[\\/]client[\\/]|\.(tsx|jsx|css)$/i.test(p)) inferred.add('ui');
+    if (/^src[\\/]server[\\/]/i.test(p)) inferred.add('api');
+    if (/^prisma[\\/]|schema\.prisma|\.service\.(ts|js)$/i.test(p)) inferred.add('data');
+  }
+  return [...inferred];
+}
+
 // ── Content extraction helpers for AR tasks ───────────────────────────────────
 
 function extractImplFiles(content) {
@@ -1512,21 +1557,43 @@ async function regressCommand(cfg, iState, slug) {
   const entries = [];
   const missingCmd = [];
   for (const va of vaTasks) {
-    const m = (va.content || '').match(/validation_command:\s*(.+)/);
-    if (m) entries.push({ key: sddKey(va.title), cmd: m[1].trim() });
-    else missingCmd.push(sddKey(va.title));
+    const cmds = extractValidationCommands(va.content);
+    if (cmds.length > 0) {
+      const fallbackKind = [...vaEffectiveKinds(va.content)].join('+') || 'general';
+      cmds.forEach(c => entries.push({ key: sddKey(va.title), kind: c.kind || fallbackKind, cmd: c.cmd }));
+    } else {
+      missingCmd.push(sddKey(va.title));
+    }
   }
   // Dedupe identical commands — several VAs may share one spec file
   const seen = new Set();
   const unique = entries.filter(e => !seen.has(e.cmd) && seen.add(e.cmd));
 
+  // Typed coverage matrix — every EX's required types (from its changed files)
+  // must be covered by a companion VA that has commands. Frontend, backend, and
+  // data-model validation each pass individually or the wall fails.
+  const coverageGaps = [];
+  for (const ex of tasks.filter(t => sddType(t.title) === 'EX')) {
+    const req = exRequiredTypes(ex.content);
+    if (req.length === 0) continue;
+    const exK = sddKey(ex.title);
+    const covered = new Set();
+    for (const va of vaTasks) {
+      if (!new RegExp(`execution_ref:\\s*${exK}\\b`).test(va.content || '')) continue;
+      if (extractValidationCommands(va.content).length === 0) continue;
+      vaEffectiveKinds(va.content).forEach(k => covered.add(k));
+    }
+    const missing = req.filter(t => !covered.has(t));
+    if (missing.length > 0) coverageGaps.push({ ex: exK, required: req, missing });
+  }
+
   console.log(`\n━━━ all-dai-sdd REGRESSION: ${slug} ━━━`);
-  console.log(`  VA tasks: ${vaTasks.length} | commands: ${unique.length} unique | missing: ${missingCmd.length}\n`);
+  console.log(`  VA tasks: ${vaTasks.length} | commands: ${unique.length} unique | missing: ${missingCmd.length} | coverage gaps: ${coverageGaps.length}\n`);
 
   const failures = [];
   let passed = 0;
   for (const e of unique) {
-    process.stdout.write(`  → [${e.key}] ${e.cmd.slice(0, 90)} ... `);
+    process.stdout.write(`  → [${e.key}|${e.kind}] ${e.cmd.slice(0, 80)} ... `);
     try {
       execSync(e.cmd, { encoding: 'utf-8', timeout: 600000, stdio: 'pipe' });
       console.log('✅');
@@ -1540,7 +1607,7 @@ async function regressCommand(cfg, iState, slug) {
   // Snapshot the SAME task set findNextTask compares against (non-AR), or the
   // complete-gate will see a perpetual count mismatch.
   const nonArTasks = tasks.filter(t => sddType(t.title) !== 'AR');
-  const allPass = failures.length === 0 && missingCmd.length === 0;
+  const allPass = failures.length === 0 && missingCmd.length === 0 && coverageGaps.length === 0;
   const state = loadState();
   if (state?.initiatives?.[slug]) {
     state.initiatives[slug].regress = {
@@ -1555,8 +1622,12 @@ async function regressCommand(cfg, iState, slug) {
   }
 
   if (missingCmd.length > 0) {
-    console.log(`\n  ✗ ${missingCmd.length} VA task(s) have NO validation_command: ${missingCmd.join(', ')}`);
-    console.log('    PATCH each with a runnable command in its front matter, then re-run --regress.');
+    console.log(`\n  ✗ ${missingCmd.length} VA task(s) have NO validation command: ${missingCmd.join(', ')}`);
+    console.log('    PATCH each with runnable typed commands in its front matter, then re-run --regress.');
+  }
+  for (const g of coverageGaps) {
+    console.log(`\n  ✗ [${g.ex}] typed coverage gap — required: ${g.required.join(', ')} | MISSING: ${g.missing.join(', ')}`);
+    console.log(`    Add the missing kind(s) + typed command to its companion VA, or override with validation_types.`);
   }
   for (const f of failures) {
     console.log(`\n  ✗ [${f.key}] FAILED: ${f.cmd}`);
@@ -1990,33 +2061,42 @@ async function advanceTask(cfg, iState, slug) {
   const task_check = tasks_check.find(t => t.id === advanceTaskId) ||
                      tasks_check.find(t => sddKey(t.title) === advanceTaskId);
 
-  // validation_kind front matter routes VA tasks to the right evidence gate:
-  //   (absent)        → UI gate when the title pattern-matches UI keywords
-  //   api | backend   → request/response evidence instead of screenshots
-  //   benchmark       → measured values vs thresholds instead of screenshots
-  const validationKind = (task_check?.content || '')
-    .match(/validation_kind:\s*([a-z-]+)/i)?.[1]?.toLowerCase() || null;
-  const isNonUiVa = validationKind === 'api' || validationKind === 'backend' || validationKind === 'benchmark';
+  // validation_kind front matter declares the VA's validation TYPES (comma list):
+  //   ui        → rendered browser flow: Playwright run + fresh screenshots
+  //   api       → HTTP contract: endpoint paths + status codes asserted
+  //   data      → data model / functional: DB state, model fields, migrations
+  //   benchmark → measured values with units vs thresholds
+  // A VA may cover several (validation_kind: ui,api) — EVERY declared type's
+  // evidence gate applies. Absent declaration falls back to UI when the title
+  // pattern-matches UI keywords. 'backend' is a legacy alias for api.
+  const vaKindsDeclared = [...vaEffectiveKinds(task_check?.content)];
+  const vaKinds = vaKindsDeclared.length > 0 ? vaKindsDeclared : null;
+  const isNonUiVa = vaKinds ? !vaKinds.includes('ui') : false;
 
-  // ── API/backend VA evidence gate ─────────────────────────────────────────────
-  // API tests are first-class artifacts: the evidence must show real request/
-  // response assertions, not screenshots of unrelated UI.
-  if (task_check && sddType(task_check.title) === 'VA' && isNonUiVa) {
-    const apiIssues = [];
-    if (validationKind === 'benchmark') {
-      if (!/\d+(\.\d+)?\s*(ms|s|MB|GB|%|fps|req\/s|ops)/i.test(evidenceText)) {
-        apiIssues.push('benchmark VA requires measured values with units (ms, MB, %, req/s …) compared against thresholds');
+  // ── Typed VA evidence gates (api / data / benchmark) ─────────────────────────
+  if (task_check && sddType(task_check.title) === 'VA' && vaKinds) {
+    const typedIssues = [];
+    if (vaKinds.includes('api')) {
+      if (!/\/api\//.test(evidenceText)) typedIssues.push('[api] no /api/ endpoint path in evidence — quote the requests that were asserted');
+      if (!/\b[1-5]\d\d\b/.test(evidenceText)) typedIssues.push('[api] no HTTP status codes in evidence — assert the actual response codes');
+    }
+    if (vaKinds.includes('data')) {
+      if (!/\b(prisma|database|db|migration|data model|model field|record|row|schema|enum|persisted|questionCount|count)\b/i.test(evidenceText)) {
+        typedIssues.push('[data] no data-model evidence — assert persisted state: DB rows, model fields, enum values, counts');
       }
-    } else {
-      if (!/\/api\//.test(evidenceText)) apiIssues.push('no /api/ endpoint path in evidence — quote the requests that were asserted');
-      if (!/\b[1-5]\d\d\b/.test(evidenceText)) apiIssues.push('no HTTP status codes in evidence — assert the actual response codes');
+      if (!/\d/.test(evidenceText)) typedIssues.push('[data] no concrete values in evidence — quote the actual counts/fields read back');
+    }
+    if (vaKinds.includes('benchmark')) {
+      if (!/\d+(\.\d+)?\s*(ms|s|MB|GB|%|fps|req\/s|ops)/i.test(evidenceText)) {
+        typedIssues.push('[benchmark] requires measured values with units (ms, MB, %, req/s …) compared against thresholds');
+      }
     }
     if (!/\b\d+\s+passed\b/i.test(evidenceText) && !/\bok\b.*\b\d+\b/i.test(evidenceText)) {
-      apiIssues.push('no test runner output — run the spec and paste the "N passed" result');
+      typedIssues.push('no test runner output — run the spec and paste the "N passed" result');
     }
-    if (apiIssues.length > 0) {
-      console.error(`✗ GATE FAIL — ${validationKind} VA task evidence is not verifiable.`);
-      for (const ai of apiIssues) console.error(`  · ${ai}`);
+    if (typedIssues.length > 0) {
+      console.error(`✗ GATE FAIL — VA evidence does not satisfy its declared validation types (${vaKinds.join(', ')}).`);
+      for (const ti of typedIssues) console.error(`  · ${ti}`);
       process.exit(1);
     }
   }
@@ -2049,7 +2129,11 @@ async function advanceTask(cfg, iState, slug) {
   // screenshot file path (.png/.jpg) in the evidence — same principle as the
   // image-gen visual gate above but for frontend/component work.
   const UI_VA_PATTERN = /gallery|modal|builder|view|form|upload|component|render|survey|page|badge|button|layout|nav|feed|dashboard/i;
-  if (task_check && sddType(task_check.title) === 'VA' && !isNonUiVa && UI_VA_PATTERN.test(task_check.title)) {
+  // UI gate fires when the VA declares kind 'ui', or (undeclared) when the title
+  // pattern-matches UI keywords — declared kinds are authoritative over the title.
+  const uiGateApplies = task_check && sddType(task_check.title) === 'VA' &&
+    (vaKinds ? vaKinds.includes('ui') : UI_VA_PATTERN.test(task_check.title));
+  if (uiGateApplies) {
     const gateIssues = [];
 
     // 1. Extract screenshot paths and verify each EXISTS on disk and is FRESH.
@@ -2210,43 +2294,79 @@ async function advanceTask(cfg, iState, slug) {
       console.error(`  { "filename.png": { "artifact": "${exKey}", "initiative": "<slug>", "created": "YYYY-MM-DD" } }`);
       process.exit(1);
     }
+
+    // ── Typed validation coverage gate ───────────────────────────────────────
+    // Required types derive from the FILES this EX changed (src/client → ui,
+    // src/server → api, prisma/services → data; override: validation_types).
+    // EACH required type must be covered by a companion VA declaring that kind
+    // — frontend, backend, and data-model validation pass INDIVIDUALLY.
+    {
+      const requiredTypes = exRequiredTypes(task_check.content);
+      if (requiredTypes.length > 0) {
+        const companions = tasks_check.filter(t => sddType(t.title) === 'VA' &&
+          new RegExp(`execution_ref:\\s*${exKey}\\b`).test(t.content || ''));
+        const covered = new Set();
+        companions.forEach(va => vaEffectiveKinds(va.content).forEach(k => covered.add(k)));
+        const missingTypes = requiredTypes.filter(t => !covered.has(t));
+        if (missingTypes.length > 0) {
+          console.error(`✗ GATE FAIL — typed validation coverage incomplete for ${exKey}.`);
+          console.error(`  Required (from changed files): ${requiredTypes.join(', ')}`);
+          console.error(`  Covered by companion VA(s):    ${covered.size ? [...covered].join(', ') : '(none)'}`);
+          console.error(`  MISSING: ${missingTypes.join(', ')}`);
+          console.error('');
+          console.error('  Each surface the change touches needs its own validation pass.');
+          console.error(`  Fix: PATCH the companion VA front matter with the missing kind(s) +`);
+          console.error('  a typed command that actually exercises that surface, e.g.:');
+          for (const mt of missingTypes) {
+            console.error(`    validation_command_${mt}: ${mt === 'ui' ? 'npx playwright test tests/e2e/specs/<flow>.spec.ts --reporter=line' : mt === 'api' ? 'npx playwright test tests/e2e/specs/<contract>.spec.ts --reporter=line' : 'docker compose exec -T app node scripts/<model-assert>.mjs'}`);
+          }
+          console.error('  Or, when a surface is genuinely untouched, override with: validation_types: <types>');
+          process.exit(1);
+        }
+      }
+    }
   }
 
-  // ── validation_command gate ──────────────────────────────────────────────────
-  // VA tasks MUST carry `validation_command: <cmd>` front matter — a runnable
-  // regression command (Playwright spec, pytest, benchmark script) that exits 0.
-  // It runs HERE, at advance time, against the real system. This is the
-  // mechanism that makes fake success impossible: no command, no advance;
-  // command fails, no advance. Descriptions of testing are not testing.
+  // ── Typed validation_command gate ────────────────────────────────────────────
+  // VA tasks MUST carry runnable validation commands — one per validation TYPE
+  // the change touches, each executed INDIVIDUALLY here and each required to
+  // exit 0. Front matter (any combination; general form still supported):
+  //   validation_command:      <cmd>   — general/requirement-level
+  //   validation_command_ui:   <cmd>   — rendered browser flow (Playwright)
+  //   validation_command_api:  <cmd>   — HTTP contract assertions
+  //   validation_command_data: <cmd>   — data model / functional state
+  // A typed command implies the kind, so declared kinds and typed commands
+  // stay consistent automatically. No command, no advance; any command fails,
+  // no advance. Descriptions of testing are not testing.
   {
-    const vcMatch = task_check?.content?.match(/validation_command:\s*(.+)/);
-    const valCmd = vcMatch ? vcMatch[1].trim() : null;
-    if (!valCmd && task_check && sddType(task_check.title) === 'VA') {
-      console.error('✗ GATE FAIL — VA task has no validation_command front matter.');
+    const cmds = extractValidationCommands(task_check?.content);
+    if (cmds.length === 0 && task_check && sddType(task_check.title) === 'VA') {
+      console.error('✗ GATE FAIL — VA task has no validation command front matter.');
       console.error('');
-      console.error('  Every VA must carry a runnable regression command that proves the');
-      console.error('  requirement end-to-end. Add to the front-matter YAML block:');
-      console.error('    validation_command: npx playwright test tests/e2e/specs/<spec>.spec.ts --reporter=line');
-      console.error('  (or a pytest/benchmark/curl-assert script — anything that exits non-zero on failure)');
+      console.error('  Every VA must carry runnable regression commands — one per validation');
+      console.error('  type the change touches. Add to the front-matter YAML block:');
+      console.error('    validation_command_ui:   npx playwright test tests/e2e/specs/<flow>.spec.ts --reporter=line');
+      console.error('    validation_command_api:  npx playwright test tests/e2e/specs/<contract>.spec.ts --reporter=line');
+      console.error('    validation_command_data: docker compose exec -T app node scripts/<model-assert>.mjs');
+      console.error('  (or validation_command: for a single requirement-level spec)');
       console.error('');
-      console.error(`  PATCH the task content, then re-run --advance. The command will be`);
-      console.error('  EXECUTED here and must exit 0 — this is what was missing when tasks');
-      console.error('  advanced on described-but-never-run testing.');
+      console.error('  PATCH the task content, then re-run --advance. Every command is');
+      console.error('  EXECUTED here individually and each must exit 0.');
       process.exit(1);
     }
-    if (valCmd) {
-      process.stdout.write(`\n→ Running validation_command: ${valCmd}\n`);
+    for (const c of cmds) {
+      process.stdout.write(`\n→ Running validation_command${c.kind ? `_${c.kind}` : ''}: ${c.cmd}\n`);
       try {
-        const vcOut = execSync(valCmd, { encoding: 'utf-8', timeout: 120000 });
-        process.stdout.write(`  ✅ validation_command exited 0\n`);
-        evidenceText = `[validation_command: ${valCmd}]\nExit: 0\nOutput:\n${vcOut.slice(0, 2000)}\n\n${evidenceText}`;
+        const vcOut = execSync(c.cmd, { encoding: 'utf-8', timeout: 600000 });
+        process.stdout.write(`  ✅ ${c.kind || 'general'} validation exited 0\n`);
+        evidenceText = `[validation_command${c.kind ? `_${c.kind}` : ''}: ${c.cmd}]\nExit: 0\nOutput:\n${vcOut.slice(0, 1500)}\n\n${evidenceText}`;
       } catch (vcErr) {
         const failLog = path.join(findGitRoot(), '.sdd-failures.log');
-        const entry = `[${new Date().toISOString()}] ${advanceTaskId} — validation_command FAILED\nCommand: ${valCmd}\nStdout: ${(vcErr.stdout || '').slice(0, 500)}\nStderr: ${(vcErr.stderr || '').slice(0, 500)}\n---\n`;
+        const entry = `[${new Date().toISOString()}] ${advanceTaskId} — validation_command${c.kind ? `_${c.kind}` : ''} FAILED\nCommand: ${c.cmd}\nStdout: ${(vcErr.stdout || '').slice(0, 500)}\nStderr: ${(vcErr.stderr || '').slice(0, 500)}\n---\n`;
         fs.appendFileSync(failLog, entry, 'utf-8');
-        console.error(`\n✗ GATE FAIL — validation_command exited non-zero.`);
-        console.error(`  Command: ${valCmd}`);
-        if (vcErr.stderr) console.error(`  Stderr:  ${vcErr.stderr.slice(0, 300)}`);
+        console.error(`\n✗ GATE FAIL — ${c.kind || 'general'} validation command exited non-zero.`);
+        console.error(`  Command: ${c.cmd}`);
+        if (vcErr.stderr) console.error(`  Stderr:  ${String(vcErr.stderr).slice(0, 300)}`);
         console.error(`  Logged to: ${failLog}`);
         console.error(`  Fix the failing command, then re-run --advance.`);
         process.exit(1);

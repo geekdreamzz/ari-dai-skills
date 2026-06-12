@@ -509,11 +509,30 @@ node skills/all-dai-sdd/loop.mjs --advance <taskId> --evidence "
 #   RS task: requiresResearch:true — start_research() FIRST, Sources from webSearchResults
 ```
 
-**Every VA MUST carry `validation_command` front matter — and it EXECUTES at advance time.** A runnable regression command (Playwright spec, pytest, benchmark) that proves the requirement end-to-end and exits non-zero on failure. `--advance` refuses VA tasks without one, runs it live, and blocks on failure. Descriptions of testing are not testing.
+**Typed validation: every EX needs frontend, backend, and data-model passes INDIVIDUALLY — where its files demand them.** Required types derive from the FILES the EX changed (noise-proof — instructions decay, file paths don't):
+
+| Changed files | Required type | Proves |
+|---|---|---|
+| `src/client/**`, `*.tsx` | `ui` | Rendered browser flow — Playwright run, fresh screenshots, geometry |
+| `src/server/**` | `api` | HTTP contract — endpoint paths + status codes asserted |
+| `prisma/**`, `*.service.ts` | `data` | Persisted state — DB rows, model fields, enums, counts read back |
+| (declared) | `benchmark` | Measured values with units vs thresholds |
+
+Override with `validation_types: <list>` on the EX when a surface is genuinely untouched. Companion VAs declare what they cover (`validation_kind: ui,api`) and carry one runnable command per type:
 
 ```yaml
-validation_command: npx playwright test tests/e2e/specs/<requirement>.spec.ts --reporter=line
+validation_kind: ui,api
+validation_command_ui:   npx playwright test tests/e2e/specs/<flow>.spec.ts --reporter=line
+validation_command_api:  npx playwright test tests/e2e/specs/<contract>.spec.ts --reporter=line
+validation_command_data: docker compose exec -T app node scripts/<model-assert>.mjs
 ```
+
+(`validation_command:` alone is still valid for a single requirement-level spec covering multiple types.)
+
+**Three structural gates enforce this — no instructions involved:**
+1. **EX `--advance`**: every required type (from changed files) must be covered by a companion VA declaring that kind — missing type, no advance.
+2. **VA `--advance`**: every command (typed and general) EXECUTES live and must exit 0; per-kind evidence gates apply for each declared kind (ui → fresh screenshots + runner output; api → endpoints + status codes; data → persisted values read back).
+3. **`--regress` / complete**: runs every command individually with kind labels and fails on ANY coverage gap across the board — a frontend-only test suite cannot close an initiative that touched the server or the schema.
 
 The command must test the REQUIREMENT, not the component: "modal shows success state" is a component test; "anonymous guest uploads an image and it renders in the gallery after reload" is the requirement. Write requirement-level specs.
 
