@@ -2446,8 +2446,9 @@ async function findNextTask(cfg, iState, slug) {
     const freshSlug = initiativeOverride || freshState?.currentInitiative;
     if (freshState && freshSlug) setActiveTask(freshState, freshSlug, next.id);
     // Tag the next task with sdd-active so focus-tree can resolve it without a static data-active-task-id.
-    // Idempotent — the API finds-or-creates, so calling it multiple times is safe.
-    await api('POST', `/api/v2/dataspheres/${cfg.dsId}/tasks/${next.id}/tags`, { name: 'sdd-active' })
+    // The tags endpoint expects `tagName` (NOT `name`) — a silent .catch hid this
+    // for the whole project, so Current Focus never lit up. Idempotent find-or-create.
+    await api('POST', `/api/v2/dataspheres/${cfg.dsId}/tasks/${next.id}/tags`, { tagName: 'sdd-active' })
       .catch(() => {});
     // Mark IN_PROGRESS on the board so the current ticket is visibly in flight
     // (Kanban card state + Current Focus widget both read this).
