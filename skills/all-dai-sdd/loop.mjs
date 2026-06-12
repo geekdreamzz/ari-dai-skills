@@ -2411,6 +2411,38 @@ async function findNextTask(cfg, iState, slug) {
 
   const next = cfg.schema === 2 ? findNextIncompleteV2(tasks) : findNextIncomplete(tasks);
 
+  // HARDENING: an IN (intake) card is a queued DECISION, not workable engineering.
+  // --next must never claim one as the active task — marking it IN_PROGRESS and
+  // tagging sdd-active made the dashboard's Current Focus spin on an intake row,
+  // which reads as live work the loop is not doing. Surface the decision instead
+  // and leave the board untouched.
+  if (next && cfg.schema === 2 && sddType(next.title) === 'IN') {
+    const hasChildren = tasks.some(x => v2ParentUuid(x.content) === next.id);
+    const ref = (next.content || '').match(/intake_ref:\s*(INT-\d+)/)?.[1] || null;
+    if (hasChildren) {
+      // Chain complete under it but rollup hasn't landed — reconcile, don't "work" it.
+      process.stdout.write(JSON.stringify({
+        status: 'reconcile-required',
+        links,
+        done, total, pct: Math.round(done / total * 100),
+        reason: `${sddKey(next.title)} is an IN chain root whose children are complete — it closes via rollup, not by being worked.`,
+        action: `node loop.mjs --reconcile --initiative ${slug}`,
+      }, null, 2));
+      return;
+    }
+    process.stdout.write(JSON.stringify({
+      status: 'awaiting-triage',
+      links,
+      done, total, pct: Math.round(done / total * 100),
+      reason: `Only intake decision card(s) remain (${sddKey(next.title)}). Intake cards are user decisions — the loop never marks them in-progress.`,
+      intakeCard: { id: next.id, key: sddKey(next.title), title: next.title, intakeRef: ref },
+      pendingIntake: advisoryIntake.map(i => ({ id: i.id, summary: i.summary, priority: i.priority, type: i.type })),
+      instruction: 'Surface the decision to the user. Then either --triage INT-NNN (build a remediation chain) or --triage INT-NNN --target-ref <KEY> (fold into existing work). Never set an IN card to IN_PROGRESS or tag it sdd-active.',
+      action: ref ? `node loop.mjs --triage ${ref} --initiative ${slug}` : 'resolve the intake decision with the user',
+    }, null, 2));
+    return;
+  }
+
   if (!next) {
     // 100% Done is NOT terminal while intake items are pending. A user bug report
     // (UAT fail, stakeholder feedback) re-opens the loop: triage → EX+VA remediation
@@ -2470,7 +2502,9 @@ async function findNextTask(cfg, iState, slug) {
 
   // Track the in-flight task in state + apply sdd-active tag so focus-tree widget scopes dynamically.
   // Both are non-fatal — if they fail the task briefing still works.
-  try {
+  // Guard: IN cards must NEVER be claimed (decision cards, handled above) — this
+  // protects against future selection-logic changes reintroducing the bug.
+  if (sddType(next.title) !== 'IN') try {
     const freshState = loadState();
     const freshSlug = initiativeOverride || freshState?.currentInitiative;
     if (freshState && freshSlug) setActiveTask(freshState, freshSlug, next.id);
