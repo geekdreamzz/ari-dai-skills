@@ -65,8 +65,14 @@ export function sanitizeSvg(rawSvg) {
   if (!vb) throw new Error('sanitizeSvg: <svg> needs a viewBox="0 0 W H"');
   const W = vb[1], H = vb[2];
   s = s.replace(/<svg[^>]*>/, `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" preserveAspectRatio="xMidYMid meet">`);
-  const bad = s.match(/&(?!amp;|lt;|gt;|quot;|apos;|#)[a-zA-Z]+;/);
-  if (bad) throw new Error(`sanitizeSvg: XML-invalid entity ${bad[0]} — add it to ENTITY_MAP`);
+  // Reject any '&' that is not a valid XML entity: bare ampersands ("Research & Co"),
+  // invalid named entities ("&middot;" missed by ENTITY_MAP), etc. All are XML parse
+  // errors that render as a broken image. Valid: &amp; &lt; &gt; &quot; &apos; &#NN; &#xNN;
+  const bad = s.match(/&(?!amp;|lt;|gt;|quot;|apos;|#\d+;|#x[0-9a-fA-F]+;)/);
+  if (bad) {
+    const near = s.slice(Math.max(0, bad.index - 20), bad.index + 25).replace(/\s+/g, ' ');
+    throw new Error(`sanitizeSvg: invalid '&' (bare ampersand or unmapped entity) near "${near}" — escape text as &amp; or add the entity to ENTITY_MAP`);
+  }
   return s;
 }
 
