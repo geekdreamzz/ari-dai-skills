@@ -1460,22 +1460,14 @@ async function addIntakeCommand(cfg, slug) {
     triagedAt: null,
     doneAt: null,
   };
-  // HARDENING: in v2 an IN board card is a SPINE ROOT — it must parent an
-  // RS→PC→…→EP chain. A founding initiative has exactly one. Follow-on intakes
-  // (UAT fixes) ADD to the existing plan: triage attaches their TK under an
-  // existing EP, so they never grow a chain and would sit as orphan IN roots
-  // (the "intake skips straight to artifact" the trace graph showed). So once a
-  // spine exists (the board already has an RS tier), DON'T create an IN board
-  // card — the JSON queue stays authoritative and triage links the TK via
-  // intake_ref. Only the founding intake (no RS yet) gets the spine IN card.
-  let spineExists = false;
-  if (cfg?.schema === 2) {
-    try {
-      const existing = await readBoard(cfg);
-      spineExists = existing.some(t => sddType(t.title) === 'RS');
-    } catch { /* if the board can't be read, fall through to default behavior */ }
-  }
-  if (cfg?.intakeGroupId && !spineExists) {
+  // Every intake is its OWN ticket in the Intake column — the captured request
+  // log. Intakes are queue cards: they need NOT each grow a full RS→…→EP spine.
+  // The founding intake owns the shared lifecycle spine; follow-on intakes ADD
+  // to the plan (triage attaches their TK under an existing EP and links back
+  // via intake_ref). Childless intake cards are expected and fine. (The thing
+  // that must NEVER happen is an ARTIFACT linking to an intake — that's gated
+  // separately: AR.parent must be a VC.)
+  if (cfg?.intakeGroupId) {
     try {
       const esc = s => (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
       // v2: intake cards ARE first-class IN-tier items — verbatim prompt, uuid
@@ -2033,13 +2025,16 @@ async function traceAuditCommand(cfg, iState, slug) {
       }
     }
   }
-  // HARDENING: chain-continuity — no spine node may skip its next column. In
-  // v2 every non-AR node must have at least one child of the correct next tier
-  // (IN->RS->PC->VP->SS->DO->EP->TK->VC->AR), and the initiative has exactly
-  // ONE intake spine root. This is what catches "intake goes straight to
-  // artifact": an IN/…/EP card with no downstream child, or stray IN roots.
+  // HARDENING: spine continuity — the lifecycle spine may not skip a column.
+  // INTAKE is exempt: each intake is its own queue ticket and need not grow a
+  // full chain (follow-on intakes attach their TK under an existing EP and link
+  // back via intake_ref). But every RS/PC/VP/SS/DO/EP/TK/VC that DOES sit on the
+  // spine must have a child of the correct next tier, and — the rule that
+  // matters most here — an ARTIFACT must belong to an EXECUTION chain: AR.parent
+  // is a VC, never an IN (enforced above via wrong-parent-tier; re-checked here
+  // with a clearer message so "artifact line crosses to an intake" can't recur).
   if ((iState.schema || 1) === 2 && tasks.some(t => sddType(t.title))) {
-    const NEXT_TIER = { IN: 'RS', RS: 'PC', PC: 'VP', VP: 'SS', SS: 'DO', DO: 'EP', EP: 'TK', TK: 'VC', VC: 'AR' };
+    const NEXT_TIER = { RS: 'PC', PC: 'VP', VP: 'SS', SS: 'DO', DO: 'EP', EP: 'TK', TK: 'VC', VC: 'AR' };
     const childTiersOf = new Map(); // parentId -> Set(child tiers)
     for (const t of tasks) {
       const p = v2ParentUuid(t.content || '');
@@ -2049,18 +2044,24 @@ async function traceAuditCommand(cfg, iState, slug) {
     }
     for (const t of tasks) {
       const ty = sddType(t.title);
-      if (!ty || ty === 'AR') continue;
+      if (!ty || !NEXT_TIER[ty]) continue; // IN exempt (queue ticket); AR is leaf
+      // Only spine nodes that ARE parented (on the chain) must continue it; a
+      // bare RS/EP with no parent is its own problem caught by missing-parent.
       const need = NEXT_TIER[ty];
       const kids = childTiersOf.get(t.id);
       if (!kids || !kids.has(need)) {
         ghosts.push({ kind: 'dead-end-chain', task: sddKey(t.title), missingChildTier: need,
-          fix: `every ${ty} must flow to a ${need} child — create the ${need} (parent_uuid: this node) or remove the dead-end card so the chain doesn't skip a column` });
+          fix: `every ${ty} must flow to a ${need} child — create the ${need} (parent_uuid: this node) so the spine doesn't skip a column` });
       }
     }
-    const inRoots = tasks.filter(t => sddType(t.title) === 'IN');
-    if (inRoots.length > 1) {
-      ghosts.push({ kind: 'multiple-intake-roots', count: inRoots.length, keys: inRoots.map(t => sddKey(t.title)),
-        fix: 'an initiative has ONE founding intake spine root; follow-on intakes ADD to the plan (TK under an existing EP) and live in the JSON queue, not as extra IN cards' });
+    for (const t of tasks) {
+      if (sddType(t.title) !== 'AR') continue;
+      const parent = byId.get(v2ParentUuid(t.content || ''));
+      if (!parent || sddType(parent.title) !== 'VC') {
+        ghosts.push({ kind: 'artifact-not-on-execution-chain', task: sddKey(t.title),
+          parentTier: parent ? sddType(parent.title) : 'NONE',
+          fix: 'an artifact ALWAYS belongs to an execution chain — AR.parent_uuid must be a VC (which is under a TK). Never link an artifact to an intake or any other tier.' });
+      }
     }
   }
   console.log(JSON.stringify({ schema: iState.schema || 1, tasks: tasks.length, ghosts: ghosts.length, detail: ghosts, links: boardLinks(cfg, slug) }, null, 2));
