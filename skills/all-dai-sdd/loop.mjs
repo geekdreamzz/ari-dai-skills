@@ -2045,13 +2045,16 @@ async function traceAuditCommand(cfg, iState, slug) {
     for (const t of tasks) {
       const ty = sddType(t.title);
       if (!ty || !NEXT_TIER[ty]) continue; // IN exempt (queue ticket); AR is leaf
-      // Only spine nodes that ARE parented (on the chain) must continue it; a
-      // bare RS/EP with no parent is its own problem caught by missing-parent.
+      // Only require the next-tier child once the node is DONE. A DONE node must
+      // have produced its downstream (a Done TK has a VC; a Done VC has its AR —
+      // ARs are auto-created by the loop at VC advance, so an OPEN VC legitimately
+      // has none yet). An in-progress/just-authored plan is not a "skip".
+      if (!t.isDone) continue;
       const need = NEXT_TIER[ty];
       const kids = childTiersOf.get(t.id);
       if (!kids || !kids.has(need)) {
-        ghosts.push({ kind: 'dead-end-chain', task: sddKey(t.title), missingChildTier: need,
-          fix: `every ${ty} must flow to a ${need} child — create the ${need} (parent_uuid: this node) so the spine doesn't skip a column` });
+        ghosts.push({ kind: 'dead-end-chain', task: sddKey(t.title), missingChildTier: need, done: true,
+          fix: `${sddKey(t.title)} is DONE but has no ${need} child — a completed ${ty} must flow to a ${need} so the spine doesn't skip a column` });
       }
     }
     for (const t of tasks) {
