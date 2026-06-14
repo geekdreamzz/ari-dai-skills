@@ -29,6 +29,7 @@ A draft "sounds like AI" because of a recognizable set of habits. Remove them:
 | **Fragment-for-drama** | "There is only hope. And every tool is built on hope." | Sentence fragments deployed for punch. Fold into a real sentence. |
 | **Clickbait / cutesy headings** | "The Spec Wars of 2026" | Use plain, descriptive headings: "Where current tooling stops". |
 | **Self-announcing transitions** | "Here is what separates X from Y:" / "Now, here's the thing:" | Just make the point. "The other structural difference is where state lives." |
+| **Announcing the subject/thesis** | "…is the subject of this post." / "the rest of this post describes one answer to" / "In this piece we explore…" | Don't label the topic — state it and move. "That gap is structural, it is measurable, and no tool closes it for you." Just do it; don't say you're doing it. |
 | **Em-dash drama** | three em-dash asides per paragraph | Em-dashes are fine sparingly. Stacked, they read as generated. |
 | **Marketing closers** | "If you've ever been burned by X, this is worth 5 minutes. The gap is real, it is measurable…" | End on substance, not a CTA pep-talk. |
 | **Hype intensifiers** | "revolutionary", "game-changing", "seamless", "powerful", "robust", "delve", "leverage", "in today's fast-paced world" | Cut or replace with a concrete claim. |
