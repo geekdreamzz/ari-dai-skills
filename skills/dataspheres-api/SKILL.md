@@ -498,6 +498,37 @@ curl -X POST "$DATASPHERES_BASE_URL/api/v1/dataspheres/$DATASPHERES_DEFAULT_URI/
 
 ---
 
+### `/dataspheres-api edit newsletter issue <issueId> in <uri>`
+
+Edit the content of an existing newsletter issue. Accepts a `dsk_` API key (unlike the
+in-app editor, which is JWT-only), so ARI and ari-dai-skills can both use it. Only the
+fields you send are changed; status transitions (approve/send) are NOT handled here.
+
+```bash
+NL="<newsletterId>"; ISSUE="<issueId>"; URI="<datasphere-uri>"
+
+# Discover ids if you don't have them
+curl -s "$DAI_BASE/api/v1/dataspheres/$URI/newsletters" \
+  -H "Authorization: Bearer $DAI_API_KEY" | jq '.newsletters[] | {id, name}'
+curl -s "$DAI_BASE/api/v1/dataspheres/$URI/newsletters/$NL/issues" \
+  -H "Authorization: Bearer $DAI_API_KEY" | jq '.issues[] | {id, subject, status}'
+
+# Read the current issue (full content)
+curl -s "$DAI_BASE/api/v1/dataspheres/$URI/newsletters/$NL/issues/$ISSUE" \
+  -H "Authorization: Bearer $DAI_API_KEY" | jq '{subject, status, contentHtml}'
+
+# Edit it — send only the fields to change
+curl -s -X PUT "$DAI_BASE/api/v1/dataspheres/$URI/newsletters/$NL/issues/$ISSUE" \
+  -H "Authorization: Bearer $DAI_API_KEY" -H "Content-Type: application/json" \
+  -d '{"subject":"Updated subject","contentHtml":"<p>New body.</p>","topicsCovered":["update"]}'
+```
+
+Editable fields: `subject`, `contentHtml`, `contentText`, `contentJson`, `visualConfig`,
+`adminNotes`, `adminImageUrls`, `topicsCovered`, `contextSummary`, `customUri`,
+`scheduledFor` (ISO date-time, or `null` to clear). Requires MODERATOR+ in the datasphere.
+
+---
+
 ## API Reference (Quick)
 
 | Method | Path | Role | Description |
@@ -518,6 +549,10 @@ curl -X POST "$DATASPHERES_BASE_URL/api/v1/dataspheres/$DATASPHERES_DEFAULT_URI/
 | GET | `/api/v1/dataspheres/:uri/folders` | PARTICIPANT+ | List doc folders (sorted) |
 | PUT | `/api/v1/dataspheres/:uri/folders/:id` | MODERATOR+ | Update folder (name, sortOrder) |
 | POST | `/api/v1/dataspheres/:uri/posts` | PARTICIPANT+ | Create a post |
+| GET | `/api/v1/dataspheres/:uri/newsletters` | MODERATOR+ | List newsletters (+ issue counts) |
+| GET | `/api/v1/dataspheres/:uri/newsletters/:newsletterId/issues` | MODERATOR+ | List issues of a newsletter |
+| GET | `/api/v1/dataspheres/:uri/newsletters/:newsletterId/issues/:issueId` | MODERATOR+ | Get a newsletter issue |
+| PUT | `/api/v1/dataspheres/:uri/newsletters/:newsletterId/issues/:issueId` | MODERATOR+ | Edit a newsletter issue (content only) |
 | GET | `/api/v1/dataspheres/:uri/sequencers` | PARTICIPANT+ | List sequencers |
 | GET | `/api/v1/dataspheres/:uri/sequencers/:id` | PARTICIPANT+ | Get sequencer + recent executions |
 | POST | `/api/v1/dataspheres/:uri/sequencers` | MODERATOR+ | Create scheduled web search sequencer |
