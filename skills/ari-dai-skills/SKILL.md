@@ -376,6 +376,49 @@ echo "=== LAST 5 EVENTS ===" && curl -s "$DAI_BASE/api/v2/reality/$REALITY_ID/de
 
 ---
 
+## 11. Upload a file + embed it in a page or task
+
+Upload ANY file (image, screenshot, PDF report, video, audio, doc) and get back a
+**public, permanent URL** plus ready-to-paste TipTap `embedMarkup`. This is the
+canonical "upload then embed" flow for API-key callers.
+
+**Use `POST /api/v1/dataspheres/:uri/media/upload`** — multipart field `file`, any
+mime type. **Do NOT use `/api/media/upload`** — that one is JWT-only and returns 401
+for `dsk_` API keys.
+
+```bash
+URI="my-datasphere"
+# 1. Upload (any mime type). Returns { id, url, mimeType, embedMarkup }.
+RESP=$(curl -s -X POST "$DAI_BASE/api/v1/dataspheres/$URI/media/upload" \
+  -H "Authorization: Bearer $DAI_API_KEY" \
+  -F "file=@./screenshot.png" -F "caption=Dashboard after the fix")
+URL=$(echo "$RESP"   | jq -r '.url')          # public, never expires
+EMBED=$(echo "$RESP" | jq -r '.embedMarkup')  # ready-to-paste TipTap markup
+```
+
+The returned `embedMarkup` is the exact content markup to embed:
+- **image** → `<figure data-image-figure data-alignment="center" data-size="large"><img src="URL" alt="..."><figcaption>...</figcaption></figure>` (renders inline)
+- **video/audio** → a `<video>`/`<audio>` player
+- **PDF / report / other** → a `📄 <a href="URL">…</a>` download link
+
+**Embed into a page** — PUT the markup into the page `content`:
+
+```bash
+curl -s -X PUT "$DAI_BASE/api/v1/dataspheres/$URI/pages/my-page" \
+  -H "Authorization: Bearer $DAI_API_KEY" -H "Content-Type: application/json" \
+  -d "$(jq -n --arg c "<h2>Results</h2><p>See below:</p>$EMBED" '{content:$c}')"
+```
+
+**Embed into a task** — PATCH the markup into the task `content` (same idea):
+`PATCH /api/v1/dataspheres/$URI/tasks/$TASK_ID` with `{ "content": "...<figure …>…" }`.
+
+Notes:
+- The `url` is public (no auth) and permanent — safe to embed on public pages.
+- Min role MODERATOR; scope `media:upload` (empty-scope keys have it). Max 100 MB.
+- ARI (in-app) can do the same via the `upload_media_file` registry tool.
+
+---
+
 ## Key Facts
 
 | Thing | Detail |

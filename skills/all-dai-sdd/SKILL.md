@@ -1908,13 +1908,20 @@ curl -X PATCH "$DATASPHERES_BASE_URL/api/v2/dataspheres/<dsId>/tasks/<taskId>" \
 
 ### Step 2: Upload Playwright screenshots
 
+Upload via the dsk_-key-capable endpoint **`POST /api/v1/dataspheres/:uri/media/upload`**
+(field `file`, ANY mime type — png, pdf, mp4, etc.). It returns a **public, permanent
+`url`** plus ready-to-embed `embedMarkup`. `$DS_URI` is the initiative's datasphere
+(e.g. `dataspheres-ai`).
+
+> Do NOT use `/api/media/upload` — that endpoint is JWT-only and rejects `dsk_` API keys (401).
+
 ```bash
 SCREENSHOT_URLS=""
 shopt -s nullglob
-for SHOT in tests/e2e/screenshots/**/*.png; do
-  RESP=$(curl -s -X POST "$DATASPHERES_BASE_URL/api/media/upload" \
+for SHOT in tests/e2e/screenshots/**/*.png screenshots/**/*.png; do
+  RESP=$(curl -s -X POST "$DATASPHERES_BASE_URL/api/v1/dataspheres/$DS_URI/media/upload" \
     -H "Authorization: Bearer $DATASPHERES_API_KEY" \
-    -F "file=@$(realpath $SHOT)")
+    -F "file=@$(realpath $SHOT)" -F "caption=$(basename $SHOT)")
   URL=$(echo "$RESP" | sed -n 's/.*"url":"\([^"]*\)".*/\1/p')
   [ -n "$URL" ] && SCREENSHOT_URLS="${SCREENSHOT_URLS}\"$URL\","
 done
@@ -2353,13 +2360,28 @@ This is the self-healing contract. Discovering new facts and silently coding aro
 - **Email patterns**: address format (e.g. `reply+{token}@reply.domain`), SendGrid webhook shape
 - **What must NOT break**: existing models or endpoints that share the same DB tables
 
-### Artifact attachments (images, files, search results)
+### Artifact attachments (images, files, reports, search results)
 
-The Dataspheres AI task API supports file attachments and image uploads on comments, not on task content directly. To attach research artifacts (screenshots, search results, design mockups):
+Upload ANY artifact (screenshot, image, PDF report, mockup, video) and embed it
+directly in task/page content OR attach it to a comment. Use the dsk_-capable
+endpoint — NOT `/api/media/upload` (JWT-only, 401s on API keys):
 
-1. Upload via `POST /api/media/upload` with `Authorization: Bearer $KEY`
-2. Post a comment on the North Star with `screenshots: [<url1>, <url2>]`
-3. Reference the comment in the Codebase Context section: `<!-- see attached screenshots in comments -->`
+```bash
+# Upload — field "file", any mime type. Returns { url, embedMarkup, id }.
+RESP=$(curl -s -X POST "$DATASPHERES_BASE_URL/api/v1/dataspheres/$DS_URI/media/upload" \
+  -H "Authorization: Bearer $DATASPHERES_API_KEY" \
+  -F "file=@./report.pdf" -F "caption=Benchmark report")
+URL=$(echo "$RESP"      | sed -n 's/.*"url":"\([^"]*\)".*/\1/p')
+EMBED=$(echo "$RESP"    | python3 -c "import sys,json;print(json.load(sys.stdin)['embedMarkup'])")
+```
+
+- **Embed in task/page content:** paste `embedMarkup` straight into the `content`
+  field (PATCH a task, or PUT a page). Images render inline; PDFs/files render as a
+  download link. The `url` is public + permanent (safe to embed on public pages).
+- **Attach to a comment** instead: post a comment with `screenshots: [<url1>, <url2>]`.
+- **AR media-artifact gate:** record the `url` + sha256 + byte size in the AR (see the
+  AR content rules). A real uploaded `url` satisfies the media-artifact validation;
+  a local file path does not.
 
 ---
 
