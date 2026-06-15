@@ -124,6 +124,43 @@ Settings are on the Page model, set during create or via PUT update:
 - Edit: `/app/{ds-uri}/surveys/{pageId}/edit`
 - List: `/app/{ds-uri}/surveys`
 
+## Live gallery (QR photo/video wall)
+
+A `LIVE_GALLERY` is a survey where guests upload photos/videos via a QR/link — every
+upload is a response. Switching a survey to `LIVE_GALLERY` mode auto-creates the upload
+question. Create + gate + publish in two `dsk_`-key REST calls (works for ari-dai-skills):
+
+```bash
+# 1. Create the survey page (returns the pageId)
+PID=$(curl -s -X POST "$DAI_BASE/api/surveys" -H "Authorization: Bearer $DAI_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"datasphereId":"<dsId>","title":"Wedding — Live Gallery","slug":"live-gallery","content":"<p>Share your moments.</p>"}' \
+  | jq -r '.data.id')
+
+# 2. Make it a LIVE_GALLERY, gate it to a newsletter's subscribers, and publish
+curl -s -X PATCH "$DAI_BASE/api/surveys/$PID" -H "Authorization: Bearer $DAI_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"surveyMode":"LIVE_GALLERY","status":"PUBLISHED",
+       "surveyAccessLevel":"EMAIL_ALLOWLIST","accessWhitelistNewsletterId":"<newsletterId>",
+       "requireAuth":true,"allowAnonymous":false}'
+```
+
+**Access levels (`surveyAccessLevel`):** `PUBLIC`, `DATASPHERE_MEMBERS`, `EMAIL_ALLOWLIST`,
+`AUTHENTICATED_ONLY`, `INVITE_CODE`, `NFT_GATED`.
+
+**Gate to a newsletter's subscribers** (give the newsletter audience access): set
+`surveyAccessLevel=EMAIL_ALLOWLIST` + `accessWhitelistNewsletterId=<newsletterId>` +
+`requireAuth=true` + `allowAnonymous=false`. Access is checked **live** against the
+respondent's logged-in email — only ACTIVE/CONFIRMED subscribers of that newsletter get
+in, and it stays in sync as the list changes. (Alternative: `accessWhitelistDatasetId` +
+`accessEmailColumn` to gate by a dataset's email column.)
+
+Gallery endpoints are mounted at `/api/public/surveys`: `GET /:pageId/gallery-media` (feed)
+and `POST /:pageId/gallery-upload` (upload) — both enforce the gate (non-subscribers get
+401). Guests reach the wall at `/s/{ds-uri}/{slug}`. The `create_survey` and `update_survey`
+ARI tools expose `surveyMode: LIVE_GALLERY`, the gated access levels, and
+`accessWhitelistNewsletterId`, so ARI can run the same flow.
+
 ## Workflows
 
 ### `/survey create <ds-uri>`
