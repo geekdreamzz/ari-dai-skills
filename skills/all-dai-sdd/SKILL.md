@@ -1286,14 +1286,39 @@ Output the following, then stop:
 
 **CRITICAL — no emojis or raw Unicode anywhere in this page.** Use HTML entities only. No custom CSS `style=` attributes — the step-12 dashboard uses ONLY native platform widgets. Custom inline styles belong on the close-out Next Steps page, not here.
 
-All 5 sections are required. Replace `<dsId>`, `<uri>`, `<planModeId>`, `<Project>`, `<one-line description>` with real values.
+All 5 sections are required. Section 2 (Research Summary) is strongly recommended. Replace `<dsId>`, `<uri>`, `<planModeId>`, `<Project>`, `<one-line description>` with real values.
 
 ```html
 <!-- SECTION 1: Title + subtitle — plain text, no inline styles -->
 <h1><Project> &mdash; Initiative Dashboard</h1>
 <p><one-line description of the initiative></p>
 
-<!-- SECTION 2: Initiative Summary — ONE widget. progress-summary embeds the
+<!-- SECTION 2 (RECOMMENDED): Research Summary & Hypothesis
+     Synthesized from RS tier tasks and PC-001. Put this BEFORE the progress widget
+     so stakeholders understand WHY before they see HOW FAR. Include:
+       - Core Problem: what failed before (or the gap being solved) — one paragraph
+       - Key Research Findings: bulleted list of non-obvious findings from RS tasks
+         that shaped the approach (API limits, prompt quirks, model constraints,
+         competitor gaps — whatever is surprising or counter-intuitive)
+       - Hypothesis & Approach: one paragraph describing the specific pipeline or
+         technique being validated, and why it addresses the root cause
+     Use <!-- #research-summary --> anchor so the conductor can locate the block. -->
+<h2>Research Summary &amp; Hypothesis <!-- #research-summary --></h2>
+
+<h3>Core Problem <!-- #problem --></h3>
+<p><what failed before or the gap being addressed></p>
+
+<h3>Key Research Findings <!-- #findings --></h3>
+<ul class="tiptap-bullet-list">
+  <li><p><finding 1 — surprising or non-obvious constraint that shaped the design></p></li>
+  <li><p><finding 2></p></li>
+  <li><p><finding N></p></li>
+</ul>
+
+<h3>Hypothesis &amp; Approach <!-- #hypothesis --></h3>
+<p><specific pipeline / technique being validated, why it addresses the root cause></p>
+
+<!-- SECTION 3: Initiative Summary — ONE widget. progress-summary embeds the
      Current Focus subtree internally: donut ring + counts + the in-flight
      validation ticket's subtree (scoped via the live sdd-active tag; compact
      idle card when the loop is idle). Do NOT add a separate focus-tree widget
@@ -1308,7 +1333,7 @@ All 5 sections are required. Replace `<dsId>`, `<uri>`, `<planModeId>`, `<Projec
      data-refresh-interval="60"></div>
 <!-- /focus -->
 
-<!-- SECTION 3: Trace Graph widget — 6-tier swimlane (Research > NS > EP > EX > VA > Artifacts) -->
+<!-- SECTION 4: Trace Graph widget — 6-tier swimlane (Research > NS > EP > EX > VA > Artifacts) -->
 <h2>Trace Graph</h2>
 <div data-type="plannerWidget"
      data-widget-type="trace-graph"
@@ -1316,7 +1341,7 @@ All 5 sections are required. Replace `<dsId>`, `<uri>`, `<planModeId>`, `<Projec
      data-datasphere-uri="<uri>"
      data-plan-mode-id="<planModeId>"></div>
 
-<!-- SECTION 4: Activity feed -->
+<!-- SECTION 5: Activity feed -->
 <h2>Live Activity</h2>
 <div data-type="plannerWidget"
      data-widget-type="task-activity-feed"
@@ -1738,16 +1763,17 @@ node sdd-conductor.mjs status  # shows trackerUrl warning if missing
 
 ### Dashboard template enforcement — 6 required sections
 
-Every SDD dashboard page **must** contain exactly these six sections. `dashboard-check` verifies them:
+Every SDD dashboard page **must** contain exactly these six sections. `dashboard-check` verifies them. Section 2 (Research Summary) is strongly recommended and should always be included.
 
 | # | Section | Widget / Element | Failure mode if missing |
 |---|---|---|---|
 | 1 | Title + subtitle | Plain `<h1>` and `<p>` | No context for visitors |
-| 2 | Initiative Summary | `data-widget-type="progress-summary"` | No progress ring / Done counts |
-| 3 | Current Focus | `<!-- #focus -->` heading + conductor-generated hierarchy table | No visible NS→EP→EX→VA in-progress chain |
-| 4 | Trace Graph | `data-widget-type="trace-graph"` | No NS→EP→EX→VA→Artifacts swimlane |
-| 5 | Live Activity | `data-widget-type="task-activity-feed"` | No comment/screenshot stream |
-| 6 | Doc footer | `<div data-type="doc-footer"></div>` | Missing footer (truncated look) |
+| 2 | Research Summary *(recommended)* | `<!-- #research-summary -->` — Core Problem + Key Findings + Hypothesis | Stakeholders see progress without understanding WHY; root-cause misses recur |
+| 3 | Initiative Summary | `data-widget-type="progress-summary"` | No progress ring / Done counts |
+| 4 | Current Focus | `<!-- #focus -->` heading + conductor-generated hierarchy table | No visible NS→EP→EX→VA in-progress chain |
+| 5 | Trace Graph | `data-widget-type="trace-graph"` | No NS→EP→EX→VA→Artifacts swimlane |
+| 6 | Live Activity | `data-widget-type="task-activity-feed"` | No comment/screenshot stream |
+| 7 | Doc footer | `<div data-type="doc-footer"></div>` | Missing footer (truncated look) |
 
 **Section 3 — Current Focus — is conductor-generated.** It is NOT a platform widget. It is an HTML hierarchy table showing every in-progress NS, its in-progress Epics, the active EX task(s), and pending VA task(s). The conductor generates and PATCH-es it on every `update-dashboard` call.
 
