@@ -1286,27 +1286,33 @@ Output the following, then stop:
 
 **CRITICAL — no emojis or raw Unicode anywhere in this page.** Use HTML entities only. No custom CSS `style=` attributes — the step-12 dashboard uses ONLY native platform widgets. Custom inline styles belong on the close-out Next Steps page, not here.
 
-All 5 sections are required. Section 2 (Research Summary) is strongly recommended. Replace `<dsId>`, `<uri>`, `<planModeId>`, `<Project>`, `<one-line description>` with real values.
+All 6 sections are required. Replace `<dsId>`, `<uri>`, `<planModeId>`, `<Project>`, `<one-line description>` with real values.
+
+**Section 2 (Research Summary &amp; Hypothesis) is human-written narrative, NOT a widget.** It is the stakeholder-readable story of what intake and research surfaced: the core problem, the key findings, and the plan to address them. It is sourced from the initiative's Research (RS) tasks and North Star — distill them into prose a non-engineer can read in 60 seconds. Placeholder text (`TODO`, `TBD`, the literal `<...>` stubs) is a gate failure: this section must contain real findings before any task advances.
 
 ```html
 <!-- SECTION 1: Title + subtitle — plain text, no inline styles -->
 <h1><Project> &mdash; Initiative Dashboard</h1>
 <p><one-line description of the initiative></p>
 
-<!-- SECTION 2 (RECOMMENDED): Research Summary & Hypothesis
-     Synthesized from RS tier tasks and PC-001. Put this BEFORE the progress widget
-     so stakeholders understand WHY before they see HOW FAR. Include:
+<!-- SECTION 2 (REQUIRED — gated by loop --advance + dashboard-check): Research Summary & Hypothesis
+     Human-written narrative, no widget. Synthesized from RS tier tasks and the
+     North Star. Put this BEFORE the progress widget so stakeholders understand WHY
+     before they see HOW FAR. All three sub-anchors are required and must carry real
+     prose/findings — placeholder stubs are a gate failure. Include:
        - Core Problem: what failed before (or the gap being solved) — one paragraph
        - Key Research Findings: bulleted list of non-obvious findings from RS tasks
          that shaped the approach (API limits, prompt quirks, model constraints,
          competitor gaps — whatever is surprising or counter-intuitive)
        - Hypothesis & Approach: one paragraph describing the specific pipeline or
-         technique being validated, and why it addresses the root cause
-     Use <!-- #research-summary --> anchor so the conductor can locate the block. -->
+         technique being validated, why it addresses the root cause, and the outcome
+         gate that proves it worked
+     Use the <!-- #research-summary -->, <!-- #problem -->, <!-- #findings -->, and
+     <!-- #hypothesis --> anchors so the gates can locate the block. -->
 <h2>Research Summary &amp; Hypothesis <!-- #research-summary --></h2>
 
 <h3>Core Problem <!-- #problem --></h3>
-<p><what failed before or the gap being addressed></p>
+<p><what failed before or the gap being addressed — concrete, specific, one paragraph></p>
 
 <h3>Key Research Findings <!-- #findings --></h3>
 <ul class="tiptap-bullet-list">
@@ -1316,7 +1322,7 @@ All 5 sections are required. Section 2 (Research Summary) is strongly recommende
 </ul>
 
 <h3>Hypothesis &amp; Approach <!-- #hypothesis --></h3>
-<p><specific pipeline / technique being validated, why it addresses the root cause></p>
+<p><specific pipeline / technique being validated, why it addresses the root cause, and the outcome gate that proves it worked></p>
 
 <!-- SECTION 3: Initiative Summary — ONE widget. progress-summary embeds the
      Current Focus subtree internally: donut ring + counts + the in-flight
@@ -1350,7 +1356,7 @@ All 5 sections are required. Section 2 (Research Summary) is strongly recommende
      data-plan-mode-id="<planModeId>"></div>
 ```
 
-**The dashboard template is a hard --advance gate.** loop.mjs fetches the registered dashboard before any task advances and fails on: missing h1; missing or duplicate `progress-summary`/`trace-graph`/`task-activity-feed` widgets; a standalone `focus-tree` widget (it duplicates the focus subtree already embedded in progress-summary); a standalone "Current Focus" heading. A drifted dashboard blocks the entire loop until fixed. (doc-footer is not gated: the server strips it from saved content and renders the platform footer at view time.)
+**The dashboard template is a hard --advance gate.** loop.mjs fetches the registered dashboard before any task advances and fails on: missing h1; missing the Research Summary section (`<!-- #research-summary -->`) or any of its three sub-anchors (`<!-- #problem -->`, `<!-- #findings -->`, `<!-- #hypothesis -->`); a Research Summary section still carrying placeholder text (`TODO`/`TBD`/`<...>` stubs) or too thin to be a real summary; missing or duplicate `progress-summary`/`trace-graph`/`task-activity-feed` widgets; a standalone `focus-tree` widget (it duplicates the focus subtree already embedded in progress-summary); a standalone "Current Focus" heading. A drifted dashboard blocks the entire loop until fixed. (doc-footer is not gated: the server strips it from saved content and renders the platform footer at view time.)
 
 The `data-datasphere-uri` attribute enables deep links from the activity feed — each comment card links to its task in the planner at `/app/<uri>/planner?mode=<planModeId>&taskId=<taskId>`.
 
@@ -1763,17 +1769,19 @@ node sdd-conductor.mjs status  # shows trackerUrl warning if missing
 
 ### Dashboard template enforcement — 6 required sections
 
-Every SDD dashboard page **must** contain exactly these six sections. `dashboard-check` verifies them. Section 2 (Research Summary) is strongly recommended and should always be included.
+Every SDD dashboard page **must** contain these sections. `dashboard-check` verifies them:
 
 | # | Section | Widget / Element | Failure mode if missing |
 |---|---|---|---|
 | 1 | Title + subtitle | Plain `<h1>` and `<p>` | No context for visitors |
-| 2 | Research Summary *(recommended)* | `<!-- #research-summary -->` — Core Problem + Key Findings + Hypothesis | Stakeholders see progress without understanding WHY; root-cause misses recur |
+| 2 | Research Summary &amp; Hypothesis | `<!-- #research-summary -->` heading + `<!-- #problem -->`, `<!-- #findings -->`, `<!-- #hypothesis -->` — human-written prose | No WHY: stakeholders can't see the problem, findings, or the plan |
 | 3 | Initiative Summary | `data-widget-type="progress-summary"` | No progress ring / Done counts |
 | 4 | Current Focus | `<!-- #focus -->` heading + conductor-generated hierarchy table | No visible NS→EP→EX→VA in-progress chain |
 | 5 | Trace Graph | `data-widget-type="trace-graph"` | No NS→EP→EX→VA→Artifacts swimlane |
 | 6 | Live Activity | `data-widget-type="task-activity-feed"` | No comment/screenshot stream |
 | 7 | Doc footer | `<div data-type="doc-footer"></div>` | Missing footer (truncated look) |
+
+**Section 2 — Research Summary &amp; Hypothesis — is human-written, not a widget.** It is distilled from the initiative's RS tasks + North Star into a 60-second stakeholder read: Core Problem, Key Research Findings, Hypothesis and Approach. `dashboard-check` and the loop `--advance` gate both fail it if any sub-anchor is missing or if the body still carries placeholder stubs (`TODO`/`TBD`/`<...>`).
 
 **Section 3 — Current Focus — is conductor-generated.** It is NOT a platform widget. It is an HTML hierarchy table showing every in-progress NS, its in-progress Epics, the active EX task(s), and pending VA task(s). The conductor generates and PATCH-es it on every `update-dashboard` call.
 
@@ -1792,6 +1800,14 @@ This command reads the live board, builds the hierarchy of all in-progress tasks
 ```html
 <h1><Project> &mdash; Initiative Dashboard</h1>
 <p><one-line description></p>
+
+<h2>Research Summary and Hypothesis <!-- #research-summary --></h2>
+<h3>Core Problem <!-- #problem --></h3>
+<p><what intake uncovered — concrete, one paragraph></p>
+<h3>Key Research Findings <!-- #findings --></h3>
+<ul class="tiptap-bullet-list"><li><p><finding></p></li></ul>
+<h3>Hypothesis and Approach <!-- #hypothesis --></h3>
+<p><the plan to address it + the outcome gate that proves it worked></p>
 
 <h2>Initiative Summary</h2>
 <div data-type="plannerWidget" data-widget-type="progress-summary"

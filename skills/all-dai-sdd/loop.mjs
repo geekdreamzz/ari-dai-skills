@@ -2756,6 +2756,42 @@ async function advanceTask(cfg, iState, slug) {
     }
     const dashIssues = [];
     if (!/<h1[^>]*>/.test(pageHtml)) dashIssues.push('missing <h1> title');
+    // Research Summary & Hypothesis — human-written narrative section (SKILL.md
+    // § Dashboard Page Template, SECTION 2). Gates the stakeholder-readable story
+    // of intake + research: Core Problem, Key Research Findings, Hypothesis/Approach.
+    // Required so a dashboard never ships without the WHY and the plan to address it.
+    const RS_ANCHORS = [
+      { a: 'research-summary', label: 'Research Summary section (<!-- #research-summary -->)' },
+      { a: 'problem',          label: 'Core Problem (<!-- #problem -->)' },
+      { a: 'findings',         label: 'Key Research Findings (<!-- #findings -->)' },
+      { a: 'hypothesis',       label: 'Hypothesis and Approach (<!-- #hypothesis -->)' },
+    ];
+    for (const { a, label } of RS_ANCHORS) {
+      if (!new RegExp(`<!--\\s*#${a}\\s*-->`).test(pageHtml)) {
+        dashIssues.push(`missing Research Summary anchor: ${label}`);
+      }
+    }
+    // Content quality — the section body (from the #research-summary h2 to the next
+    // <h2>) must carry real prose, not the template's placeholder stubs.
+    {
+      const rsIdx = pageHtml.search(/<!--\s*#research-summary\s*-->/i);
+      if (rsIdx !== -1) {
+        const after = pageHtml.slice(rsIdx);
+        const bodyMatch = after.match(/<\/h2>([\s\S]*?)(?:<h2[\s>])/i);
+        const body = bodyMatch ? bodyMatch[1] : after;
+        const text = body.replace(/<[^>]*>/g, ' ').replace(/&[a-z#0-9]+;/gi, ' ').replace(/\s+/g, ' ').trim();
+        // Catches TODO/TBD/placeholder plus the template's angle-bracket prose
+        // stubs (e.g. "<what failed before>", "<finding N>", "<specific pipeline...>").
+        // Real HTML tags/attributes contain = or " and are excluded; multi-word
+        // angle-bracket text with neither is always a leftover stub.
+        const PLACEHOLDER = /\bTODO\b|\bTBD\b|placeholder|<\s*[a-z][^>="']*\s[^>="']*>/i;
+        if (PLACEHOLDER.test(body)) {
+          dashIssues.push('Research Summary still contains placeholder text (TODO/TBD/<...> stubs) — fill #problem, #findings, and #hypothesis with real intake/research findings');
+        } else if (text.length < 200) {
+          dashIssues.push(`Research Summary is too thin (${text.length} chars of prose, min 200) — write a real summary of the problem, findings, and plan`);
+        }
+      }
+    }
     for (const w of REQUIRED_WIDGETS) {
       const count = (pageHtml.match(new RegExp(`data-widget-type="${w}"`, 'g')) || []).length;
       if (count === 0) dashIssues.push(`missing required widget: ${w}`);

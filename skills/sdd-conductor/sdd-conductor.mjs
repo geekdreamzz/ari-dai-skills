@@ -21,7 +21,7 @@
  *   node sdd-conductor.mjs status                    Show all initiatives + active task status.
  *   node sdd-conductor.mjs gate <name> [args...]     Verify named gate. Exits 1 if not met.
  *   node sdd-conductor.mjs trace-graph               Board-wide ref integrity: EP→NS, EX→EP, VA→EX chain.
- *   node sdd-conductor.mjs dashboard-check <dsUri> <slug>  Verify 6 required dashboard sections.
+ *   node sdd-conductor.mjs dashboard-check <dsUri> <slug>  Verify required dashboard sections (incl. Research Summary narrative).
  *   node sdd-conductor.mjs update-dashboard <dsUri> <slug> Generate/refresh Current Focus hierarchy section.
  *   node sdd-conductor.mjs check-file-hook           Read stdin (Claude PostToolUse JSON), warn on mismatch.
  *   node sdd-conductor.mjs session-start             Read .sdd-state.json, reconcile with live API.
@@ -3713,6 +3713,12 @@ async function cmdDashboardCheck(dsUri, pageSlug) {
   // Widget format per SKILL.md Step 12 template — all require data-type="plannerWidget"
   // + data-datasphere-id + data-datasphere-uri + data-plan-mode-id
   const REQUIRED = [
+    // Research Summary & Hypothesis — human-written narrative (SKILL.md § Dashboard
+    // Page Template, SECTION 2). The stakeholder-readable story of intake + research.
+    { label: 'Research Summary section (<!-- #research-summary -->)', pattern: /<!--\s*#research-summary\s*-->/ },
+    { label: 'Core Problem (<!-- #problem -->)',                      pattern: /<!--\s*#problem\s*-->/ },
+    { label: 'Key Research Findings (<!-- #findings -->)',            pattern: /<!--\s*#findings\s*-->/ },
+    { label: 'Hypothesis and Approach (<!-- #hypothesis -->)',        pattern: /<!--\s*#hypothesis\s*-->/ },
     { label: 'trace-graph widget',        pattern: /data-widget-type="trace-graph"/ },
     { label: 'task-activity-feed widget', pattern: /data-widget-type="task-activity-feed"/ },
     { label: 'plannerWidget node',        pattern: /data-type="plannerWidget"/ },
@@ -3730,6 +3736,34 @@ async function cmdDashboardCheck(dsUri, pageSlug) {
       missing.map(m => `  ✗ ${m}`).join('\n') +
       `\n\nFix: ensure all required sections are present per SKILL.md Step 12 template.`
     );
+  }
+
+  // Gate: Research Summary must carry real prose, not the template placeholder stubs.
+  {
+    const rsIdx = content.search(/<!--\s*#research-summary\s*-->/i);
+    if (rsIdx !== -1) {
+      const after = content.slice(rsIdx);
+      const bodyMatch = after.match(/<\/h2>([\s\S]*?)(?:<h2[\s>])/i);
+      const body = bodyMatch ? bodyMatch[1] : after;
+      const text = body.replace(/<[^>]*>/g, ' ').replace(/&[a-z#0-9]+;/gi, ' ').replace(/\s+/g, ' ').trim();
+      // Catches TODO/TBD/placeholder plus the template's angle-bracket prose stubs
+      // (e.g. "<what failed before>", "<finding N>"). Real tags/attributes contain
+      // = or " and are excluded; multi-word angle-bracket text with neither is a stub.
+      const PLACEHOLDER = /\bTODO\b|\bTBD\b|placeholder|<\s*[a-z][^>="']*\s[^>="']*>/i;
+      if (PLACEHOLDER.test(body)) {
+        gate(
+          `Research Summary section still contains placeholder text (TODO/TBD/<...> stubs).\n\n` +
+          `  Fill <!-- #problem -->, <!-- #findings -->, and <!-- #hypothesis --> with the real\n` +
+          `  intake/research findings and the plan to address them before advancing.`
+        );
+      } else if (text.length < 200) {
+        gate(
+          `Research Summary section is too thin (${text.length} chars of prose, min 200).\n\n` +
+          `  Write a real summary: the core problem, key research findings, and the hypothesis/approach.`
+        );
+      }
+      info(`Research Summary: narrative present (${text.length} chars) ✓`);
+    }
   }
 
   // Gate: detect malformed case where <!-- #focus --> is embedded inside an <h2> tag.
@@ -5087,7 +5121,7 @@ Commands:
     --iteration <n>                       Current iteration number (default: 1)
   status                                Show all initiatives + active task status.
   gate <name> [taskId]                  Verify named gate condition.
-  dashboard-check <dsUri> <slug>        Verify dashboard page has all 5 required sections.
+  dashboard-check <dsUri> <slug>        Verify dashboard page has all required sections (incl. Research Summary narrative).
   check-file-hook                       PostToolUse(Write|Edit) hook — file guard.
   progress-hook                         PostToolUse(Bash) hook — auto-post test results.
   session-start                         SessionStart hook — reconcile state + run silent audit.
