@@ -1284,6 +1284,8 @@ Output the following, then stop:
 ## Dashboard Page Template
 → *Referenced by: Step 12 — MANDATORY. No substitutions.*
 
+**Real template FILE: [`templates/dashboard.html`](templates/dashboard.html).** Fill its `{{TOKENS}}` and publish. Validate with `node loop.mjs --verify-page <dashboard-slug> --kind dashboard` (contract: `verifyTemplatePage`), and note the live `--advance` dashboard gate additionally enforces Research-Summary prose quality. Both must pass.
+
 **CRITICAL — no emojis or raw Unicode anywhere in this page.** Use HTML entities only. No custom CSS `style=` attributes — the step-12 dashboard uses ONLY native platform widgets. Custom inline styles belong on the close-out Next Steps page, not here.
 
 All 6 sections are required. Replace `<dsId>`, `<uri>`, `<planModeId>`, `<Project>`, `<one-line description>` with real values.
@@ -2420,7 +2422,13 @@ Planner: $DATASPHERES_PUBLIC_URL/app/<uri>/planner?mode=<planModeId>
 
 ## Next Steps Page Template
 
-When all tasks for an initiative are Done (100% completion), generate a close-out "Next Steps & UAT" page on the datasphere. This is published via `POST /api/v1/dataspheres/<uri>/pages` with `isInternal: true` and uses the full platform feature set.
+**This is a real template FILE, not prose: [`templates/next-steps-uat.html`](templates/next-steps-uat.html).** DONE mode FILLS that file (replace every `{{TOKEN}}`, repeat the `<!-- EPIC_CARD -->` / `<!-- UAT_SECTION -->` / `<!-- LOOSE_END -->` blocks, strip the instructional comments) and publishes the result. The published page is then GATED:
+
+- `node loop.mjs --verify-page <slug> --kind next-steps` validates a page against the template contract (`verifyTemplatePage` in loop.mjs) — every structural signature must be present, no `localhost` URLs, no raw emoji.
+- `node loop.mjs --next` will NOT report `status: complete` once 100% Done unless the Next Steps page exists AND passes that gate. A page that exists but drifts returns `status: next-steps-drift` with the exact missing blocks. **The template is enforced, not suggested.**
+- Page-facing URLs use the public reader host (`$DATASPHERES_PUBLIC_URL`, or the host of the registered `trackerUrl`) — never the API `BASE`, which may be `localhost`.
+
+When all tasks for an initiative are Done (100% completion), generate a close-out "Next Steps & UAT" page on the datasphere. This is published via `POST /api/v1/dataspheres/<uri>/pages` with `isInternal: true` and uses the full platform feature set. The structural blocks below mirror the template file and the gate's signatures — edit all three together.
 
 **Structural blocks (in order):**
 

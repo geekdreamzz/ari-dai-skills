@@ -1,0 +1,34 @@
+<!--
+  all-dai-sdd · CANONICAL TEMPLATE · dashboard
+  Step 12 initiative dashboard. Fill {{TOKENS}} and publish, then register dashboardSlug +
+  trackerUrl in .sdd-state.json. Gated by verifyTemplatePage(html, 'dashboard') in loop.mjs
+  AND the live --advance dashboard gate. NATIVE PLATFORM WIDGETS ONLY — no custom CSS hero,
+  no inline style grids (those belong on the close-out next-steps page). No raw emoji.
+
+  REQUIRED (gate fails without any of these):
+   - <h1> title
+   - Research Summary section + its three sub-anchors (#problem, #findings, #hypothesis)
+     filled with REAL prose (no TODO/TBD/<...> stubs, >= 200 chars total)
+   - exactly one each of: progress-summary, trace-graph, task-activity-feed widgets
+   - NO standalone focus-tree widget, NO standalone "Current Focus" heading
+     (the focus subtree is already embedded inside progress-summary)
+-->
+<h1>{{INITIATIVE_TITLE}} &#8212; Initiative Dashboard</h1>
+<p>{{INITIATIVE_INTRO}}</p>
+
+<h2>Research Summary <!-- #research-summary --></h2>
+<h3>Core Problem <!-- #problem --></h3>
+<p>{{PROBLEM_PROSE}}</p>
+<h3>Key Research Findings <!-- #findings --></h3>
+<p>{{FINDINGS_PROSE}}</p>
+<h3>Hypothesis and Approach <!-- #hypothesis --></h3>
+<p>{{HYPOTHESIS_PROSE}}</p>
+
+<h2>Initiative Summary</h2>
+<div data-type="plannerWidget" data-widget-type="progress-summary" data-datasphere-id="{{DS_ID}}" data-datasphere-uri="{{DS_URI}}" data-plan-mode-id="{{PLAN_MODE_ID}}" data-refresh-interval="60"></div>
+
+<h2>Trace Graph</h2>
+<div data-type="plannerWidget" data-widget-type="trace-graph" data-datasphere-id="{{DS_ID}}" data-datasphere-uri="{{DS_URI}}" data-plan-mode-id="{{PLAN_MODE_ID}}"></div>
+
+<h2>Live Activity</h2>
+<div data-type="plannerWidget" data-widget-type="task-activity-feed" data-datasphere-id="{{DS_ID}}" data-datasphere-uri="{{DS_URI}}" data-plan-mode-id="{{PLAN_MODE_ID}}"></div>

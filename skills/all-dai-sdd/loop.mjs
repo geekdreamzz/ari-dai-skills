@@ -112,6 +112,8 @@ let requestReviewMode = false;
 let greenlightMode = false;
 let revokeReviewMode = false;
 let reconcileMode = false;
+let verifyPageSlug = null;
+let verifyPageKind = null;
 
 for (let i = 2; i < process.argv.length; i++) {
   if (process.argv[i] === '--initiative' && process.argv[i + 1]) {
@@ -182,6 +184,10 @@ for (let i = 2; i < process.argv.length; i++) {
     revokeReviewMode = true;
   } else if (process.argv[i] === '--reconcile') {
     reconcileMode = true;
+  } else if (process.argv[i] === '--verify-page' && process.argv[i + 1]) {
+    verifyPageSlug = process.argv[++i];
+  } else if (process.argv[i] === '--kind' && process.argv[i + 1]) {
+    verifyPageKind = process.argv[++i];
   }
 }
 
@@ -547,6 +553,81 @@ function verifyV2Artifact(task, gitRoot) {
     if (links < 2) issues.push(`report artifact needs >=2 resolvable citations/links (found ${links})`);
   }
   return { pass: issues.length === 0, issues };
+}
+
+// ── Page templates: real files + a machine-checkable contract ───────────────────
+// The canonical templates live as FILES in ./templates/*.html. DONE mode (and the
+// dashboard step) FILL those files; the gate below validates the PUBLISHED page
+// against TEMPLATE_SPECS so the output is provably the template, not freehand HTML.
+// A template is the file; the spec is the contract; the gate enforces both.
+const SKILL_DIR = path.dirname(new URL(import.meta.url).pathname).replace(/^\/([A-Za-z]:)/, '$1');
+
+function loadTemplate(name) {
+  const p = path.join(SKILL_DIR, 'templates', name);
+  return fs.existsSync(p) ? fs.readFileSync(p, 'utf-8') : null;
+}
+
+// Public reader host for page-facing URLs. The API BASE may be localhost (the dev
+// box); pages are SERVED at the public host. Prefer an explicit env, else derive
+// the host from the registered trackerUrl, else fall back to BASE.
+function publicBase(iState) {
+  if (process.env.DATASPHERES_PUBLIC_URL) return process.env.DATASPHERES_PUBLIC_URL.replace(/\/$/, '');
+  const t = iState?.trackerUrl || '';
+  const m = t.match(/^(https?:\/\/[^/]+)/);
+  if (m && !/localhost|127\.0\.0\.1/.test(m[1])) return m[1];
+  return BASE.replace(/\/$/, '');
+}
+
+// Each signature: a label + a test(html)->bool. ALL must pass. These mirror the
+// structural blocks in templates/*.html — edit them together.
+const TEMPLATE_SPECS = {
+  'next-steps': {
+    file: 'next-steps-uat.html',
+    sigs: [
+      ['<h1> title', h => /<h1[^>]*>/.test(h)],
+      ['hero banner (gradient, not-prose)', h => /class="not-prose"/.test(h) && /linear-gradient/.test(h)],
+      ['progress-summary widget', h => /data-widget-type="progress-summary"/.test(h)],
+      ['>=1 epic card (Done chip + monospace id)', h => (h.match(/&#10003;\s*Done/gi) || []).length >= 1 && /font-family:monospace/.test(h)],
+      ['>=1 UAT callout (heading + colored box)', h => /UAT/.test(h) && /background:#(?:f0fdf4|eff6ff|faf5ff|fdf2f8)/i.test(h)],
+      ['CTA cards (not-prose)', h => (h.match(/class="not-prose"/g) || []).length >= 2],
+      ['attribution: ari-dai-skills link', h => /github\.com\/geekdreamzz\/ari-dai-skills/.test(h)],
+      ['attribution: dataspheres.ai link', h => /href="https:\/\/dataspheres\.ai"/.test(h)],
+      ['doc-footer last', h => /data-type="doc-footer"/.test(h)],
+    ],
+  },
+  'dashboard': {
+    file: 'dashboard.html',
+    sigs: [
+      ['<h1> title', h => /<h1[^>]*>/.test(h)],
+      ['Research Summary anchor', h => /<!--\s*#research-summary\s*-->/.test(h)],
+      ['#problem anchor', h => /<!--\s*#problem\s*-->/.test(h)],
+      ['#findings anchor', h => /<!--\s*#findings\s*-->/.test(h)],
+      ['#hypothesis anchor', h => /<!--\s*#hypothesis\s*-->/.test(h)],
+      ['progress-summary widget (exactly 1)', h => (h.match(/data-widget-type="progress-summary"/g) || []).length === 1],
+      ['trace-graph widget (exactly 1)', h => (h.match(/data-widget-type="trace-graph"/g) || []).length === 1],
+      ['task-activity-feed widget (exactly 1)', h => (h.match(/data-widget-type="task-activity-feed"/g) || []).length === 1],
+      ['no standalone focus-tree widget', h => !/data-widget-type="focus-tree"/.test(h)],
+    ],
+  },
+};
+
+// Validate a published page's HTML against its template contract. Returns
+// { pass, issues, kind }. Two cross-cutting rules apply to every kind:
+//   · no localhost / 127.0.0.1 URLs (pages are served on the public host)
+//   · no raw emoji / astral Unicode (templates mandate HTML entities)
+function verifyTemplatePage(html, kind) {
+  const spec = TEMPLATE_SPECS[kind];
+  if (!spec) return { pass: false, issues: [`unknown template kind "${kind}" (expected: ${Object.keys(TEMPLATE_SPECS).join(', ')})`], kind };
+  const h = html || '';
+  const issues = [];
+  for (const [label, test] of spec.sigs) {
+    let ok = false;
+    try { ok = test(h); } catch { ok = false; }
+    if (!ok) issues.push(`missing/!matched: ${label}`);
+  }
+  if (/localhost|127\.0\.0\.1/.test(h)) issues.push('contains localhost / 127.0.0.1 URL — page-facing links must use the public host');
+  if (/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{2B00}-\u{2BFF}️]/u.test(h)) issues.push('contains raw emoji / Unicode — use HTML entities (&#NNNN;) only');
+  return { pass: issues.length === 0, issues, kind };
 }
 
 // ── Lifecycle ordering ────────────────────────────────────────────────────────
@@ -2602,16 +2683,53 @@ async function findNextTask(cfg, iState, slug) {
         return;
       }
     }
+    // Next Steps page gate — DONE mode generates a close-out page from the
+    // next-steps-uat template. The loop is NOT "complete" until that page exists
+    // AND matches the template contract. Three outcomes:
+    //   missing            → status:complete, generateNextStepsPage:true (go make it)
+    //   exists but drifted → status:next-steps-drift (must fix to the template)
+    //   exists and valid   → status:complete, nextStepsValidated:true (truly done)
+    const pub = publicBase(iState);
+    const nextStepsSlug = iState.dashboardSlug
+      ? iState.dashboardSlug.replace(/-dashboard$/, '-next-steps')
+      : `${slug}-next-steps`;
+    let nsHtml = null;
+    try {
+      const pg = await api('GET', `/api/v1/dataspheres/${cfg.dsUri || iState.dsUri}/pages/${nextStepsSlug}`);
+      nsHtml = pg?.content || pg?.page?.content || null;
+    } catch { /* missing → generate */ }
+    const dashboardUrl = iState.dashboardSlug ? `${pub}/pages/${cfg.dsUri || cfg.dsId}/${iState.dashboardSlug}` : null;
+    const plannerUrl = `${pub}/app/${cfg.dsUri || cfg.dsId}/planner?mode=${cfg.planModeId}`;
+    if (nsHtml) {
+      const v = verifyTemplatePage(nsHtml, 'next-steps');
+      if (!v.pass) {
+        process.stdout.write(JSON.stringify({
+          status: 'next-steps-drift',
+          links, done, total, pct: 100,
+          nextStepsUrl: `${pub}/pages/${cfg.dsUri || iState.dsUri}/${nextStepsSlug}`,
+          issues: v.issues,
+          template: path.join('templates', TEMPLATE_SPECS['next-steps'].file),
+          instruction: 'The Next Steps & UAT page exists but does not match the next-steps-uat template contract. Fill the template (templates/next-steps-uat.html), keep every structural block, then re-run --next. The board is NOT complete until it passes.',
+          action: `node loop.mjs --verify-page ${nextStepsSlug} --kind next-steps`,
+        }, null, 2));
+        return;
+      }
+    }
     process.stdout.write(JSON.stringify({
       status: 'complete',
       links,
       done, total,
       pct: Math.round(done / total * 100),
-      generateNextStepsPage: true,
-      instruction: 'All tasks Done — immediately switch to DONE mode: generate the Next Steps & UAT page as specified in the all-dai-sdd SKILL.md DONE mode section. Do not wait for user input.',
-      dashboardUrl: iState.dashboardSlug
-        ? `${BASE}/pages/${cfg.dsUri || cfg.dsId}/${iState.dashboardSlug}` : null,
-      plannerUrl: `${BASE}/app/${cfg.dsUri || cfg.dsId}/planner?mode=${cfg.planModeId}`,
+      generateNextStepsPage: !nsHtml,
+      nextStepsValidated: !!nsHtml,
+      nextStepsSlug,
+      nextStepsUrl: nsHtml ? `${pub}/pages/${cfg.dsUri || iState.dsUri}/${nextStepsSlug}` : null,
+      instruction: nsHtml
+        ? 'All tasks Done and the Next Steps & UAT page matches the template. Initiative complete.'
+        : 'All tasks Done — immediately switch to DONE mode: generate the Next Steps & UAT page by filling templates/next-steps-uat.html (every structural block), publish it, then re-run --next to validate against the template gate. Do not wait for user input.',
+      template: path.join('templates', TEMPLATE_SPECS['next-steps'].file),
+      dashboardUrl,
+      plannerUrl,
     }, null, 2));
     return;
   }
@@ -3557,6 +3675,30 @@ async function main() {
   {
     const { plannerUrl, dashboardUrl } = boardLinks(cfg, slug);
     process.stderr.write(`\n━━ ${slug} ━━\n📋 Plan mode (board): ${plannerUrl || '(no plan mode)'}\n📊 Dashboard:         ${dashboardUrl || '(not created yet — build + register the dashboard)'}\n\n`);
+  }
+
+  if (verifyPageSlug) {
+    // Fetch a published page and validate it against its template contract.
+    const kind = verifyPageKind || (/(next-steps|uat)/i.test(verifyPageSlug) ? 'next-steps' : 'dashboard');
+    let html = null;
+    try {
+      const pg = await api('GET', `/api/v1/dataspheres/${cfg.dsUri || iState.dsUri}/pages/${verifyPageSlug}`);
+      html = pg?.content || pg?.page?.content || null;
+    } catch { /* handled below */ }
+    if (!html) {
+      console.error(`✗ verify-page: page "${verifyPageSlug}" not found or empty on ${cfg.dsUri || iState.dsUri}.`);
+      process.exit(1);
+    }
+    const v = verifyTemplatePage(html, kind);
+    if (v.pass) {
+      console.log(`✓ ${verifyPageSlug} matches the "${kind}" template contract (${TEMPLATE_SPECS[kind].sigs.length} signatures + cross-cutting rules).`);
+      console.log(`  ${publicBase(iState)}/pages/${cfg.dsUri || iState.dsUri}/${verifyPageSlug}`);
+      return;
+    }
+    console.error(`✗ GATE FAIL — ${verifyPageSlug} drifted from the "${kind}" template:`);
+    v.issues.forEach(i => console.error(`  · ${i}`));
+    console.error(`  Canonical template: ${path.join('templates', TEMPLATE_SPECS[kind].file)} (fill its {{TOKENS}}, keep every structural block).`);
+    process.exit(1);
   }
 
   if (traceAuditMode) {

@@ -1,0 +1,85 @@
+<!--
+  all-dai-sdd · CANONICAL TEMPLATE · next-steps-uat
+  This is a TEMPLATE FILE, not prose. DONE mode fills the {{TOKENS}} and repeats the
+  marked blocks, then publishes via POST /api/v1/dataspheres/{{DS_URI}}/pages (isInternal:true).
+  The output is gated by verifyTemplatePage(html, 'next-steps') in loop.mjs — every required
+  structural signature below MUST survive into the published page or `--next` reports
+  next-steps-drift and the loop is NOT complete.
+
+  RULES (enforced):
+   - {{PUBLIC_BASE}} = the public reader host (e.g. https://dev.dataspheres.ai). NEVER localhost.
+   - HTML entities only — NO raw emoji / Unicode (use &#9989; not the literal).
+   - Repeat <!-- EPIC_CARD --> once per Epic; repeat <!-- UAT_SECTION --> once per subsystem.
+   - Keep the data-widget-type, attribution links, and data-type="doc-footer" verbatim.
+-->
+<h1>{{INITIATIVE_TITLE}} &#8212; Next Steps &amp; UAT</h1>
+
+<!-- HERO -->
+<div class="not-prose" style="background:linear-gradient(135deg,#0f172a 0%,#1e293b 100%);border-radius:16px;padding:32px 36px;margin-bottom:28px;color:#f8fafc;">
+  <p style="margin:0 0 8px;font-size:11px;font-weight:700;color:#fbbf24;text-transform:uppercase;letter-spacing:.14em;">{{DONE_COUNT}} / {{TOTAL_COUNT}} tasks done &#183; {{EPIC_COUNT}} epics</p>
+  <h2 style="margin:0 0 12px;font-size:24px;font-weight:800;color:#ffffff;">{{HERO_HEADLINE}}</h2>
+  <p style="margin:0 0 20px;font-size:14px;line-height:1.7;color:#cbd5e1;">{{HERO_SUMMARY}}</p>
+  <div style="display:flex;gap:12px;flex-wrap:wrap;">
+    <a href="{{PUBLIC_BASE}}/app/{{DS_URI}}/planner?mode={{PLAN_MODE_ID}}" style="background:#fbbf24;color:#0f172a;font-size:13px;font-weight:700;padding:10px 18px;border-radius:8px;text-decoration:none;">Open in planner &#8599;</a>
+    <a href="{{PUBLIC_BASE}}/pages/{{DS_URI}}/{{DASHBOARD_SLUG}}" style="border:1px solid #475569;color:#f8fafc;font-size:13px;font-weight:700;padding:10px 18px;border-radius:8px;text-decoration:none;">View dashboard &#8599;</a>
+  </div>
+</div>
+
+<!-- PROGRESS -->
+<div data-type="plannerWidget" data-widget-type="progress-summary" data-datasphere-id="{{DS_ID}}" data-plan-mode-id="{{PLAN_MODE_ID}}" data-refresh-interval="60"></div>
+
+<h2>What shipped</h2>
+
+<!-- EPIC_CARD (repeat once per Epic) -->
+<div style="border:1px solid #e2e8f0;border-radius:10px;padding:20px 24px;margin-bottom:14px;background:#f8fafc;">
+  <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">
+    <span style="background:#dcfce7;color:#16a34a;font-size:10px;font-weight:700;padding:2px 9px;border-radius:20px;text-transform:uppercase;letter-spacing:.05em;">&#10003; Done</span>
+    <span style="font-size:12px;font-family:monospace;color:#94a3b8;">{{EPIC_ID}}</span>
+    <a href="{{PUBLIC_BASE}}/app/{{DS_URI}}/planner?mode={{PLAN_MODE_ID}}" style="margin-left:auto;font-size:11px;color:#64748b;text-decoration:none;" title="Open in planner">&#8599;</a>
+  </div>
+  <h3 style="margin:0 0 8px;font-size:16px;font-weight:700;color:#0f172a;">{{EPIC_TITLE}}</h3>
+  <p style="margin:0;color:#475569;font-size:13px;line-height:1.65;">{{EPIC_SUMMARY}}</p>
+</div>
+
+<h2>UAT</h2>
+
+<!-- UAT_SECTION (repeat once per subsystem; rotate colors: green #f0fdf4/#bbf7d0, blue #eff6ff/#bfdbfe, purple #faf5ff/#e9d5ff, pink #fdf2f8/#fbcfe8) -->
+<div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:10px;padding:20px 24px;margin-bottom:16px;">
+  <h3 style="margin:0 0 14px;font-size:14px;font-weight:700;color:#1e293b;">&#9989;&nbsp; {{UAT_SUBSYSTEM}} UAT</h3>
+  <ul style="margin:0;padding-left:18px;color:#374151;font-size:13px;line-height:1.8;">
+    <li>{{UAT_CRITERION}}</li>
+  </ul>
+</div>
+
+<h2>Loose ends &amp; next steps</h2>
+
+<!-- LOOSE_END (repeat once per known gap; omit the block entirely if there are none) -->
+<div style="border-left:4px solid #f59e0b;background:#fffbeb;border-radius:0 8px 8px 0;padding:14px 18px;margin-bottom:12px;">
+  <strong style="font-size:13px;color:#92400e;">{{GAP_TITLE}}</strong>
+  <p style="margin:6px 0 0;font-size:13px;color:#78350f;">{{GAP_DETAIL}}</p>
+</div>
+
+<!-- CTA -->
+<div class="not-prose" style="display:flex;gap:14px;flex-wrap:wrap;margin:24px 0;">
+  <a href="{{CTA_PRIMARY_URL}}" style="flex:1;min-width:220px;background:#0f172a;color:#f8fafc;border-radius:12px;padding:18px 22px;text-decoration:none;">
+    <span style="display:block;font-size:14px;font-weight:700;margin-bottom:4px;">{{CTA_PRIMARY_TITLE}}</span>
+    <span style="font-size:12px;color:#cbd5e1;">{{CTA_PRIMARY_SUB}}</span>
+  </a>
+  <a href="{{CTA_SECONDARY_URL}}" style="flex:1;min-width:220px;background:#f1f5f9;color:#0f172a;border:1px solid #e2e8f0;border-radius:12px;padding:18px 22px;text-decoration:none;">
+    <span style="display:block;font-size:14px;font-weight:700;margin-bottom:4px;">{{CTA_SECONDARY_TITLE}}</span>
+    <span style="font-size:12px;color:#64748b;">{{CTA_SECONDARY_SUB}}</span>
+  </a>
+</div>
+
+<!-- ATTRIBUTION (verbatim) -->
+<div class="not-prose" style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;padding:20px 24px;text-align:center;margin-bottom:24px;">
+  <p style="margin:0 0 6px;font-size:10px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:.12em;">Powered by</p>
+  <div style="display:flex;align-items:center;justify-content:center;gap:20px;flex-wrap:wrap;margin-bottom:8px;">
+    <a href="https://github.com/geekdreamzz/ari-dai-skills" style="font-size:13px;font-weight:600;color:#0f172a;text-decoration:none;">&#9881; ari-dai-skills</a>
+    <span style="color:#cbd5e1;">&#183;</span>
+    <a href="https://dataspheres.ai" style="font-size:13px;font-weight:600;color:#a67c00;text-decoration:none;">&#10022; dataspheres.ai</a>
+  </div>
+  <p style="margin:0;font-size:11px;color:#94a3b8;">Spec-driven development tracked end-to-end in Dataspheres AI</p>
+</div>
+
+<div data-type="doc-footer"></div>
