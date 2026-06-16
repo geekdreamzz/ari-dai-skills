@@ -529,7 +529,7 @@ function verifyV2Artifact(task, gitRoot) {
 
   if (aType === 'code') {
     const paths = [...c.matchAll(/<code[^>]*>([^<]+)<\/code>/g)].map(m => m[1].trim())
-      .filter(p => /^[A-Z]:\\|^\/|^(src|tests|prisma|scripts)[\\/]/.test(p) && !/\.(png|jpg|jpeg|webp|mp4)$/i.test(p));
+      .filter(p => /^[A-Z]:\\|^\/|^(src|tests|prisma|scripts|packages|apps)[\\/]|^\.[\w.-]+[\\/]/.test(p) && !/\.(png|jpg|jpeg|webp|mp4)$/i.test(p));
     if (paths.length === 0) issues.push('code artifact lists no file paths');
     for (const fp of paths) {
       const abs = /^[A-Z]:\\|^\//.test(fp) ? fp : path.join(gitRoot, fp);
@@ -2916,8 +2916,13 @@ async function advanceTask(cfg, iState, slug) {
         typedIssues.push('[benchmark] requires measured values with units (ms, MB, %, req/s …) compared against thresholds');
       }
     }
-    if (!/\b\d+\s+passed\b/i.test(evidenceText) && !/\bok\b.*\b\d+\b/i.test(evidenceText)) {
-      typedIssues.push('no test runner output — run the spec and paste the "N passed" result');
+    // build/general kinds verify via command exit, not a test runner — accept an
+    // explicit success signal (exit 0, clean type-check, N passed) instead of forcing "N passed".
+    const buildKindOnly = vaKinds.every(k => k === 'general' || k === 'build');
+    const runnerOk = /\b\d+\s+passed\b/i.test(evidenceText) || /\bok\b.*\b\d+\b/i.test(evidenceText);
+    const buildOk = /\bexit(?:\s*code)?\s*[:=]?\s*0\b|\b0 (?:errors?|failures?|failed)\b|\b(?:build|type-?check|tsc|compile)\w*\s+(?:clean|succeeded|passed|complete|ok)\b|✓/i.test(evidenceText);
+    if (!runnerOk && !(buildKindOnly && buildOk)) {
+      typedIssues.push('no success signal in evidence — paste the "N passed" runner line, or (build/general kinds) the exit-0 / clean type-check output');
     }
     if (typedIssues.length > 0) {
       console.error(`✗ GATE FAIL — VA evidence does not satisfy its declared validation types (${vaKinds.join(', ')}).`);
