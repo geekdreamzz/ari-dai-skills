@@ -3779,27 +3779,30 @@ async function cmdDashboardCheck(dsUri, pageSlug) {
     }
   }
 
-  // Gate: the <!-- #focus --> block must exist AND contain a focus-tree plannerWidget.
-  // progress-summary belongs in Section 2 (Initiative Summary) only.
+  // Gate: Current Focus must appear EXACTLY ONCE. The progress-summary widget
+  // (Initiative Summary) already embeds the live Current Focus subtree, so a
+  // standalone focus-tree widget is a DUPLICATE — the #1 recurring template bug.
+  // This gate is now consistent with the loop's --advance dashboard-drift gate:
+  //   require progress-summary; FORBID a standalone focus-tree.
   {
-    const focusMatch = content.match(/<!--\s*#focus\s*-->([\s\S]*?)<!--\s*\/focus\s*-->/);
-    if (!focusMatch) {
+    const hasProgressSummary = /data-widget-type="progress-summary"/.test(content);
+    const hasFocusTree = /data-widget-type="focus-tree"/.test(content);
+    if (hasFocusTree) {
       gate(
-        `Current Focus section is missing its <!-- #focus -->...<!-- /focus --> markers.\n\n` +
-        `  Fix: run \`node sdd-conductor.mjs update-dashboard ${dsUri} ${pageSlug}\``
+        `Standalone focus-tree widget present — Current Focus is ALREADY embedded inside\n` +
+        `  the progress-summary (Initiative Summary) widget, so this duplicates it.\n` +
+        `  Remove the focus-tree widget (and any <!-- #focus -->...<!-- /focus --> block).\n` +
+        `  The canonical v2 template is: H1, Narrative/Research Summary, Initiative Summary\n` +
+        `  (progress-summary), Trace Graph (trace-graph), Live Activity (task-activity-feed).`
       );
     }
-    const focusBlock = focusMatch[1];
-    const hasWidget = /data-widget-type="focus-tree"/.test(focusBlock);
-    if (!hasWidget) {
-      const preview = focusBlock.replace(/<[^>]*>/g, '').trim().slice(0, 120).replace(/\n+/g, ' ');
+    if (!hasProgressSummary) {
       gate(
-        `Current Focus section (#focus block) must contain a focus-tree plannerWidget (not progress-summary).\n\n` +
-        `  Found: "${preview || '(empty)'}"\n\n` +
-        `  Fix: run \`node sdd-conductor.mjs update-dashboard ${dsUri} ${pageSlug}\``
+        `Missing the progress-summary (Initiative Summary) widget — it carries progress + the\n` +
+        `  embedded Current Focus. Add it: a plannerWidget with data-widget-type="progress-summary".`
       );
     }
-    info(`Current Focus block: focus-tree widget present ✓`);
+    info(`Current Focus: single source (progress-summary embeds it; no duplicate focus-tree) ✓`);
   }
 
   OPTIONAL.filter(r => !r.pattern.test(content)).forEach(r =>
@@ -3996,7 +3999,24 @@ async function cmdUpdateDashboard(dsUri, pageSlug) {
   // progress-summary and left a standalone focus-tree, which the loop's
   // dashboard-drift gate then (correctly) rejected on every --advance.
   if (/data-widget-type="progress-summary"/.test(content)) {
-    ok('v2 dashboard - progress-summary embeds Current Focus (live); no injection needed.');
+    // SELF-HEAL: progress-summary already embeds Current Focus. If a stray
+    // standalone focus-tree (and/or its <!-- #focus -->...<!-- /focus --> block)
+    // got left behind, it renders Current Focus TWICE — strip it here so the
+    // dashboard never drifts into the duplicate state the gates reject.
+    let cleaned = content
+      .replace(/<!--\s*#focus\s*-->[\s\S]*?<!--\s*\/focus\s*-->\s*/gi, '')
+      .replace(/<div[^>]*data-widget-type="focus-tree"[^>]*>\s*<\/div>\s*/gi, '');
+    if (cleaned !== content) {
+      const putRes = await fetch(`${baseUrl}/api/v1/dataspheres/${dsUri}/pages/${pageSlug}`, {
+        method: 'PUT',
+        headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: cleaned, isInternal: true }),
+      });
+      if (putRes.ok) ok('v2 dashboard - removed a duplicate standalone focus-tree (progress-summary already embeds Current Focus).');
+      else warn(`Found a duplicate focus-tree but could not auto-remove it (PUT ${putRes.status}); remove it manually.`);
+    } else {
+      ok('v2 dashboard - progress-summary embeds Current Focus (live); no duplicate focus-tree.');
+    }
     return;
   }
 
