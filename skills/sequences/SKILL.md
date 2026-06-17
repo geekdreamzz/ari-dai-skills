@@ -1,4 +1,3 @@
-<!-- dai-sync: skip -->
 ---
 name: sequences
 description: Create and run automated workflows in Dataspheres AI

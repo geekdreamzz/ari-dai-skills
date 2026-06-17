@@ -1,4 +1,3 @@
-<!-- dai-sync: skip -->
 ---
 name: surveys
 description: Design, run, and analyze surveys in Dataspheres AI — create, add/edit/delete/reorder questions, collect responses, view analytics, export data.

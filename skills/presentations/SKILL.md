@@ -1,4 +1,3 @@
-<!-- dai-sync: skip -->
 ---
 name: presentations
 description: Author and edit presentation decks in Dataspheres AI via REST + ARI tools — whole-deck get/set plus granular slide and per-slide component CRUD for every component type. Always test locally first.

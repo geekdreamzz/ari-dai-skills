@@ -1,4 +1,3 @@
-<!-- dai-sync: skip -->
 ---
 name: newsletters
 description: Full newsletter lifecycle — create, configure all settings (frequency, personalization, AI model, web search, reply threading, plan mode wiring), manage subscribers, attach forms, draft and manage issues, preview personalized letters, enable private chat and email replies, and test in dev.

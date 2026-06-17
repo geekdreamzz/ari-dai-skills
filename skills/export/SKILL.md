@@ -1,4 +1,3 @@
-<!-- dai-sync: skip -->
 ---
 name: export
 description: Export datasphere content to local workspace/ files

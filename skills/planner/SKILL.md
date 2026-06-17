@@ -1,4 +1,3 @@
-<!-- dai-sync: skip -->
 ---
 name: planner
 description: Manage Kanban tasks, plan modes, and project workflows in Dataspheres AI

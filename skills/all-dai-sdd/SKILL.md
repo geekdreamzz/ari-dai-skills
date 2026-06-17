@@ -1,4 +1,3 @@
-<!-- dai-sync: skip -->
 # all-dai-sdd — Spec-Driven Development
 
 Drive feature implementation from a living spec hosted on Dataspheres AI. Seven-column lifecycle with pre-flight research gating, sub-checklist propagation, dependency enforcement, artifact tracing, and a live stakeholder dashboard.
