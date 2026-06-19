@@ -74,3 +74,44 @@ Updates updates title, caption, or tags on generated media. Requires PARTICIPANT
 | `caption` | string | no | New caption/description |
 | `tags` | array | no | Updated tags |
 
+### `list_documents` — List Documents
+
+Lists a datasphere's uploaded library files — **any uploaded type**: PDF, Word/Excel/
+PowerPoint, images, video, audio, text/CSV. (Uploaded images are stored as documents,
+so they're publishable and linkable exactly like a PDF.) Each entry includes `id`,
+`name`, `mimeType`, `fileSize`, `isPublic`, `fileUrl`, and `viewerPath`
+(`/viewer/:uri/:id` — the public full-screen viewer). Use this to find an item id to
+publish, or to gather public links to list from an index page. Resolves via the
+datasphere's full scope (folder / upload activity / post), so it includes files
+attached or uploaded without a folder.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `datasphereUri` | string | yes | Datasphere whose uploaded documents to list |
+
+### `publish_document` — Publish / Unpublish Document
+
+Makes a single uploaded file (PDF, Office doc, **image**, video, audio, text…)
+publicly readable (or private again) via the full-screen public viewer at
+`/viewer/:datasphereUri/:documentId` — no account needed, e.g. for a tenure committee.
+The viewer renders the file natively: PDFs/images/video/audio inline, Word/Excel
+rendered to HTML, everything else as a clean download. Per-item: it affects only the
+one item you name, never the whole library. Requires MODERATOR. The response returns
+the `viewerPath`; build the shareable URL as `https://dataspheres.ai{viewerPath}`. Set
+`isPublic=false` to revoke (the public link then 404s).
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `datasphereUri` | string | yes | Datasphere that owns the document |
+| `documentId` | string | yes | Document id (from upload_media_file or list_documents) |
+| `isPublic` | boolean | yes | true = readable in the public viewer; false = private |
+
+## Making a document public and linking to it
+
+1. `list_documents` → find the document and its `id` (and current `isPublic`).
+2. `publish_document` with `isPublic: true` → the document is now live at
+   `https://dataspheres.ai/viewer/<datasphereUri>/<documentId>` (the `viewerPath` in
+   the response). The viewer shows the file **raw** and full-screen.
+3. Link that public URL from a page (`create_page` / `update_page`) or share it
+   directly. To revoke access, call `publish_document` again with `isPublic: false`.
+
