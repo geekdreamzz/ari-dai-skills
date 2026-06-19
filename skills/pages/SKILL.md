@@ -332,7 +332,8 @@ When to use: Citing a source, linking to an external reference. Always include c
 | `datasphereUri` | string | yes | Datasphere URI to create the page in |
 | `title` | string | yes | Page title |
 | `content` | string | no | Full page HTML. Write a comprehensive, research-grade article (aim for 800–2500+ words): use ALL research findings and data from the conversation, embed any data cards from create_data_card tool results using <div data-type="dataCard" data-datacard-id="..." data-dataset-id="..." data-datasphere-id="...">, cite every fact with inline <span data-type="citation"> badges + ONE <div data-type="citationAppendix"> at the end, use <h2>/<p>/<ul>/<strong>/<blockquote>. NEVER write a stub — always draft the complete, fully-developed document. |
-| `folderName` | string | no | Folder name (auto-created if missing) |
+| `folderName` | string | no | Top-level folder name to file under (auto-created if missing). Only resolves root folders — for a sub-folder use docFolderId. |
+| `docFolderId` | string | no | Exact folder ID to file under (from list_folders/get_folder). Required to target a sub-folder; wins over folderName. |
 | `status` | string | no | Page status — ALWAYS default to DRAFT unless user explicitly says publish |
 | `isPubliclyVisible` | boolean | no | If true, page is accessible on the public internet without login (SEO-indexed). Default false. |
 
@@ -587,5 +588,6 @@ When to use: Citing a source, linking to an external reference. Always include c
 | `content` | string | no | Full updated HTML. Write comprehensive, research-grade content (800–2500+ words where appropriate). Preserve existing <div data-type="dataCard" ...> embeds; add new ones from create_data_card results in conversation if relevant. Use <h2>/<p>/<ul>/<strong>. |
 | `status` | string | no | Status |
 | `isPubliclyVisible` | boolean | no | Public access? |
-| `folderName` | string | no | Move to folder (empty string = root) |
+| `folderName` | string | no | Move to a top-level folder by name (empty string = root). For a sub-folder use docFolderId. |
+| `docFolderId` | string | no | Move to this exact folder ID (from list_folders/get_folder). null = root; wins over folderName. |
 
