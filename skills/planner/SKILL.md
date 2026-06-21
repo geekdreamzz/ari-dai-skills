@@ -113,13 +113,16 @@ add_comment(task_id="<id>", content="Reproduced on staging — see screenshot",
 Task descriptions support full Tiptap HTML — the same schema as pages. Use this to write detailed specs, acceptance criteria, or reference material directly on the card.
 
 ```html
-<!-- Acceptance criteria as a checklist -->
+<!-- Interactive checklist (renders as real, clickable checkboxes) -->
 <h2>Acceptance Criteria</h2>
-<ul>
-  <li>User can reset password via email link</li>
-  <li>Link expires after 24 hours</li>
-  <li>Errors shown inline, not as alerts</li>
+<ul class="tiptap-task-list" data-type="taskList">
+  <li class="tiptap-task-item" data-checked="false" data-type="taskItem"><label><input type="checkbox"><span></span></label><div><p>User can reset password via email link</p></div></li>
+  <li class="tiptap-task-item" data-checked="false" data-type="taskItem"><label><input type="checkbox"><span></span></label><div><p>Link expires after 24 hours</p></div></li>
+  <li class="tiptap-task-item" data-checked="false" data-type="taskItem"><label><input type="checkbox"><span></span></label><div><p>Errors shown inline, not as alerts</p></div></li>
 </ul>
+<!-- ⚠️ data-type="taskList" on the <ul> AND data-type="taskItem" on every <li> are REQUIRED.
+     A <li class="tiptap-task-item"> WITHOUT data-type="taskItem" renders as a plain bullet —
+     no checkbox. Full format + rules: see the rich-content skill § Interactive Task Checklists. -->
 
 <!-- Code reference -->
 <h2>Relevant Code</h2>

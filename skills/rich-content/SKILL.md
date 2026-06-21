@@ -233,6 +233,27 @@ Always include a `<caption>` for SEO and accessibility.
 </ol>
 ```
 
+### Interactive Task Checklists (checkboxes)
+
+For checkable to-do lists — in pages, **task descriptions, and comments** — use the TipTap task list. These render as real, clickable checkboxes (not bullets).
+
+```html
+<ul class="tiptap-task-list" data-type="taskList">
+  <li class="tiptap-task-item" data-checked="false" data-type="taskItem"><label><input type="checkbox"><span></span></label><div><p>Item to do</p></div></li>
+  <li class="tiptap-task-item" data-checked="true" data-type="taskItem"><label><input type="checkbox"><span></span></label><div><p>Item already done</p></div></li>
+</ul>
+```
+
+> ⚠️ **`data-type="taskList"` on the `<ul>` and `data-type="taskItem"` on EVERY `<li>` are mandatory.** TipTap's parser keys off `data-type`, not the class. A `<li class="tiptap-task-item">` **without** `data-type="taskItem"` renders as a plain bullet — the checkbox never appears and the item isn't interactive. This is the single most common mistake when generating checklists programmatically.
+
+Rules for a checklist that renders correctly:
+- `<ul>` carries `class="tiptap-task-list" data-type="taskList"`.
+- Each `<li>` carries `class="tiptap-task-item" data-type="taskItem"` and `data-checked="false"` (unchecked) or `data-checked="true"` (checked).
+- Inner structure is exactly `<label><input type="checkbox"><span></span></label><div><p>…</p></div>` — the text lives in the `<div><p>`, not directly in the `<li>`.
+- Do **not** substitute `&#9744;`/`☐` glyphs inside a plain `<ul><li>` — they store as raw text and never become checkboxes.
+
+(The SDD lifecycle uses a minimal variant — `<ul data-type="taskList"><li data-type="taskItem" data-checked="false"><p>text</p></li></ul>` — which TipTap also parses, because `data-type` is present. When in doubt, use the full form above; it's what the editor itself serializes.)
+
 ### Code Blocks
 
 Inline code: `<code>functionName()</code>` inside a `<p>`.
