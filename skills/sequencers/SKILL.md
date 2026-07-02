@@ -7,6 +7,14 @@ description: Sequencers tools for Dataspheres AI
 
 > Tool reference for this resource group, mirrored by hand from the platform live `/api/mcp/schema` schema.
 
+> **Superseded by [graphs](../graphs/SKILL.md).** Sequencers are the legacy
+> single-template (scheduled web search) automation. The **graphs** skill is the
+> general successor: a scheduled web search is now a `batch_web_search` **TASK
+> edge** on a knowledge graph (`web_search` node's `queries[]` → the
+> `batch-web-search` executor). These sequencer tools still work, but for anything
+> new — relationships, typed entities, grouping, reporting — use **graphs**.
+<!-- SDD: TK-017 / VC-017 (initiative knowledge-graph) — sequencers -> graphs redirect -->
+
 ## Tools
 
 ### `create_sequence_v2` — Create Sequence
