@@ -177,22 +177,30 @@ async function main() {
   let consecutiveFailures = 0;
   const MAX_CONSECUTIVE_FAILURES = 3;
 
+  // Tasks that died on "Reached max turns" get ONE retry at double the budget
+  // before counting as a consecutive failure — heavy refactor tasks routinely
+  // need more turns than the default.
+  const turnBoost = new Map(); // taskId -> multiplier
+
   while (tasksCompleted < maxTasks) {
     // ── Step 1: get next task ──────────────────────────────────────────────
-    let nextJson;
-    try {
-      const [, ...nextArgs] = loop('--next');
-      const result = spawnSync('node', [LOOP_MJS, ...(initiativeSlug ? ['--initiative', initiativeSlug] : []), '--next'], {
-        encoding: 'utf-8', timeout: 30000,
-      });
-      if (result.status !== 0) {
-        console.error('✗ loop.mjs --next failed:', result.stderr?.slice(0, 300));
-        process.exit(1);
+    // --next runs board reconciliation (many API writes) — it can legitimately
+    // take minutes, and its JSON includes full hierarchy content (>1 MB).
+    // 30s/1MB caps here previously killed the runner mid-flight with
+    // "Unexpected end of JSON input". Retry transient failures with backoff.
+    let nextJson = null;
+    for (let attempt = 1; attempt <= 3 && !nextJson; attempt++) {
+      try {
+        const result = spawnSync('node', [LOOP_MJS, ...(initiativeSlug ? ['--initiative', initiativeSlug] : []), '--next'], {
+          encoding: 'utf-8', timeout: 300000, maxBuffer: 64 * 1024 * 1024,
+        });
+        if (result.status !== 0) throw new Error(`exit ${result.status}: ${result.stderr?.slice(0, 300)}`);
+        nextJson = JSON.parse(result.stdout.trim());
+      } catch (e) {
+        console.error(`✗ --next attempt ${attempt}/3 failed: ${e.message.slice(0, 200)}`);
+        if (attempt === 3) { console.error('✗ Giving up on --next.'); process.exit(1); }
+        execSync(process.platform === 'win32' ? 'timeout /t 5 /nobreak >NUL' : 'sleep 5');
       }
-      nextJson = JSON.parse(result.stdout.trim());
-    } catch (e) {
-      console.error('✗ Failed to get next task:', e.message);
-      process.exit(1);
     }
 
     if (nextJson.status === 'complete' || nextJson.status === 'done') {
@@ -240,13 +248,16 @@ async function main() {
     }
 
     // ── Step 3: invoke claude ──────────────────────────────────────────────
-    const claudeArgs = ['--print', '--max-turns', String(maxTurns)];
+    const boost = turnBoost.get(task.id) || 1;
+    const effectiveTurns = maxTurns * boost;
+    const claudeArgs = ['--print', '--max-turns', String(effectiveTurns)];
     if (skipPermissions) claudeArgs.push('--dangerously-skip-permissions');
-    console.log(`   [${new Date().toISOString()}] Invoking: ${claudeExe} ${claudeArgs.join(' ')} (timeout ${taskTimeoutMin}m)`);
+    console.log(`   [${new Date().toISOString()}] Invoking: ${claudeExe} ${claudeArgs.join(' ')} (timeout ${taskTimeoutMin * boost}m${boost > 1 ? `, boosted x${boost}` : ''})`);
     const claudeResult = spawnSync(claudeExe, claudeArgs, {
       input: prompt,
       encoding: 'utf-8',
-      timeout: taskTimeoutMin * 60000,
+      timeout: taskTimeoutMin * boost * 60000,
+      maxBuffer: 64 * 1024 * 1024,
       cwd: GIT_ROOT,            // tasks always execute from the repo root
       shell: process.platform === 'win32', // npm .cmd shims need a shell on Windows
     });
@@ -275,6 +286,13 @@ async function main() {
     }
 
     if (parsed.action !== 'advance') {
+      // Heavy tasks legitimately outgrow the turn budget — give the SAME task
+      // one escalating retry (x2, then x4) before it counts as a failure.
+      if (/reached max turns/i.test(claudeOutput) && boost < 4) {
+        turnBoost.set(task.id, boost * 2);
+        console.log(`   ⏫ Reached max turns (${effectiveTurns}) — retrying ${task.key} with x${boost * 2} turn budget.`);
+        continue;
+      }
       console.log(`   ⚠  No ADVANCE_READY sigil found in Claude output.`);
       console.log(`   Last 300 chars: ${(claudeOutput || '').slice(-300)}`);
       appendFailure(task.id, task.key, `no ADVANCE_READY sigil. Output tail: ${claudeOutput.slice(-200)}`);
@@ -293,7 +311,9 @@ async function main() {
       ...(initiativeSlug ? ['--initiative', initiativeSlug] : []),
       '--advance', task.id,
       '--evidence', parsed.evidence,
-    ], { encoding: 'utf-8', timeout: 60000 });
+    // --advance EXECUTES the VC's validation commands live (playwright suites,
+    // dockerized gitleaks, …) — 60s was far too tight. 20 min + big buffer.
+    ], { encoding: 'utf-8', timeout: 1200000, maxBuffer: 64 * 1024 * 1024 });
 
     if (advResult.status !== 0) {
       const errMsg = (advResult.stdout || '') + (advResult.stderr || '');
