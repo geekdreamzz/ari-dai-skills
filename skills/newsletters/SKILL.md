@@ -545,7 +545,7 @@ Use the local dev API key and local server for all testing before touching prod.
 
 **Local credentials** (from `~/.dataspheres.env`):
 ```
-DAI_LOCAL_KEY=dsk_742fd6da8c8ae88e4b1724bc8b065ddf
+DAI_LOCAL_KEY=dsk_<REDACTED-set-in-~/.dataspheres.env>
 Local server: http://localhost:3000
 ```
 
@@ -553,7 +553,7 @@ Local server: http://localhost:3000
 
 ```powershell
 # 1. Point to local
-$env:DATASPHERES_API_KEY = "dsk_742fd6da8c8ae88e4b1724bc8b065ddf"
+$env:DATASPHERES_API_KEY = "dsk_<REDACTED-set-in-~/.dataspheres.env>"
 $env:DATASPHERES_BASE_URL = "http://localhost:3000"
 
 # 2. Create a test newsletter in a local datasphere

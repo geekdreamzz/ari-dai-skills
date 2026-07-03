@@ -21,7 +21,7 @@ export $(grep -v '^#' ~/.dataspheres.env | xargs)
 
 | Env | `DATASPHERES_BASE_URL` | `DATASPHERES_API_KEY` |
 |-----|------------------------|----------------------|
-| Local dev | `http://localhost:5173` | `dsk_2aaab5d44b69db5c966893974601952f` |
+| Local dev | `http://localhost:5173` | `dsk_<REDACTED-set-in-~/.dataspheres.env>` |
 | Production | `https://dataspheres.ai` | *(user's production key)* |
 
 The file `~/.dataspheres.env` is pre-configured for **local dev**. To target production, override:
@@ -34,7 +34,7 @@ Or update `~/.dataspheres.env` with the production values when deploying.
 If the file is missing, create it:
 ```bash
 cat > ~/.dataspheres.env << 'EOF'
-DATASPHERES_API_KEY=dsk_371913272e93bbca01c7afc265326280
+DATASPHERES_API_KEY=dsk_<REDACTED-set-in-~/.dataspheres.env>
 DATASPHERES_BASE_URL=http://localhost:5173
 DATASPHERES_DEFAULT_URI=dataspheres-ai
 EOF
