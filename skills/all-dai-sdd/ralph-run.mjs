@@ -121,8 +121,21 @@ ${failCtx}
    - For VA tasks: run each acceptance criterion via --check-item, measure actual results vs thresholds; UI flows need Playwright runs + fresh screenshots of before/during/after states
    - For RS tasks: search the web for evidence, populate all required sections with real findings
    - For EP tasks: confirm all child EX+VA tasks are Done, verify epic AC
-   - For AR tasks: document the real produced artifacts with file paths and line counts
-4. When ALL checklist items are individually verified, output the following sigil EXACTLY on its own line, followed by your overall evidence:
+   - For AR tasks: the artifact must EMBED content — full file text in <pre><code> blocks,
+     every cited file listed in single-line <code> tags AND carrying a decorator comment
+     that names the parent VC key (e.g. "// artifact: VC-004"), plus raw test output.
+     PATCH the task content via the API or loop tooling before advancing.
+5. TYPED EVIDENCE REQUIREMENTS — your final evidence text is machine-gated by the
+   task's validation_kind (read it from the task content front matter). Include:
+   - api: quote the literal /api/... endpoint path(s) you exercised AND the HTTP
+     status codes returned (e.g. "GET /api/v2/... -> 200").
+   - data: use persisted-state vocabulary with real numbers — counts, rows, records,
+     fields READ BACK after the change (e.g. "0 hits", "965 passed", "row count 3").
+   - ui: fresh on-disk screenshot paths (<24h) + the Playwright "N passed" line;
+     interaction flows need at least 2 screenshots.
+   - benchmark: measured values WITH UNITS compared to the AC threshold.
+   Evidence missing its kind's markers is REJECTED even when the commands passed.
+6. When ALL checklist items are individually verified, output the following sigil EXACTLY on its own line, followed by your overall evidence:
 
 ADVANCE_READY
 [EXECUTED]
@@ -194,12 +207,15 @@ async function main() {
         const result = spawnSync('node', [LOOP_MJS, ...(initiativeSlug ? ['--initiative', initiativeSlug] : []), '--next'], {
           encoding: 'utf-8', timeout: 300000, maxBuffer: 64 * 1024 * 1024,
         });
-        if (result.status !== 0) throw new Error(`exit ${result.status}: ${result.stderr?.slice(0, 300)}`);
+        if (result.status !== 0 || !result.stdout?.trim()) {
+          throw new Error(`exit=${result.status} signal=${result.signal || 'none'} stdoutLen=${result.stdout?.length || 0} stderr: ${(result.stderr || '').slice(-300)}`);
+        }
         nextJson = JSON.parse(result.stdout.trim());
       } catch (e) {
-        console.error(`✗ --next attempt ${attempt}/3 failed: ${e.message.slice(0, 200)}`);
+        console.error(`✗ --next attempt ${attempt}/3 failed: ${e.message.slice(0, 400)}`);
         if (attempt === 3) { console.error('✗ Giving up on --next.'); process.exit(1); }
-        execSync(process.platform === 'win32' ? 'timeout /t 5 /nobreak >NUL' : 'sleep 5');
+        // Portable sleep — never shell out (cmd vs GNU `timeout` are incompatible).
+        spawnSync(process.execPath, ['-e', 'setTimeout(()=>{}, 5000)'], { timeout: 10000 });
       }
     }
 
