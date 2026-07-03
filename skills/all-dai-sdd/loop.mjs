@@ -337,7 +337,11 @@ function loudCatch(label) {
 }
 
 async function api(method, urlPath, body) {
-  for (let attempt = 1; attempt <= 3; attempt++) {
+  // 6 attempts with escalating backoff (~60s total window): on a DEV box the
+  // API restarts (nodemon + tsc) every time the loop's own workers edit src/ —
+  // a socket error here is almost always that restart window, not an outage.
+  const MAX_ATTEMPTS = 6;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     try {
       const res = await fetch(`${BASE}${urlPath}`, {
         method, headers: H, body: body ? JSON.stringify(body) : undefined,
@@ -350,8 +354,8 @@ async function api(method, urlPath, body) {
       }
       return data;
     } catch (e) {
-      if (attempt === 3) throw e;
-      await sleep(1000 * attempt);
+      if (attempt === MAX_ATTEMPTS) throw e;
+      await sleep(Math.min(2 ** attempt * 1000, 30000));
     }
   }
 }

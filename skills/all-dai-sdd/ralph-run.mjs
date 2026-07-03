@@ -202,7 +202,10 @@ async function main() {
     // 30s/1MB caps here previously killed the runner mid-flight with
     // "Unexpected end of JSON input". Retry transient failures with backoff.
     let nextJson = null;
-    for (let attempt = 1; attempt <= 3 && !nextJson; attempt++) {
+    // 6 x 15s: workers edit src/, nodemon restarts the dev API, and a socket
+    // error is almost always that restart window — outlast it, don't die in it.
+    const NEXT_ATTEMPTS = 6;
+    for (let attempt = 1; attempt <= NEXT_ATTEMPTS && !nextJson; attempt++) {
       try {
         const result = spawnSync('node', [LOOP_MJS, ...(initiativeSlug ? ['--initiative', initiativeSlug] : []), '--next'], {
           encoding: 'utf-8', timeout: 300000, maxBuffer: 64 * 1024 * 1024,
@@ -212,10 +215,10 @@ async function main() {
         }
         nextJson = JSON.parse(result.stdout.trim());
       } catch (e) {
-        console.error(`✗ --next attempt ${attempt}/3 failed: ${e.message.slice(0, 400)}`);
-        if (attempt === 3) { console.error('✗ Giving up on --next.'); process.exit(1); }
+        console.error(`✗ --next attempt ${attempt}/${NEXT_ATTEMPTS} failed: ${e.message.slice(0, 400)}`);
+        if (attempt === NEXT_ATTEMPTS) { console.error('✗ Giving up on --next.'); process.exit(1); }
         // Portable sleep — never shell out (cmd vs GNU `timeout` are incompatible).
-        spawnSync(process.execPath, ['-e', 'setTimeout(()=>{}, 5000)'], { timeout: 10000 });
+        spawnSync(process.execPath, ['-e', 'setTimeout(()=>{}, 15000)'], { timeout: 20000 });
       }
     }
 
