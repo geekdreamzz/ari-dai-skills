@@ -3580,6 +3580,10 @@ async function advanceTask(cfg, iState, slug) {
       const codebaseSection = c.match(/Codebase Context[\s\S]*?(?=<h2|$)/i)?.[0] || '';
       const cited = [...(reuseSection + codebaseSection).matchAll(/<code[^>]*>([^<]+)<\/code>/g)]
         .map(m => m[1].trim())
+        // Citations use the standard path:LINE (or :START-END) anchor format —
+        // strip the anchor before the existence check or every anchored citation
+        // false-fails as "fabricated".
+        .map(p => p.replace(/:\d+(-\d+)?$/, ''))
         .filter(p => /^(src|tests|prisma|scripts)[\\/]/.test(p) && !/\.(png|jpg|jpeg|webp|mp4)$/i.test(p));
       const gitRoot = findGitRoot();
       const missing = cited.filter(p => !fs.existsSync(path.join(gitRoot, p)));
