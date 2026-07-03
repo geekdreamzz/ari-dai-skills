@@ -19,8 +19,13 @@
  *   node loop.mjs --check-item <taskId>          # tick ONE checklist item with its own evidence (per-item protocol)
  *     --item <N|"text">                          # REQUIRED: 1-based item number or unique text match
  *     --evidence "..."                           # REQUIRED: real output for THIS item (>=80 chars)
+ *     --attach <path[,path...]>                  # result file(s): uploaded to the datasphere media library (fresh <24h,
+ *                                                #   must exist) and attached to the evidence comment as permanent URLs
  *   node loop.mjs --advance <taskId>             # advance task to Done (requires --evidence; REJECTS unchecked items)
  *     --evidence "..."                           # REQUIRED: real test output, file paths, measured results
+ *     --attach <path[,path...]>                  # validation result file(s) — uploaded + attached to the gate comment
+ *                                                #   AND carried into the AR scaffold citations (url+sha256+size).
+ *                                                #   REQUIRED for media/ui VC/VA unless evidence already has a durable URL
  *     --auto-fix                                 # on gate fail: auto-create EX+VA remediation pair instead of just erroring
  *   node loop.mjs --create-fix <taskId>          # Ralph error mode: create EX+VA fix pair for a failing task
  *     --reason "issue1; issue2"                  # REQUIRED: semicolon-separated gate failure reasons
@@ -72,6 +77,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import crypto from 'node:crypto';
 import { execSync } from 'node:child_process';
 
 let BASE = process.env.DATASPHERES_BASE_URL || 'https://dataspheres.ai';
@@ -114,6 +120,8 @@ let revokeReviewMode = false;
 let reconcileMode = false;
 let verifyPageSlug = null;
 let verifyPageKind = null;
+let attachPaths = [];   // --attach <path[,path...]> (repeatable) — result files to
+                        // upload and attach to the validation item's evidence.
 
 for (let i = 2; i < process.argv.length; i++) {
   if (process.argv[i] === '--initiative' && process.argv[i + 1]) {
@@ -188,6 +196,8 @@ for (let i = 2; i < process.argv.length; i++) {
     verifyPageSlug = process.argv[++i];
   } else if (process.argv[i] === '--kind' && process.argv[i + 1]) {
     verifyPageKind = process.argv[++i];
+  } else if (process.argv[i] === '--attach' && process.argv[i + 1]) {
+    attachPaths.push(...process.argv[++i].split(',').map(s => s.trim()).filter(Boolean));
   }
 }
 
@@ -358,6 +368,75 @@ async function api(method, urlPath, body) {
       await sleep(Math.min(2 ** attempt * 1000, 30000));
     }
   }
+}
+
+// ── Evidence attachment upload ────────────────────────────────────────────────
+// Gate INPUT: local result files (--attach). Gate OUTPUT: permanent media URLs
+// attached to the validation item. Files are uploaded via the dsk_-capable
+// endpoint POST /api/v1/dataspheres/:uri/media/upload (NOT /api/media/upload,
+// which is JWT-only). Hard gates at the input: every file must exist and be
+// fresh (<24h) — stale results are re-run, not re-attached.
+const ATTACH_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+function resolveAttachPaths(paths) {
+  const gitRoot = findGitRoot();
+  const resolved = [];
+  const problems = [];
+  for (const p of paths) {
+    const abs = p.match(/^[A-Z]:\\|^\//) ? p : path.join(gitRoot, p);
+    if (!fs.existsSync(abs)) { problems.push(`attachment does not exist: ${p}`); continue; }
+    if (Date.now() - fs.statSync(abs).mtimeMs > ATTACH_MAX_AGE_MS) {
+      problems.push(`attachment older than 24h — re-run to produce fresh results: ${p}`);
+      continue;
+    }
+    resolved.push(abs);
+  }
+  return { resolved, problems };
+}
+
+async function uploadAttachments(cfg, iState, paths) {
+  if (!paths || paths.length === 0) return [];
+  const uri = cfg.dsUri || iState?.dsUri || cfg.dsId;
+  const { resolved, problems } = resolveAttachPaths(paths);
+  if (problems.length > 0) {
+    console.error('✗ GATE FAIL — attachment input invalid:');
+    problems.forEach(pr => console.error(`  · ${pr}`));
+    process.exit(1);
+  }
+  const uploaded = [];
+  for (const abs of resolved) {
+    const buf = fs.readFileSync(abs);
+    const sha256 = crypto.createHash('sha256').update(buf).digest('hex');
+    const form = new FormData();
+    const name = path.basename(abs);
+    form.append('file', new Blob([buf]), name);
+    form.append('caption', `sdd evidence: ${name}`);
+    let ok = false, body = null;
+    for (let attempt = 1; attempt <= 3 && !ok; attempt++) {
+      try {
+        const res = await fetch(`${BASE}/api/v1/dataspheres/${uri}/media/upload`, {
+          method: 'POST', headers: { Authorization: H.Authorization }, body: form,
+        });
+        body = await res.json().catch(() => null);
+        ok = res.ok && body?.url;
+        if (!ok && (res.status === 429 || res.status >= 500)) await sleep(1500 * attempt);
+        else if (!ok) break;
+      } catch { await sleep(1000 * attempt); }
+    }
+    if (!ok) {
+      console.error(`✗ GATE FAIL — attachment upload failed for ${name}: ${JSON.stringify(body || {}).slice(0, 160)}`);
+      console.error('  Evidence must be durably attached — a local path alone is not verifiable from the board.');
+      process.exit(1);
+    }
+    uploaded.push({ path: abs, filename: name, url: body.url, mediaId: body.id || '', sha256, size: buf.length });
+  }
+  return uploaded;
+}
+
+function attachmentEvidenceLines(uploaded) {
+  if (!uploaded.length) return '';
+  return '\n\n**Attachments (uploaded, permanent):**\n' + uploaded.map(u =>
+    `- ${u.filename} — ${u.url} — sha256:${u.sha256.slice(0, 16)}… — ${u.size} bytes`).join('\n');
 }
 
 // ── Status group loader ───────────────────────────────────────────────────────
@@ -1139,11 +1218,13 @@ async function patchContent(cfg, id, content) {
   } catch { /* WAF may block content — non-fatal */ }
 }
 
-async function postComment(cfg, id, text) {
+async function postComment(cfg, id, text, screenshots = []) {
   try {
-    await api('POST', `/api/v2/dataspheres/${cfg.dsId}/tasks/${id}/comments`, {
-      content: `[all-dai-sdd-system-message]\n\n${text}`,
-    });
+    const body = { content: `[all-dai-sdd-system-message]\n\n${text}` };
+    // Platform-native attachments: URLs in `screenshots` render as a clickable
+    // thumbnail gallery on the comment card (activity feed + task modal).
+    if (screenshots.length > 0) body.screenshots = screenshots;
+    await api('POST', `/api/v2/dataspheres/${cfg.dsId}/tasks/${id}/comments`, body);
   } catch { /* non-fatal — comment is evidence, not gate */ }
 }
 
@@ -1154,7 +1235,7 @@ async function moveDone(cfg, id) {
   });
 }
 
-async function createArtifact(cfg, vaTask, allTasks) {
+async function createArtifact(cfg, vaTask, allTasks, attachments = []) {
   if (!cfg.artifactsGroupId) return; // no Artifacts column — skip
 
   const vaNum = sddNum(vaTask.title);
@@ -1183,7 +1264,17 @@ async function createArtifact(cfg, vaTask, allTasks) {
   const arCount = allTasks.filter(t => sddType(t.title) === 'AR' && sddNum(t.title) < 900).length;
   const arNum = arCount + 1;
   const arKey = `AR-${pad3(arNum)}`;
-  const arContent = buildArContent(arNum, vaNum, exTask, cfg, evidenceText);
+  let arContent = buildArContent(arNum, vaNum, exTask, cfg, evidenceText);
+  // Transition OUTPUT: gate attachments ride into the AR as embedded evidence.
+  if (attachments.length > 0) {
+    const figs = attachments
+      .filter(a => /\.(png|jpe?g|webp|gif)$/i.test(a.filename))
+      .map(a => `<figure data-image-figure><img src="${a.url}" alt="${a.filename}"/><figcaption>${sddKey(vaTask.title)} validation result — ${a.filename}</figcaption></figure>`)
+      .join('\n');
+    const cites = attachments.map(a =>
+      `  <li><p>Validation result: <a href="${a.url}">${a.filename}</a> — sha256:${a.sha256} — ${a.size} bytes</p></li>`).join('\n');
+    arContent += `\n<h2>Validation Result Attachments <!-- #attachments --></h2>\n${figs}\n<ul class="tiptap-bullet-list">\n${cites}\n</ul>`;
+  }
 
   try {
     const created = await api('POST', `/api/v2/dataspheres/${cfg.dsId}/tasks`, {
@@ -1875,17 +1966,22 @@ async function checkItemCommand(cfg, iState, slug) {
     return;
   }
 
-  // Items that promise screenshots/tests must include a real file path or pass-count
+  // Items that promise screenshots/tests must include a real file path, a
+  // pass-count, or an actual --attach'd result file (the strongest form).
   if (/screenshot|playwright|e2e|visual/i.test(target.text) &&
+      attachPaths.length === 0 &&
       !/\.(png|jpg|jpeg|webp)\b/i.test(evidenceText) && !/\b\d+\s+passed\b/i.test(evidenceText)) {
-    console.error('✗ This item references screenshots/tests — evidence must include a screenshot path or "N passed" output.');
+    console.error('✗ This item references screenshots/tests — evidence must include a screenshot path, "N passed" output, or --attach <result file>.');
     process.exit(1);
   }
 
   if (dryRun) {
-    console.log(JSON.stringify({ dryRun: true, wouldTick: { index: target.index, text: target.text } }, null, 2));
+    console.log(JSON.stringify({ dryRun: true, wouldTick: { index: target.index, text: target.text }, wouldAttach: attachPaths }, null, 2));
     return;
   }
+
+  // Gate INPUT → OUTPUT: upload result files, attach permanent URLs to the item.
+  const uploaded = await uploadAttachments(cfg, iState, attachPaths);
 
   // Tick exactly this item (replace its raw <li> only)
   const tickedRaw = target.raw.replace('data-checked="false"', 'data-checked="true"');
@@ -1893,16 +1989,18 @@ async function checkItemCommand(cfg, iState, slug) {
   await patchContent(cfg, task.id, newContent);
 
   // Per-item evidence comment — this IS the item's artifact record and feeds
-  // the live activity feed. The AR task aggregates these when the VA passes.
+  // the live activity feed. Uploaded results ride along as native attachments.
   const ts = new Date().toISOString();
   await postComment(cfg, task.id,
-    `**[CHECK-ITEM ${target.index}/${items.length}] ${target.text.slice(0, 120)}** | ${ts}\n\n${evidenceText}`);
+    `**[CHECK-ITEM ${target.index}/${items.length}] ${target.text.slice(0, 120)}** | ${ts}\n\n${evidenceText}${attachmentEvidenceLines(uploaded)}`,
+    uploaded.map(u => u.url));
 
   const remaining = items.filter(it => !it.checked && it.index !== target.index);
   console.log(JSON.stringify({
     checked: true,
     task: sddKey(task.title) || task.id,
     item: { index: target.index, text: target.text },
+    attachments: uploaded.map(u => ({ filename: u.filename, url: u.url, sha256: u.sha256, size: u.size })),
     remaining: remaining.length,
     remainingItems: remaining.map(it => ({ index: it.index, text: it.text.slice(0, 80) })),
     nextStep: remaining.length > 0
@@ -1991,7 +2089,7 @@ async function reconcileCommand(cfg, slug) {
 // VC pass → AR scaffold in the Artifacts column. Created with status TODO and a
 // citation checklist — verifyV2Artifact must pass before it can go DONE, so an
 // empty scaffold can never silently count as a shipped artifact.
-async function createArtifactV2(cfg, vcTask, allTasks) {
+async function createArtifactV2(cfg, vcTask, allTasks, attachments = []) {
   const arGroup = cfg.tiers?.AR;
   if (!arGroup) { process.stdout.write('[no AR tier group] '); return; }
   const existing = allTasks.find(t => sddType(t.title) === 'AR' && v2ParentUuid(t.content) === vcTask.id);
@@ -2000,7 +2098,24 @@ async function createArtifactV2(cfg, vcTask, allTasks) {
   const arKey = `AR-${pad3(arNum)}`;
   const vcKey = sddKey(vcTask.title);
   const kinds = [...vaEffectiveKinds(vcTask.content)];
-  const aType = kinds.includes('ui') || kinds.includes('api') || kinds.includes('data') ? 'code' : 'report';
+  // Validation results that arrived as uploaded attachments make this a media
+  // artifact by default — the attachment IS the deliverable record.
+  const aType = attachments.length > 0 && kinds.includes('media') ? 'media'
+    : kinds.includes('ui') || kinds.includes('api') || kinds.includes('data') ? 'code' : 'report';
+
+  // Transition OUTPUT: the VC gate's uploaded results are carried into the AR —
+  // pre-cited with permanent URL + sha256 + byte size, images embedded inline.
+  const attachFigures = attachments
+    .filter(a => /\.(png|jpe?g|webp|gif)$/i.test(a.filename))
+    .map(a => `<figure data-image-figure><img src="${a.url}" alt="${a.filename}"/><figcaption>${vcKey} validation result — ${a.filename}</figcaption></figure>`);
+  const attachCites = attachments.map(a =>
+    `  <li><p>Validation result: <a href="${a.url}">${a.filename}</a> — sha256:${a.sha256} — ${a.size} bytes</p></li>`);
+  const attachMeta = attachments.length > 0 ? [
+    ``,
+    `<h2>Media metadata <!-- #media-metadata --></h2>`,
+    `<pre><code>${attachments.map(a => `file: ${a.filename}\nsha256: ${a.sha256}\nsize: ${a.size} bytes\nurl: ${a.url}`).join('\n---\n')}</code></pre>`,
+  ] : [];
+
   const content = [
     `<pre><code class="language-yaml">`,
     `type: AR`,
@@ -2013,13 +2128,18 @@ async function createArtifactV2(cfg, vcTask, allTasks) {
     ``,
     `<h2>Artifact <!-- #artifact --></h2>`,
     `<p>Ships ${vcKey} — ${vcTask.title.replace(/^VC-\d+\s*[·•-]?\s*/, '').slice(0, 90)}</p>`,
+    ...attachFigures,
     ``,
     `<h2>Citations <!-- #citations --></h2>`,
     `<ul class="tiptap-bullet-list">`,
+    ...attachCites,
     `  <li><p><em>REQUIRED before DONE — ${aType === 'code'
       ? 'list every shipped file in <code> tags; each file must carry a decorator pointing at ' + vcKey
-      : 'embed metadata (file + sha256 + size) per asset, or >=2 resolvable links for reports'}</em></p></li>`,
+      : aType === 'media'
+        ? 'verify each asset above (metadata pre-filled from the gate attachments); add any further assets the same way'
+        : 'embed metadata (file + sha256 + size) per asset, or >=2 resolvable links for reports'}</em></p></li>`,
     `</ul>`,
+    ...attachMeta,
   ].join('\n');
   try {
     const created = await api('POST', `/api/v2/dataspheres/${cfg.dsId}/tasks`, {
@@ -3115,7 +3235,10 @@ async function advanceTask(cfg, iState, slug) {
     //    A path mentioned in text proves nothing — the file must be real and from this session.
     //    This is the hole that let live-gallery-form pass 30/30 with a broken upload modal.
     const SCREENSHOT_RE = /([^\s"'()\[\],]+\.(?:png|jpg|jpeg|webp))/gi;
-    const shots = [...new Set([...evidenceText.matchAll(SCREENSHOT_RE)].map(m => m[1]))];
+    const shots = [...new Set([
+      ...attachPaths.filter(p => /\.(png|jpg|jpeg|webp)$/i.test(p)),   // --attach files count
+      ...[...evidenceText.matchAll(SCREENSHOT_RE)].map(m => m[1]),
+    ])];
     const gitRootUI = findGitRoot();
     const MAX_SHOT_AGE_MS = 24 * 60 * 60 * 1000;
     const missingShots = [];
@@ -3163,6 +3286,27 @@ async function advanceTask(cfg, iState, slug) {
       }
       process.exit(1);
     }
+  }
+
+  // ── Durable-attachment gate (media / ui / image-gen validation) ─────────────
+  // A validation RESULT must live ON the validation item, not on the machine that
+  // produced it. For media/ui kinds (and image-gen title patterns) the advance
+  // requires either --attach <result file(s)> (uploaded to the datasphere media
+  // library and attached to the gate comment) or an already-durable media URL in
+  // the evidence. Local paths alone are session-mortal and do not count.
+  const DURABLE_URL_RE = /https?:\/\/\S+\.(png|jpe?g|webp|gif|mp4|webm)\b|\/api\/v1\/dataspheres\/[^\s"']+\/media|amazonaws\.com\/\S+/i;
+  const IMG_GEN_TITLE = /synthesis|transfer|garment|character|render|inpaint|upscale|tryon|outfit|cloth|generates|wears|image|panel|shot/i;
+  const durableGateApplies = task_check && ['VA', 'VC'].includes(sddType(task_check.title)) &&
+    ((vaKinds && (vaKinds.includes('media') || vaKinds.includes('ui'))) ||
+     (!vaKinds && IMG_GEN_TITLE.test(task_check.title)));
+  if (durableGateApplies && attachPaths.length === 0 && !DURABLE_URL_RE.test(evidenceText)) {
+    console.error('✗ GATE FAIL — validation results are not durably attached.');
+    console.error('  media/ui validations must upload their result into the validation item:');
+    console.error('    --attach <result.png[,more...]>   (uploaded to the datasphere media library,');
+    console.error('                                       attached to the gate comment, and carried');
+    console.error('                                       into the AR scaffold citations)');
+    console.error('  or include an already-permanent media URL in --evidence.');
+    process.exit(1);
   }
 
   // ── Implementation files existence + front-matter gate (EX tasks) ──────────
@@ -3484,15 +3628,20 @@ async function advanceTask(cfg, iState, slug) {
   process.stdout.write(`→ ${dryRun ? '[DRY] ' : ''}Advancing ${key} with AI evidence... `);
   if (dryRun) { console.log('(skipped — dry run)'); return; }
 
+  // Gate INPUT → OUTPUT: upload result files; the permanent URLs become part of
+  // the gate record (comment attachments) and flow into the AR scaffold below.
+  const advUploaded = await uploadAttachments(cfg, iState, attachPaths);
+
   const ts = new Date().toISOString();
-  const comment = `[all-dai-sdd-system-message]\n\n**Gate: PASS — AI-substantiated** | ${ts}\n\n${evidenceText}`;
-  await postComment(cfg, task.id, comment);
+  // postComment prepends the [all-dai-sdd-system-message] badge — do not double it.
+  const comment = `**Gate: PASS — AI-substantiated** | ${ts}\n\n${evidenceText}${attachmentEvidenceLines(advUploaded)}`;
+  await postComment(cfg, task.id, comment, advUploaded.map(u => u.url));
 
   if (type === 'VA') {
-    await createArtifact(cfg, task, tasks);
+    await createArtifact(cfg, task, tasks, advUploaded);
   }
   if (cfg.schema === 2 && type === 'VC') {
-    await createArtifactV2(cfg, task, tasks);
+    await createArtifactV2(cfg, task, tasks, advUploaded);
   }
 
   if (cfg.schema === 2) {

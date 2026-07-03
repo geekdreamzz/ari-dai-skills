@@ -558,11 +558,14 @@ node skills/all-dai-sdd/loop.mjs --next
 # (write the code, run the test, capture the screenshot), then verify it:
 node skills/all-dai-sdd/loop.mjs --check-item <taskId> --item <N|"text match"> --evidence "
 <real output for THIS item — command output, test result, file path, measured value>
-"
+" --attach "outputs/result.png"
 # Each --check-item ticks exactly ONE box and posts a per-item evidence comment
 # (this is the item's artifact record; it appears in the live activity feed and
 # is aggregated into the AR task when the VA passes). Items mentioning
-# screenshot/playwright/e2e require a screenshot path or 'N passed' output.
+# screenshot/playwright/e2e require a screenshot path, 'N passed' output, or an
+# --attach'd result file. --attach uploads the file(s) to the datasphere media
+# library (dsk_-capable endpoint) and attaches the PERMANENT URLs to the comment
+# as a native thumbnail gallery — local paths die with the machine; uploads don't.
 # On failure of an item: fix it, or if blocked / the plan is wrong, pivot:
 #   node loop.mjs --create-fix <taskId> --reason "what is wrong; what must change"
 
@@ -582,6 +585,18 @@ node skills/all-dai-sdd/loop.mjs --advance <taskId> --evidence "
 # UI VA tasks require fresh on-disk screenshots + Playwright 'N passed' output.
 # On success the loop posts a milestone comment to the parent EP and NS so the
 # live activity feed shows hierarchy-level progress.
+#
+# VALIDATION RESULT ATTACHMENTS — pass --attach on --advance too:
+#   node loop.mjs --advance <taskId> --evidence "..." --attach "out/render.png,out/report.json"
+# Gate INPUTS:  each attached file must EXIST and be FRESH (<24h) — hard fail otherwise.
+# Gate OUTPUTS: files are uploaded to the datasphere media library; the permanent
+#   URLs (+ sha256 + byte size) are (a) appended to the gate comment and attached
+#   as its native thumbnail gallery ON the validation item, and (b) carried through
+#   the VC→AR transition: the AR scaffold is pre-cited with each result (url,
+#   sha256, size) and images are embedded as figures.
+# HARD GATE: a media/ui VC/VA (declared kind, or image-gen title pattern when
+#   undeclared) cannot advance without --attach or an already-durable media URL
+#   in the evidence — validation results must live ON the validation item.
 #
 # Task-type specifics for step 2:
 #   EX task: implement code (with spec front-matter comments), verify files exist, smoke test
@@ -626,7 +641,9 @@ The command must test the REQUIREMENT, not the component: "modal shows success s
 
 | `validation_kind` | Evidence gate requires |
 |---|---|
-| *(absent — UI default)* | Fresh on-disk screenshots (<24h), Playwright `N passed`, ≥2 shots for interaction flows |
+| *(absent — UI default)* | Fresh on-disk screenshots (<24h), Playwright `N passed`, ≥2 shots for interaction flows; `--attach` files count as screenshots |
+| `ui` | Same as UI default PLUS the durable-attachment gate: `--attach <result file>` or a permanent media URL in evidence |
+| `media` | Durable-attachment gate: results uploaded onto the validation item (`--attach`) or a permanent media URL in evidence; AR scaffold pre-cited with url+sha256+size |
 | `api` / `backend` | Quoted `/api/` endpoint paths + asserted HTTP status codes + test runner `N passed` — API tests are first-class artifacts |
 | `benchmark` | Measured values with units (ms, MB, %, req/s) compared against AC thresholds + runner output |
 
@@ -1293,6 +1310,17 @@ curl -X PATCH "$DATASPHERES_BASE_URL/api/v2/dataspheres/<dsId>/tasks/plan-modes/
 ---
 
 ### Step 14 of 14 — Publish summary
+
+**Board URL gate (verify before printing):**
+
+The board URL scheme is:
+```
+https://dataspheres.ai/app/<uri>/planner?mode=<planModeId>
+```
+
+**WRONG** (never use): `/app/dataspheres/<uri>/...` — the `/dataspheres/` segment is NOT part of the path.
+
+Do an HTTP GET on the board URL and verify it returns 200 before printing the summary. If it returns anything else, block and report.
 
 Output the following, then stop:
 
