@@ -536,6 +536,10 @@ function verifyV2Artifact(task, gitRoot) {
 
   if (aType === 'code') {
     const paths = [...c.matchAll(/<code[^>]*>([^<]+)<\/code>/g)].map(m => m[1].trim())
+      // A citation is a single-line path. Multiline <code> blocks are EMBEDDED
+      // FILE CONTENT (the AR rules require it) — e.g. a JS file starting with a
+      // "// comment" would otherwise false-match the ^\/ absolute-path test.
+      .filter(p => !p.includes('\n'))
       .filter(p => /^[A-Z]:\\|^\/|^(src|tests|prisma|scripts|packages|apps)[\\/]|^\.[\w.-]+[\\/]/.test(p) && !/\.(png|jpg|jpeg|webp|mp4)$/i.test(p));
     if (paths.length === 0) issues.push('code artifact lists no file paths');
     for (const fp of paths) {
@@ -1913,12 +1917,18 @@ function v2ChildrenOf(tasks, id) {
 }
 function findNextIncompleteV2(tasks) {
   const actionable = t => !t.isDone && v2ChildrenOf(tasks, t.id).every(c => c.isDone);
+  // A BLOCKED item (e.g. waiting on a credential only the user possesses) must
+  // not monopolize the loop: serve every workable item first, and only surface
+  // blocked work when nothing else remains — never report complete past it.
+  const blocked = t => String(t.status || '').toUpperCase() === 'BLOCKED';
   // Deepest tiers first: validation/artifact work surfaces before parent rollups.
-  for (const tier of ['AR', 'VC', 'TK', 'EP', 'DO', 'SS', 'VP', 'PC', 'RS', 'IN']) {
-    const items = tasks
-      .filter(t => sddType(t.title) === tier && actionable(t))
-      .sort((a, b) => sddNum(a.title) - sddNum(b.title));
-    if (items.length) return items[0];
+  for (const pass of [0, 1]) {
+    for (const tier of ['AR', 'VC', 'TK', 'EP', 'DO', 'SS', 'VP', 'PC', 'RS', 'IN']) {
+      const items = tasks
+        .filter(t => sddType(t.title) === tier && actionable(t) && (pass === 1 || !blocked(t)))
+        .sort((a, b) => sddNum(a.title) - sddNum(b.title));
+      if (items.length) return items[0];
+    }
   }
   return null;
 }

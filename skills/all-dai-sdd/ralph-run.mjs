@@ -19,6 +19,11 @@
  *   node ralph-run.mjs                           # run until done or first failure
  *   node ralph-run.mjs --initiative <slug>       # target a specific initiative
  *   node ralph-run.mjs --max-tasks <n>           # stop after N tasks (default: unlimited)
+ *   node ralph-run.mjs --max-turns <n>           # claude turns per task (default: 60)
+ *   node ralph-run.mjs --task-timeout-min <n>    # wall-clock minutes per task (default: 30)
+ *   node ralph-run.mjs --no-skip-permissions     # do NOT pass --dangerously-skip-permissions
+ *                                                #   (default is to pass it — unattended --print
+ *                                                #   runs DENY non-allowlisted tools, killing tasks)
  *   node ralph-run.mjs --dry-run                 # print prompts, no claude invocations
  *   node ralph-run.mjs --claude <path>           # override claude executable (default: claude)
  *
@@ -38,11 +43,22 @@ let initiativeSlug = null;
 let maxTasks = Infinity;
 let dryRun = false;
 let claudeExe = 'claude';
+let maxTurns = 60;            // heavy scrub/refactor tasks blow past 30
+let taskTimeoutMin = 30;      // per-task wall clock (was a hard 10 min)
+// Unattended runs MUST skip interactive permission prompts: in --print mode a
+// non-allowlisted tool call is DENIED (never prompted), so tasks silently fail
+// with "no ADVANCE_READY sigil". Default ON — this runner exists for unattended
+// operation. Opt out with --no-skip-permissions under a fully-allowlisted
+// settings.json.
+let skipPermissions = true;
 
 for (let i = 2; i < process.argv.length; i++) {
   if (process.argv[i] === '--initiative' && process.argv[i + 1]) initiativeSlug = process.argv[++i];
   else if (process.argv[i] === '--max-tasks' && process.argv[i + 1]) maxTasks = parseInt(process.argv[++i]);
+  else if (process.argv[i] === '--max-turns' && process.argv[i + 1]) maxTurns = parseInt(process.argv[++i]);
+  else if (process.argv[i] === '--task-timeout-min' && process.argv[i + 1]) taskTimeoutMin = parseInt(process.argv[++i]);
   else if (process.argv[i] === '--dry-run') dryRun = true;
+  else if (process.argv[i] === '--no-skip-permissions') skipPermissions = false;
   else if (process.argv[i] === '--claude' && process.argv[i + 1]) claudeExe = process.argv[++i];
 }
 
@@ -148,7 +164,7 @@ async function main() {
   if (dryRun) console.log('  DRY RUN — no claude invocations, no board writes\n');
   if (initiativeSlug) console.log(`  Initiative: ${initiativeSlug}`);
   console.log(`  Loop script: ${LOOP_MJS}`);
-  console.log(`  Claude exe:  ${claudeExe}`);
+  console.log(`  Claude exe:  ${claudeExe} (max-turns ${maxTurns}, timeout ${taskTimeoutMin}m/task, skip-permissions ${skipPermissions})`);
   console.log(`  Fail log:    ${FAIL_LOG}\n`);
 
   // Verify loop.mjs exists
@@ -224,11 +240,15 @@ async function main() {
     }
 
     // ── Step 3: invoke claude ──────────────────────────────────────────────
-    console.log(`   Invoking: ${claudeExe} --print --max-turns 30`);
-    const claudeResult = spawnSync(claudeExe, ['--print', '--max-turns', '30'], {
+    const claudeArgs = ['--print', '--max-turns', String(maxTurns)];
+    if (skipPermissions) claudeArgs.push('--dangerously-skip-permissions');
+    console.log(`   [${new Date().toISOString()}] Invoking: ${claudeExe} ${claudeArgs.join(' ')} (timeout ${taskTimeoutMin}m)`);
+    const claudeResult = spawnSync(claudeExe, claudeArgs, {
       input: prompt,
       encoding: 'utf-8',
-      timeout: 600000, // 10 min max per task
+      timeout: taskTimeoutMin * 60000,
+      cwd: GIT_ROOT,            // tasks always execute from the repo root
+      shell: process.platform === 'win32', // npm .cmd shims need a shell on Windows
     });
 
     if (claudeResult.error) {

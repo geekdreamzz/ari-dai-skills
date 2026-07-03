@@ -491,6 +491,41 @@ Triggered automatically when: (a) a VA task in the Validation column has at leas
 
 ---
 
+#### 🔁 Continuous Drive Protocol — the loop NEVER pauses on a status report (HARD RULE)
+
+**The #1 way initiatives stall at 6% is not a gate failure — it is the agent ending its
+conversational turn.** A status report is not a stopping point. Once an initiative is
+green-lit, the agent MUST NOT end any turn while `--next` returns a workable item unless
+at least ONE continuation mechanism is active:
+
+1. **`ralph-run.mjs` running in the background** (the default). Launch it immediately
+   after `--greenlight` (and re-launch after every halt):
+   ```bash
+   node <skill-dir>/ralph-run.mjs --initiative <slug>   # background it in your harness
+   ```
+   It drives one fresh headless `claude --print` per task and loops until the board is
+   done or 3 consecutive failures halt it. Unattended requirements (all default-on in
+   the runner): `--dangerously-skip-permissions` (non-interactive runs DENY non-allowlisted
+   tools — without this every task dies with "no ADVANCE_READY sigil"), `shell:true` on
+   Windows (npm `.cmd` shims), `cwd` pinned to the git root, ≥60 turns and ≥30 min per task.
+2. **A scheduled self-wakeup** (harnesses with `ScheduleWakeup` or cron): schedule the
+   continue-prompt (`/all-dai-sdd <slug>` or "continue the <slug> loop") before ending the
+   turn. Use a long fallback (1200–1800 s) when a background runner is also active — it is
+   the heartbeat that survives hangs; use a short interval only when actively polling.
+3. **Keep working in-turn** — simply do not stop.
+
+**On runner exit or halt:** the supervising agent reads the tail + `.sdd-failures.log`,
+fixes the root cause (env, gate, spec — use `--create-fix` when the spec is wrong),
+relaunches the runner, and re-schedules the fallback wakeup. Repeat until `--next`
+returns `complete` (→ DONE mode) or the only remaining items are user-gated BLOCKED
+tasks (→ report exactly what the user must do, keep the wakeup chain alive).
+
+**End-of-turn self-check (mandatory in LOOP mode):** before ending ANY turn ask —
+"is ralph-run alive, or is a wakeup scheduled, or is the board complete/user-blocked?"
+If none: you are about to strand the initiative — launch or schedule, THEN report.
+
+---
+
 #### ⚠️ CRITICAL: Claude IS the executor — never rubber-stamp
 
 The worst failure mode in SDD is an AI marking tasks Done without doing the work. Ticking all checkboxes and posting a boilerplate "PASS" comment while the implementation is untested or broken is **worse than leaving the task in Execution** — it creates false confidence.
