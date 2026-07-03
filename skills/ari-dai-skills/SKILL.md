@@ -34,6 +34,8 @@ Then activate a profile by setting `$DAI_BASE` and `$DAI_API_KEY`:
 
 **Rule:** Always use `https://dataspheres.ai` for prod — never `dataspheres-ai.onrender.com`.
 
+**Rule — links shown to the user (HARD):** `$DAI_BASE` / `DATASPHERES_BASE_URL` is for API calls only. Any URL you RELAY TO THE USER (pages, planner boards, dashboards, graphs, reports) must be built from `DATASPHERES_PUBLIC_URL` in `~/.dataspheres.env` — on this dev station that is `https://dev.dataspheres.ai` (the tunnel host that works from any device). Never hand the user a `http://localhost:*` link, and never rewrite a local link to `https://dataspheres.ai` (local content does not exist on prod). If content lives on prod (created with a prod profile), link prod; if it lives on the local DB, link the tunnel host.
+
 All examples below use `$DAI_BASE` and `$DAI_API_KEY`.
 
 ### Test user JWT (local dev only)

@@ -105,6 +105,20 @@ function loadEnv() {
   return env;
 }
 
+// User-facing link host. HARD RULE: never print a localhost URL to a human and
+// never substitute a hardcoded production host (on a dev station the board only
+// exists behind the dev tunnel, e.g. https://dev.dataspheres.ai). Resolution:
+//   1. DATASPHERES_PUBLIC_URL (process.env or ~/.dataspheres.env)
+//   2. .sdd-state.json top-level "publicUrl"
+//   3. the provided baseUrl (last resort)
+function publicLinkBase(env, baseUrl) {
+  const fromEnv = process.env.DATASPHERES_PUBLIC_URL || env?.DATASPHERES_PUBLIC_URL;
+  if (fromEnv) return fromEnv.replace(/\/$/, '');
+  const statePub = loadState()?.publicUrl;
+  if (statePub) return String(statePub).replace(/\/$/, '');
+  return (baseUrl || '').replace(/\/$/, '');
+}
+
 function findGitRoot() {
   try {
     return execSync('git rev-parse --show-toplevel', { encoding: 'utf-8' }).trim();
@@ -4068,7 +4082,7 @@ async function cmdUpdateDashboard(dsUri, pageSlug) {
 
   const focusLabel = activeTaskId ? `task ${activeTaskId}` : 'idle (no active task)';
   ok(`Current Focus widget updated — ${focusLabel}`);
-  info(`\nDashboard: ${env.DATASPHERES_BASE_URL?.replace('http://localhost', 'https://dataspheres.ai') || baseUrl}/pages/${dsUri}/${pageSlug}`);
+  info(`\nDashboard: ${publicLinkBase(env, baseUrl)}/pages/${dsUri}/${pageSlug}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -4079,8 +4093,8 @@ async function cmdUpdateDashboard(dsUri, pageSlug) {
 
 async function cmdCreateOrUpdateNextSteps(dsUri, dsId, planModeId, slug, baseUrl, apiKey, taskList, dashboardUrl) {
   const nextStepsSlug = `${slug}-next-steps`;
-  const plannerUrl    = `${baseUrl}/app/${dsUri}/planner?mode=${planModeId}`;
-  const publicBase    = baseUrl.replace('http://localhost', 'https://dataspheres.ai');
+  const publicBase    = publicLinkBase(loadEnv(), baseUrl);
+  const plannerUrl    = `${publicBase}/app/${dsUri}/planner?mode=${planModeId}`;
 
   const nsTasks  = taskList.filter(t => /^NS-/i.test(t.title || '') || getColumnName(t).toLowerCase() === 'north stars');
   const epTasks  = taskList.filter(t => /^EP-/i.test(t.title || '') || getColumnName(t).toLowerCase() === 'epics');

@@ -234,9 +234,10 @@ function boardLinks(cfg, slug) {
   const state = loadState();
   const ist = state?.initiatives?.[slug] || {};
   const uri = cfg?.dsUri || ist.dsUri || cfg?.dsId;
+  const pub = publicBase(ist); // HARD RULE: user-facing links use the public host, never raw BASE
   return {
-    plannerUrl: cfg?.planModeId ? `${BASE}/app/${uri}/planner?mode=${cfg.planModeId}` : null,
-    dashboardUrl: ist.dashboardSlug ? `${BASE}/pages/${uri}/${ist.dashboardSlug}` : null,
+    plannerUrl: cfg?.planModeId ? `${pub}/app/${uri}/planner?mode=${cfg.planModeId}` : null,
+    dashboardUrl: ist.dashboardSlug ? `${pub}/pages/${uri}/${ist.dashboardSlug}` : null,
   };
 }
 
@@ -567,14 +568,25 @@ function loadTemplate(name) {
   return fs.existsSync(p) ? fs.readFileSync(p, 'utf-8') : null;
 }
 
-// Public reader host for page-facing URLs. The API BASE may be localhost (the dev
-// box); pages are SERVED at the public host. Prefer an explicit env, else derive
-// the host from the registered trackerUrl, else fall back to BASE.
+// Public reader host for EVERY user-facing URL (board links, dashboards, pages).
+// HARD RULE: the API BASE may be localhost (the dev box) but links surfaced to a
+// human must be reachable from their device. Resolution order (first hit wins):
+//   1. DATASPHERES_PUBLIC_URL env            (~/.dataspheres.env — the config knob)
+//   2. .sdd-state.json top-level "publicUrl" (per-repo override)
+//   3. host of the registered trackerUrl     (if non-localhost)
+//   4. BASE — last resort, with a loud stderr warning so the misconfig is visible.
+// Never substitute a hardcoded production host: on a dev station the board only
+// exists behind the dev tunnel (e.g. https://dev.dataspheres.ai).
 function publicBase(iState) {
   if (process.env.DATASPHERES_PUBLIC_URL) return process.env.DATASPHERES_PUBLIC_URL.replace(/\/$/, '');
+  const statePub = loadState()?.publicUrl;
+  if (statePub && typeof statePub === 'string') return statePub.replace(/\/$/, '');
   const t = iState?.trackerUrl || '';
   const m = t.match(/^(https?:\/\/[^/]+)/);
   if (m && !/localhost|127\.0\.0\.1/.test(m[1])) return m[1];
+  if (/localhost|127\.0\.0\.1/.test(BASE)) {
+    process.stderr.write('⚠ user-facing links falling back to localhost — set DATASPHERES_PUBLIC_URL (e.g. https://dev.dataspheres.ai) in ~/.dataspheres.env\n');
+  }
   return BASE.replace(/\/$/, '');
 }
 
@@ -2042,7 +2054,7 @@ async function scaffoldV2Command() {
   saveState(state);
   console.log(JSON.stringify({
     scaffolded: true, schema: 2, slug: scaffoldV2Slug, planModeId: pm.id,
-    tiers, plannerUrl: `${BASE}/app/${dsUri || dsId}/planner?mode=${pm.id}`,
+    tiers, plannerUrl: `${publicBase({})}/app/${dsUri || dsId}/planner?mode=${pm.id}`,
     nextSteps: [
       'Stage IN items from user prompts, then build the chain: RS -> PC -> VP -> SS -> DO -> EP -> TK -> VC',
       'Every item except IN needs parent_uuid front matter; run --stamp-uuids after creating items',
@@ -2472,8 +2484,9 @@ async function requestReviewCommand(cfg, iState, slug) {
   }
 
   const uri = cfg.dsUri || iState.dsUri || cfg.dsId;
-  const boardUrl = `${BASE}/app/${uri}/planner?mode=${cfg.planModeId}`;
-  const dashUrl = iState.dashboardSlug ? `${BASE}/pages/${uri}/${iState.dashboardSlug}` : null;
+  const pub = publicBase(iState); // user-facing review links — public host, never raw BASE
+  const boardUrl = `${pub}/app/${uri}/planner?mode=${cfg.planModeId}`;
+  const dashUrl = iState.dashboardSlug ? `${pub}/pages/${uri}/${iState.dashboardSlug}` : null;
 
   if (blocking > 0) {
     console.error('✗ Cannot request review — pre-flight checks failed:');

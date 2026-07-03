@@ -2119,8 +2119,16 @@ DATASPHERES_DEFAULT_URI=dataspheres-ai
 EOF
 ```
 
-`DATASPHERES_BASE_URL` — where API calls go. Production is `https://dataspheres.ai`; override to `http://localhost:5173` only when running a local dev server.
-`DATASPHERES_PUBLIC_URL` — base for user-facing links (planner, dashboard). Same host as `BASE_URL` in production.
+`DATASPHERES_BASE_URL` — where API calls go. Production is `https://dataspheres.ai`; override to `http://localhost:3000` when running against a local dev server.
+`DATASPHERES_PUBLIC_URL` — base for user-facing links (planner, dashboard). Same host as `BASE_URL` in production; on a tunneled dev station it is the tunnel host (e.g. `https://dev.dataspheres.ai`).
+
+### HARD RULE — user-facing links come from DATASPHERES_PUBLIC_URL, never BASE
+
+Every URL surfaced to a HUMAN (board links, dashboard links, page links, links embedded in comments or close-out pages) MUST be built from `DATASPHERES_PUBLIC_URL` — never from the API `BASE_URL` and never by substituting a hardcoded host. The API base may be `http://localhost:3000` (unreachable from the user's device); the user opens links on their phone/laptop through the public host.
+
+- **Enforced in code:** `loop.mjs publicBase()` and `sdd-conductor.mjs publicLinkBase()` resolve `DATASPHERES_PUBLIC_URL` → `.sdd-state.json` top-level `publicUrl` → trackerUrl host → BASE (last resort, with a stderr warning when that is localhost). All link-printing sites route through these resolvers.
+- **Never "fix" a localhost link by rewriting it to `https://dataspheres.ai`** — on a dev station the board exists only behind the dev tunnel; a prod link 404s. The old hardcoded substitution was a bug, not a feature.
+- **The agent relays links verbatim** from these tools. If a localhost link ever reaches the user, fix the config (`DATASPHERES_PUBLIC_URL` in `~/.dataspheres.env`), not the message.
 
 ---
 
