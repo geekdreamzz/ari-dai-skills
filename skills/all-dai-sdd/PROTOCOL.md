@@ -79,12 +79,17 @@ It reads `.sdd-state.json` from the git root and, for the current initiative:
   - initiative is `soft` (no flag) → **loud warning**, commit allowed.
 - No feature code staged (docs, config, tests only) → pass.
 
-**Enforcement is opt-in per initiative** so it can be rolled out without breaking in-flight work:
+**Enforcement is opt-in per initiative** — the hard block is a deliberate choice, not a default,
+so it never surprise-blocks unrelated commits or in-flight work:
 
-- New boards from `--scaffold-v2` are created with `"enforce": true`.
-- Pre-existing initiatives are `soft` until you set `"enforce": true` on them in `.sdd-state.json`.
-- Opt a single initiative out any time with `"enforce": false`.
+- Boards default to `soft` (`enforce` absent/`false`) → **warn only**.
+- Turn on the hard block for a dedicated initiative with `"enforce": true` in `.sdd-state.json`.
+- Opt back out any time with `"enforce": false`.
 - Emergency bypass for one commit (discouraged): `git commit --no-verify`.
+
+> Why opt-in: an `enforced` initiative that is idle blocks *any* staged feature code, including
+> commits that belong to a different initiative or a hotfix. Keep it on only for a board whose
+> work you want strictly gated to its tasks.
 
 ---
 
@@ -105,7 +110,7 @@ non-zero on any ghost (dangling ref, broken chain, uncited artifact, missing sta
 ## The loop, start to finish
 
 ```bash
-node loop.mjs --scaffold-v2 <slug> --name "<Initiative>"   # 10-tier board, enforce:true
+node loop.mjs --scaffold-v2 <slug> --name "<Initiative>"   # 10-tier board (soft by default)
 # author IN→AR from templates/columns/*, then:
 node loop.mjs --stamp-uuids
 node loop.mjs --trace-audit            # chain + template + citation sweep (must be clean)
