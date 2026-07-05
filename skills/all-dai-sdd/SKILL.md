@@ -2,6 +2,13 @@
 
 Drive feature implementation from a living spec hosted on Dataspheres AI. Seven-column lifecycle with pre-flight research gating, sub-checklist propagation, dependency enforcement, artifact tracing, and a live stakeholder dashboard.
 
+> **The protocol is enforced and templated — see [PROTOCOL.md](PROTOCOL.md).** Every board item
+> is authored from a canonical template in [`templates/columns/`](templates/columns/); the required
+> structure is checked by `verifyV2Template` at `--advance`, the dependency chain by `--trace-audit`,
+> and (when a host repo wires it) the code↔task link by [`sdd-commit-gate.sh`](sdd-commit-gate.sh).
+> New boards from `--scaffold-v2` are `enforce: true` by default (feature code must trace to an
+> in-progress task); pre-existing initiatives stay `soft` (warn-only) until you set `"enforce": true`.
+
 ---
 
 ## Always surface the links — every interaction

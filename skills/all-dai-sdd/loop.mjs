@@ -2183,6 +2183,7 @@ async function scaffoldV2Command() {
     intakeGroupId: tiers.IN || null,
     dashboardSlug: null, trackerUrl: null,
     review: { status: 'pending' },   // loop is gated until human green-light
+    enforce: true,                   // commit gate blocks feature code with no in-progress task (opt out: set false)
   };
   state.currentInitiative = scaffoldV2Slug;
   saveState(state);
