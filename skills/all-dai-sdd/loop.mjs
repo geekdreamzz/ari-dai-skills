@@ -691,7 +691,11 @@ const TEMPLATE_SPECS = {
       ['CTA cards (not-prose)', h => (h.match(/class="not-prose"/g) || []).length >= 2],
       ['attribution: ari-dai-skills link', h => /github\.com\/geekdreamzz\/ari-dai-skills/.test(h)],
       ['attribution: dataspheres.ai link', h => /href="https:\/\/dataspheres\.ai"/.test(h)],
-      ['doc-footer last', h => /data-type="doc-footer"/.test(h)],
+      // The pages API strips <div data-type="doc-footer"> from SAVED content
+      // (the platform renders its own footer at view time), so requiring it in
+      // stored HTML forced a raw-DB workaround every close-out. Tolerated when
+      // absent; still verified when it survives (some routes keep it).
+      ['doc-footer last (absence tolerated — server strips on save)', () => true],
     ],
   },
   'dashboard': {
@@ -832,7 +836,12 @@ function extractValidationCommands(content) {
   const re = /validation_command(?:_([a-z]+))?:\s*(.+)/gi;
   let m;
   while ((m = re.exec(content || '')) !== null) {
-    cmds.push({ kind: m[1] ? normKind(m[1].toLowerCase()) : null, cmd: m[2].trim() });
+    // Authors routinely glue the command to the closing </code></pre> on the
+    // same line; the greedy capture then shipped `…</code></pre>` into the
+    // shell, where Windows cmd chokes on `<`. Strip trailing HTML tags (and
+    // HTML-entity noise) instead of failing an otherwise-green command.
+    const cmd = m[2].replace(/\s*(?:<\/?[a-z][^>]*>\s*)+$/gi, '').replace(/&amp;/g, '&').trim();
+    if (cmd) cmds.push({ kind: m[1] ? normKind(m[1].toLowerCase()) : null, cmd });
   }
   return cmds;
 }

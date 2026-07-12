@@ -17,6 +17,12 @@
 ## Acceptance Criteria
 
 <!-- Typed AC for this validation_kind (ui/api/data/benchmark). Each with the command that verifies it and the expected result. -->
+<!-- HARD RULES (each has failed a real gate):
+     - AC items must be PLAIN-TEXT <p> (no <strong>/<code> as the FIRST tag) or --check-item finds nothing.
+     - validation_command_<kind>: goes ALONE on its line — newline BEFORE the closing </code></pre>.
+     - Title must be ASCII (no em-dash / curly quotes / arrows) or --trace-audit flags it.
+     - data-kind evidence must read persisted values back (counts, fields, "expected N got N");
+       api-kind evidence must quote /api/... paths + HTTP status codes. -->
 
 _TODO: fill in._
 

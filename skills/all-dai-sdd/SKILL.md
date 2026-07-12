@@ -79,6 +79,21 @@ node loop.mjs --scaffold-v2 <slug> --name "<Initiative Name>"
 
 **Column templates are advance gates** — each tier has required sections (`verifyV2Template`): IN needs the verbatim Origin Prompt blockquote; RS needs Search Results/Sources/Codebase Context/Synthesis; PC needs Problem Statement + Customer Segment; VP needs Value Proposition + Why Worth Solving; SS needs FR/NFR/Artifacts Needed; DO needs Success Metrics + Final Outcomes; EP needs Milestone/Scope/Task Checklist; TK needs Steps/Files/AC; VC needs typed Acceptance Criteria + `validation_kind` + commands; AR needs Citations.
 
+**Authoring pitfalls — hard-won, check BEFORE creating items (each cost a real debugging cycle):**
+
+1. **ASCII titles only.** Em-dashes/curly quotes/`→` in TITLES fail `--trace-audit` (`fancy-unicode-in-title`). Use `-`, `'`, `->`. (Body content is fine — Node writes UTF-8 safely.)
+2. **`type: <TIER>` front matter on EVERY item** (plus `parent_uuid`/`uuid`) — `tier:` alone fails the column-template gate at `--advance`.
+3. **`validation_command_<kind>:` must be ALONE on its line** — put a newline before the closing `</code></pre>`. (loop.mjs now strips trailing HTML tags defensively, but author it clean.)
+4. **VC/TK acceptance items are PLAIN-TEXT `<p>`** — a `<strong>`/`<code>` opening tag makes `--check-item` report "No checklist items found."
+5. **`data`-kind evidence must READ VALUES BACK**: counts, model fields, row states, "expected N, got N" — a green test run alone fails the evidence gate. `api`-kind needs quoted `/api/...` paths + HTTP status codes.
+6. **AR citations: every cited file must contain the literal `VC-NNN` string on disk** — write decorators as `spec: TK-NNN / VC-NNN | initiative` (a TK-only decorator fails the AR gate). Enumerate keys in full; `VC-003/004` only matches `VC-003`.
+7. **`validation_types:` overrides on the TK** when file-derived typed coverage over-requires (a service file with no HTTP surface demands `api`; a client seam proven by a browser-driven api-kind spec demands `ui`). State in the TK where the surface IS covered.
+8. **Live-LLM e2e turns must be pinned informational** — "Just answer in chat - do not create, change, or research anything." An action-phrased message can legitimately route into real tools (HIL cards, deep research) and navigate the SPA mid-turn, so `chain_complete` reports the wrong route and the chain may never complete in-test.
+9. **Intake board cards don't auto-close**: `--triage INT-NNN --target-ref <task>` finishes the queue entry, but PATCH the `IN-NNN` board card to `status: DONE` or `--next` stays `awaiting-triage` forever.
+10. **Schema changes on a drifted host repo**: if `prisma migrate dev` (even `--create-only`) demands a reset — NEVER reset. Hand-author the migration folder from `prisma migrate diff --from-url <db> --to-schema-datamodel prisma/schema.prisma --script` (extract ONLY your objects), then `migrate deploy` + `prisma generate` on host AND app container + restart the container.
+11. **Next-steps close-out page**: the pages API strips `<div data-type="doc-footer">` from saved content (the platform renders its own footer at view time) — the verify-page gate now tolerates its absence; do NOT hand-patch the DB to satisfy it.
+12. **Hot-reload liveness on WSL2/9P dev stations**: after server-file writes, nodemon/tsx can serve stale code even across `docker compose restart`. Before trusting an e2e failure, verify the running process has the change (grep the file IN the container, add a one-line probe log) — two "regressions" were phantom stale-server artifacts.
+
 **The Ralph loop is VC-centric with full hierarchy context.** `--next` on a v2 board returns the current item PLUS its entire parent chain (`hierarchy: [...]` — TK, EP, DO, SS, VP, PC, RS, IN with full content), so each validation runs with the requirements of every parent column in hand. A VC may take hundreds of turns; the loop course-corrects by filing intake (which lands as new `IN-NNN` items), creating items in any column (chained!), or asking the user — then keeps running.
 
 **HUMAN GREEN-LIGHT GATE — the loop does NOT start until a human reviews the board.** "When ready the dumb Ralph loop is initiated" — *when ready* is a human decision, not the agent's. After staging the full chain, building the dashboard, and getting `--trace-audit` clean:

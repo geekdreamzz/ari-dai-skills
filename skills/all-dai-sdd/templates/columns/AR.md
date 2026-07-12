@@ -22,3 +22,8 @@ _TODO: fill in._
 
 <!-- Every section header above is REQUIRED and checked by verifyV2Template() in loop.mjs.
      Author from this template, run `node loop.mjs --stamp-uuids`, then `--advance`. -->
+
+<!-- HARD RULE (AR citations): every cited code file must contain the literal VC-NNN string
+     ON DISK — write decorators as `spec: TK-NNN / VC-NNN | initiative: <slug>` at the change
+     site or header. Enumerate keys in full (VC-003, VC-004 — never VC-003/004). No
+     TODO|TBD|FIXME|placeholder anywhere in the AR body. -->
