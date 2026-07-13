@@ -383,7 +383,7 @@ function resolveAttachPaths(paths) {
   const resolved = [];
   const problems = [];
   for (const p of paths) {
-    const abs = p.match(/^[A-Z]:\\|^\//) ? p : path.join(gitRoot, p);
+    const abs = p.match(/^[A-Za-z]:[\\\/]|^\//) ? p : path.join(gitRoot, p);
     if (!fs.existsSync(abs)) { problems.push(`attachment does not exist: ${p}`); continue; }
     if (Date.now() - fs.statSync(abs).mtimeMs > ATTACH_MAX_AGE_MS) {
       problems.push(`attachment older than 24h — re-run to produce fresh results: ${p}`);
@@ -615,7 +615,11 @@ function verifyV2Artifact(task, gitRoot) {
   const parentUuid = v2ParentUuid(c);
   if (!aType) issues.push('missing artifact_type front matter (code|media|report)');
   if (!parentUuid) issues.push('missing parent_uuid (the VC this artifact ships)');
-  for (const p of STUB_PATTERNS) { if (p.test(c)) { issues.push(`stub placeholder: ${p.source}`); break; } }
+  // Stub scan runs on PROSE only — <code> spans are file paths / embedded file
+  // content, which may legitimately contain words like 'placeholder' (e.g. a
+  // file named ari-dock-placeholder.test.ts must be citable).
+  const prose = c.replace(/<code[\s\S]*?<\/code>/g, '');
+  for (const p of STUB_PATTERNS) { if (p.test(prose)) { issues.push(`stub placeholder: ${p.source}`); break; } }
 
   if (aType === 'code') {
     const paths = [...c.matchAll(/<code[^>]*>([^<]+)<\/code>/g)].map(m => m[1].trim())
@@ -3254,7 +3258,7 @@ async function advanceTask(cfg, iState, slug) {
     const missingShots = [];
     const staleShots = [];
     for (const sp of shots) {
-      const abs = sp.match(/^[A-Z]:\\|^\//) ? sp : path.join(gitRootUI, sp);
+      const abs = sp.match(/^[A-Za-z]:[\\\/]|^\//) ? sp : path.join(gitRootUI, sp);
       if (!fs.existsSync(abs)) { missingShots.push(sp); continue; }
       if (Date.now() - fs.statSync(abs).mtimeMs > MAX_SHOT_AGE_MS) staleShots.push(sp);
     }
