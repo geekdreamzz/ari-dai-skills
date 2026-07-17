@@ -6,33 +6,81 @@ on:
   pull_request:
     branches: [main]
 
-jobs:
-  test:
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        python-version: ["3.11", "3.12"]
-        os: [ubuntu-latest, windows-latest]
+permissions:
+  contents: read
 
+jobs:
+  validate:
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v4
+      - uses: actions/setup-node@v4
         with:
-          version: "latest"
+          node-version: "22"
 
-      - name: Set up Python ${{ matrix.python-version }}
-        run: uv python install ${{ matrix.python-version }}
+      - name: Check Node.js syntax
+        shell: bash
+        run: |
+          while IFS= read -r file; do
+            node --check "$file"
+          done < <(git ls-files '*.mjs')
 
-      - name: Install dependencies
-        run: uv sync --extra dev
+      - name: Check shell syntax
+        shell: bash
+        run: |
+          while IFS= read -r file; do
+            bash -n "$file"
+          done < <(git ls-files '*.sh')
 
-      - name: Lint (ruff)
-        run: uv run ruff check dai/ tests/
+      - name: Validate skill registry metadata
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
 
-      - name: Type check (mypy)
-        run: uv run mypy dai/ --ignore-missing-imports
+          const errors = [];
+          let count = 0;
+          for (const entry of fs.readdirSync('skills', { withFileTypes: true })) {
+            if (!entry.isDirectory()) continue;
+            const dir = path.join('skills', entry.name);
+            if (!fs.existsSync(path.join(dir, 'SKILL.md'))) continue;
+            count += 1;
 
-      - name: Unit tests
-        run: uv run pytest tests/ -v --tb=short --ignore=tests/test_e2e_smoke.py
+            const metadataPath = path.join(dir, 'skill.json');
+            if (!fs.existsSync(metadataPath)) {
+              errors.push(`${entry.name}: missing skill.json`);
+              continue;
+            }
+
+            try {
+              const metadata = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
+              if (metadata.visibility !== 'public') {
+                errors.push(`${entry.name}: visibility must be "public"`);
+              }
+              if (metadata.repo !== 'github.com/geekdreamzz/ari-dai-skills') {
+                errors.push(`${entry.name}: unexpected repo metadata`);
+              }
+            } catch (error) {
+              errors.push(`${entry.name}: invalid skill.json (${error.message})`);
+            }
+          }
+
+          if (errors.length) {
+            console.error(errors.join('\n'));
+            process.exit(1);
+          }
+          console.log(`Validated ${count} skills`);
+          NODE
+
+      - name: Smoke-test skill installer
+        shell: bash
+        run: |
+          tmp_dir="$(mktemp -d)"
+          trap 'rm -rf "$tmp_dir"' EXIT
+          bash install.sh --all --project "$tmp_dir" --copy
+
+          shopt -s nullglob
+          source_skills=(skills/*/SKILL.md)
+          installed_skills=("$tmp_dir"/.claude/skills/*/SKILL.md)
+          test "${#installed_skills[@]}" -eq "${#source_skills[@]}"

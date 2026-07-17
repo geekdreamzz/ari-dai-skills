@@ -86,6 +86,6 @@ Each `start_research` call triggers a web search + LLM completion. Web searches 
 
 | Error | Cause | Fix |
 |-------|-------|-----|
-| "No active datasphere" | No datasphere set | Run `dai use <uri>` |
-| 401 | Invalid key | Re-run `dai login` |
+| Missing datasphere ID | Target was not resolved | Call `list_dataspheres` and use the returned database ID |
+| 401 | Invalid key | Check `DATASPHERES_API_KEY` in `.env` or `~/.dataspheres.env` |
 | Empty messages list | Response still streaming | Wait ~3–5 seconds and retry `get_research_messages` |

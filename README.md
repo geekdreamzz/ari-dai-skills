@@ -45,7 +45,6 @@
 | `datasets` | Create and query structured datasets |
 | `data_cards` | Build data card visualizations from datasets |
 | `knowledge_bank` | Manage the AI knowledge bank and context for a datasphere |
-| `context` | Manage AI context windows and prompt context |
 
 **Newsletters & Outreach**
 

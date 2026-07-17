@@ -184,5 +184,5 @@ add_comment(task_id="t1", content="Screen recording from QA:", screenshots=[resu
 For spec-driven development with the 5-column lifecycle (North Stars → Epics → Execution → Validation → Done), use the `all-dai-sdd` skill which wraps the planner with the full lifecycle protocol.
 
 ## Error Patterns
-- "No active datasphere" → run `dai use <uri>`
+- Missing datasphere context → resolve the target with `list_dataspheres`, then pass its database ID to planner operations
 - 404 on task_id → task was deleted or wrong datasphere

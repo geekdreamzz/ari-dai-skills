@@ -158,8 +158,8 @@ export_survey_responses(pageId="page_abc123", format="csv")  # csv | json
 
 | Error | Cause | Fix |
 |---|---|---|
-| "No active datasphere" | No datasphere set | Call `get_context()` first |
-| 401 | Invalid key | Check DATASPHERES_API_KEY |
+| Missing datasphere URI | Target was not resolved | Call `list_dataspheres` and select the intended workspace |
+| 401 | Invalid key | Check `DATASPHERES_API_KEY` in `.env` or `~/.dataspheres.env` |
 | 403 on responses | Not the survey owner | Responses require ownership |
 | 404 | Survey page ID not found | Verify the `pageId` from `create_survey` |
 | CHECKBOX shows only one select | `allowMultiple` not set | Re-create with `allowMultiple: true` |

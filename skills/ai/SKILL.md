@@ -73,6 +73,6 @@ Each `draft_content` call triggers an LLM completion. Confirm with the user befo
 
 | Error | Cause | Fix |
 |-------|-------|-----|
-| 401 | Invalid API key | Re-run `dai login` |
+| 401 | Invalid API key | Check `DATASPHERES_API_KEY` in `.env` or `~/.dataspheres.env` |
 | 404 on page_id | Page not found | Verify with `get_page` from the pages skill |
 | 422 | Missing `content` or `context` | Both fields are required |

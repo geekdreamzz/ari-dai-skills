@@ -80,7 +80,7 @@ delete_sequence(sequence_id="seq_abc123")
 | `list_executions` | GET | `/api/v2/dataspheres/:dsId/sequences/:sequenceId/executions` | |
 | `delete_sequence` | DELETE | `/api/v2/dataspheres/:dsId/sequences/:sequenceId` | |
 
-All endpoints use the datasphere **DB ID** (not URI) via v2 routes. This is resolved automatically by `_ds_id()`.
+All endpoints use the datasphere **DB ID** (not URI) via v2 routes. Resolve it with `list_dataspheres` or `GET /api/v1/dataspheres` before making the request.
 
 **Note:** There is no v1 sequences API. All sequence operations must use v2.
 
@@ -88,7 +88,7 @@ All endpoints use the datasphere **DB ID** (not URI) via v2 routes. This is reso
 
 | Error | Cause | Fix |
 |-------|-------|-----|
-| "No active datasphere" | No datasphere set | Run `dai use <uri>` |
-| 401 | Invalid key | Re-run `dai login` |
+| Missing datasphere ID | Target was not resolved | Call `list_dataspheres` and use the returned database ID |
+| 401 | Invalid key | Check `DATASPHERES_API_KEY` in `.env` or `~/.dataspheres.env` |
 | 403 | Membership check failed | Ensure you're a datasphere member |
 | 404 | Sequence not found | Check `list_sequences()` |

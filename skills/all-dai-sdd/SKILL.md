@@ -130,7 +130,6 @@ Every SDD project uses exactly these eight columns, in this order. When you crea
 | **loop.mjs** | Sequencing (`--next`), per-item gating (`--check-item`), task gates (`--advance`), intake queue, remediation scaffolding, AR creation, IN_PROGRESS + `sdd-active` tracking, milestone comments up the hierarchy | Advancing anything without evidence (the bare mechanical loop is disabled) |
 | **ralph-run.mjs** | The blind loop: fresh `claude --print` per task, sigil parsing, failure log injection | Bypassing loop.mjs gates |
 | **sdd-conductor.mjs** | init, verify-gates, dashboard-check, update-dashboard, checklist propagation cascades (EX→EP→NS) | Board task advancement |
-| **verify_gates.py** | The 12 structural invariants (trace chain, research gate, origin blockquotes…) | Behavioral verification (that is evidence gating in loop.mjs) |
 | **User** | Origin prompts, clarity answers, UAT verdicts (`--uat <id> --outcome pass|fail`), intake submissions | — |
 
 ### User Clarity Protocol (planning phases only)
@@ -453,7 +452,7 @@ Use this for: flag compatibility checks, version lookups, error messages. For fu
 Before taking any further action, answer these six questions:
 
 1. **Does any VA task in the Validation column have ≥1 failed iteration comment?** → if YES → **LOOP immediately** (skip remaining questions)
-2. **Is there an active datasphere?** → call `get_context()` or check for `targetDatasphere` in tasks.yaml
+2. **Is there a target datasphere?** → check `.sdd-state.json`, `targetDatasphere` in tasks.yaml, or `DATASPHERES_DEFAULT_URI`
 3. **Does a plan mode already exist for this initiative?** → `list_plan_modes(dsId)`
 4. **Are there existing tasks on the board?** → `list_tasks(dsId, planModeId)`
 5. **Is there a local tasks.yaml?** → check `<project-dir>/tasks.yaml`
@@ -495,7 +494,7 @@ This mode runs **immediately and autonomously** — no user confirmation, no ski
 1. Pull all tasks from the live board via API
 2. **Check for DONE mode first** — if all tasks are Done, switch to DONE mode immediately
 3. Generate a `tasks.yaml` representing current board state
-4. Run `node sdd-conductor.mjs verify-gates` against it — report violations
+4. Initialize or switch `sdd-conductor` to the initiative, then run `node sdd-conductor.mjs verify-gates` against the live board
 5. Assess what's missing: Research tasks without sources? NS without research_ref? EX tasks without epic_ref? Epics without EX tasks?
 6. Generate the delta: new tasks to add, existing tasks to update, violations to fix
 7. Confirm with user, then apply
@@ -504,9 +503,9 @@ This mode runs **immediately and autonomously** — no user confirmation, no ski
 1. Load tasks.yaml
 2. Pull live board state from API
 3. Diff: tasks in yaml not on board → CREATE; tasks on board not in yaml → flag as ORPHANED; tasks in both → check for content drift
-4. Run `node sdd-conductor.mjs verify-gates` on the merged state
+4. Inspect the merged state for missing references before applying it
 5. Apply delta — create missing, update drifted, report orphans
-6. Always run `node sdd-conductor.mjs verify-gates` after sync to confirm CLEAN
+6. Run `node sdd-conductor.mjs verify-gates` against the live board after sync; CLEAN is required
 
 ### Mode: LOOP
 
@@ -800,7 +799,7 @@ Triggered when user says "refactor", "restructure", or "reorganize":
 
 ### Mode: VERIFY
 Triggered when user says "verify", "check gates", or "verify gates":
-1. Pull live board or use local tasks.yaml
+1. Ensure `.sdd-state.json` points to the intended live board
 2. Run `node sdd-conductor.mjs verify-gates`
 3. Report CLEAN (all good) or VIOLATIONS with exact counterexamples (task ID + rule)
 4. If violations found: propose minimal fixes (which tasks need which field changes)
