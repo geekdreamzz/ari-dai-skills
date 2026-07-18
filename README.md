@@ -55,6 +55,7 @@
 | `sequences` | Build automated multi-step outreach or drip workflows |
 | `sequencers` | Manage sequence runners and scheduling |
 | `surveys` | Design, run, and analyze surveys |
+| `journal` | Private journaling, topical Journal Modes, and portable per-viewer journaling templates |
 
 **Planner & Tasks**
 
