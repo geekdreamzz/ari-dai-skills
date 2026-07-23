@@ -6,7 +6,7 @@ argument-hint: "[action] [options]"
 
 # export — Local Workspace Export
 
-The export skill pulls content from your active datasphere and writes it to a local `workspace/` directory in the current working directory. Useful for backups, offline editing, or feeding content into other tools.
+The export skill is an agent workflow: fetch content from a selected datasphere through REST and write it to a local `workspace/` directory. It is useful for backups, offline editing, or feeding content into other tools. There is no separate `export_page` or `export_tasks` runtime.
 
 The `workspace/` directory is automatically added to `.gitignore` if not already there.
 
@@ -14,44 +14,25 @@ The `workspace/` directory is automatically added to `.gitignore` if not already
 
 ### Export a page
 
-```python
-export_page(slug="q2-update")
-# → {"path": "/path/to/workspace/q2-update.md", "slug": "q2-update", "title": "Q2 Update"}
-```
-
-The page content (HTML) is saved as Markdown with the title as an `<h1>`. Specify a custom filename:
-
-```python
-export_page(slug="q2-update", filename="q2_product_update.md")
-```
+1. Resolve the target datasphere URI from the request or `DATASPHERES_DEFAULT_URI`.
+2. Fetch `GET /api/v1/dataspheres/:uri/pages/:slug`.
+3. Write the returned page title and HTML content to `workspace/<slug>.html`, or to the filename requested by the user.
+4. Report the absolute output path and do not overwrite an unrelated file without confirmation.
 
 ### Export tasks
 
-```python
-export_tasks(format="json")
-# → {"path": "/path/to/workspace/tasks.json", "count": 42, "format": "json"}
-```
-
-Export as CSV for spreadsheet use:
-
-```python
-export_tasks(format="csv", filename="sprint_tasks.csv")
-```
-
-Filter to a specific plan mode (Kanban board):
-
-```python
-export_tasks(plan_mode_id="<planModeId>", format="json")
-```
+1. Resolve the target datasphere database ID with `list_dataspheres` or `GET /api/v1/dataspheres`.
+2. Fetch `GET /api/v2/dataspheres/:dsId/tasks`, adding the documented plan-mode filter when requested.
+3. For JSON, write the returned task array to `workspace/tasks.json`.
+4. For CSV, flatten only scalar fields, write an explicit header row, and JSON-encode nested values instead of silently dropping them.
+5. Report the task count and absolute output path.
 
 ## API Reference
 
 | Tool | Method | Endpoint | Notes |
 |------|--------|----------|-------|
-| `export_page` | GET | `/api/v1/dataspheres/:uri/pages/:slug` | Writes to `workspace/<filename>.md` |
-| `export_tasks` | GET | `/api/v2/dataspheres/:dsId/tasks` | Writes to `workspace/<filename>.json\|csv` |
-
-`export_tasks` uses the DB ID internally (`_ds_id()`) for the v2 tasks endpoint.
+| Page export | GET | `/api/v1/dataspheres/:uri/pages/:slug` | Uses the human-readable URI |
+| Task export | GET | `/api/v2/dataspheres/:dsId/tasks` | Uses the database ID |
 
 ## Output Location
 
@@ -59,14 +40,14 @@ All files land in `<cwd>/workspace/`:
 
 ```
 workspace/
-├── q2-update.md
+├── q2-update.html
 ├── tasks.json
 └── sprint_tasks.csv
 ```
 
 ## Limitations
 
-- Page content is saved as-is (HTML wrapped in Markdown). There is no HTML-to-Markdown conversion — the exported `.md` files contain raw HTML.
+- Page content is saved as HTML. This workflow does not attempt lossy HTML-to-Markdown conversion.
 - Tasks export fetches up to 500 tasks per call. For larger boards, filter by `plan_mode_id`.
 - No media export — use `list_library` from the library skill to get media URLs.
 
@@ -74,6 +55,7 @@ workspace/
 
 | Error | Cause | Fix |
 |-------|-------|-----|
-| "No active datasphere" | No datasphere set | Run `dai use <uri>` |
+| Missing target datasphere | No URI or database ID was resolved | Call `list_dataspheres` and select the intended workspace |
+| 401 | Missing or invalid API key | Check `DATASPHERES_API_KEY` in `.env` or `~/.dataspheres.env` |
 | 404 on page | Slug not found | Check `list_pages()` from the pages skill |
 | FileNotFoundError | `workspace/` parent not writable | Check directory permissions |

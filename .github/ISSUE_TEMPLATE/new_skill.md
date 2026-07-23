@@ -12,9 +12,9 @@ labels: enhancement
 
 <!-- What Dataspheres AI capability does this expose? -->
 
-## Proposed tools
+## Proposed platform operations
 
-<!-- List the MCP tool functions this skill would add -->
+<!-- List existing ARI tool names and/or REST endpoints this skill would document -->
 
 ## Why this is useful
 

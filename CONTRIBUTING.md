@@ -2,17 +2,21 @@
 
 Welcome! dai-skills is the open-source AI skill library for Dataspheres AI. Contributions — new skills, bug fixes, tool improvements — are all very welcome. Every contributor is an honorary dai-hard.
 
+## Architecture
+
+This repository ships agent-readable Markdown skills and Node.js utilities. It does not contain the Dataspheres API implementation, a Python package, or a local MCP server. Skills describe platform tools and REST endpoints; agents call the hosted platform directly.
+
 ## Adding a New Skill
 
-A skill is two things: a prose SKILL.md file (the operating manual for IDE agents) and a Python tool module (the MCP implementation).
+A public skill consists of an agent operating manual and registry metadata:
 
-### 1. Create the skill prose file
-
-```
+```text
 skills/<skill-name>/SKILL.md
+skills/<skill-name>/skill.json
 ```
 
-Use this frontmatter:
+Start `SKILL.md` with:
+
 ```yaml
 ---
 name: my-skill
@@ -21,52 +25,43 @@ argument-hint: "[action] [options]"
 ---
 ```
 
-### 2. Create the tool module
+Add public registry metadata:
 
-```python
-# dai/mcp/tools/my_skill.py
-from dai.mcp.registry import mcp
-from dai.client import DaiClient
-import dai.state as _state
-
-@mcp.tool()
-def my_tool(param: str) -> dict:
-    """Tool description shown to IDE agents."""
-    client = DaiClient.from_state()
-    # ... implementation
+```json
+{
+  "visibility": "public",
+  "repo": "github.com/geekdreamzz/ari-dai-skills"
+}
 ```
 
-### 3. Register in server.py
+Document only capabilities that exist on the hosted platform. Verify tool names and field shapes against `/api/mcp/schema` or the developer reference, and include the corresponding REST method and endpoint where useful. Never invent an endpoint or describe a planned capability as shipped.
 
-```python
-import dai.mcp.tools.my_skill  # noqa: F401
+Optional executable helpers must use Node.js 18+ and should avoid dependencies unless the capability genuinely requires one.
+
+## Documentation Standards
+
+- Include a realistic end-to-end workflow, not only a list of operations.
+- Explain important authorization, URI-versus-database-ID, and asynchronous-job behavior.
+- Include actionable error guidance using `.env` or `~/.dataspheres.env`; do not refer to the retired `dai` CLI.
+- For page-producing skills, emit valid TipTap HTML and run the `tiptap-html` gate before publishing.
+- Never commit credentials, private machine paths, or internal-only operations. See `REGISTRY.md`.
+
+## Validation
+
+Run the same dependency-free checks as CI:
+
+```sh
+git ls-files '*.mjs' | while IFS= read -r file; do node --check "$file"; done
+git ls-files '*.sh' | while IFS= read -r file; do bash -n "$file"; done
+
+tmp_dir="$(mktemp -d)"
+bash install.sh --all --project "$tmp_dir" --copy
+rm -rf "$tmp_dir"
 ```
 
-### 4. Write tests
+CI also verifies that every directory containing `SKILL.md` has valid public `skill.json` metadata.
 
-Add at least one happy-path test in `tests/test_tools.py`.
-
-### 5. Open a PR
-
-Use the PR template. CI must pass before merge.
-
-## Code Style
-
-- Python 3.11+
-- `ruff` for linting (`uv run ruff check .`)
-- `mypy` for type checking (`uv run mypy dai/`)
-- No mocks in tests — test against real endpoints (use `skipif` guards)
-
-## Running Tests
-
-```bash
-# Unit tests only (no API required)
-uv run pytest tests/test_state.py -v
-
-# E2E smoke test (requires dev server)
-DATASPHERES_API_KEY=dsk_xxx DATASPHERES_BASE_URL=http://localhost:5173 \
-  uv run pytest tests/test_e2e_smoke.py -v
-```
+Use the pull request template and make sure CI passes before merge.
 
 ## License
 

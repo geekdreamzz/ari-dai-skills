@@ -154,8 +154,9 @@ ${mermaid(`flowchart TD
 }</code></pre>
 
 <h2>Install Path</h2>
-<pre><code>dai update --project /path/to/project
-  installs all-dai-sdd skill + runs post-install.sh
+<pre><code>bash update.sh /path/to/project
+  pulls the skills repo + runs install.sh --all
+    installs all-dai-sdd skill + runs post-install.sh
     node sdd-conductor.mjs install
       PostToolUse(Write|Edit) &rarr; check-file-hook
       PostToolUse(Bash)       &rarr; progress-hook

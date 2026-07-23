@@ -45,8 +45,8 @@ delete_media(media_id="med_abc123")
 
 | Tool | Method | Endpoint | Notes |
 |------|--------|----------|-------|
-| `upload_file` | POST | `/api/media/upload` | Multipart form upload; uses direct httpx call |
-| `list_library` | GET | `/api/v1/dataspheres/:uri/media` | Requires active datasphere |
+| `upload_file` | POST | `/api/media/upload` | Multipart form upload |
+| `list_library` | GET | `/api/v1/dataspheres/:uri/media` | Requires an explicit target datasphere URI |
 | `delete_media` | DELETE | `/api/v1/dataspheres/:uri/media/:mediaId` | Permanent — no undo |
 
 `upload_file` does not scope to a datasphere by URI in the path — the API uses the authenticated user's account to associate the upload. However, `list_library` and `delete_media` are datasphere-scoped.
@@ -65,7 +65,7 @@ For task comments (screenshots), pass the URL in the `screenshots` list when cal
 
 | Error | Cause | Fix |
 |-------|-------|-----|
-| FileNotFoundError | `file_path` doesn't exist | Check the path with `os.path.exists()` |
-| 401 | Invalid API key | Re-run `dai login` |
+| FileNotFoundError | `file_path` doesn't exist | Verify the local path before uploading |
+| 401 | Invalid API key | Check `DATASPHERES_API_KEY` in `.env` or `~/.dataspheres.env` |
 | 413 | File too large | Compress the file or upgrade your plan |
-| 404 on list/delete | Datasphere URI not found | Run `dai use <uri>` with a valid URI |
+| 404 on list/delete | Datasphere URI not found | Call `list_dataspheres` and pass a valid URI |

@@ -7,7 +7,6 @@ argument-hint: ""
 # principles — dai-skills Engineering Standards
 
 > **"TEST ALL CHANGES. NEVER STUB OR MOCK DATA.**
-> **If I stub/mock, I MUST add a TODO comment to fix it IMMEDIATELY.**
 > **I MUST run tests before marking done.**
 > **NOTHING is done until it's TESTED and DOCUMENTED.**
 > **A FILE IS NOT A FEATURE. A SCHEMA IS NOT A FEATURE.**
@@ -20,20 +19,19 @@ argument-hint: ""
 
 **No stubs. No mock data. No placeholder implementations.**
 
-If a real implementation isn't possible right now, add a TODO — not a fake one:
+If a platform capability does not exist, document that limitation instead of fabricating a tool or endpoint:
 
-```python
-# TODO: IMPLEMENT — create_question() when surveys v2 adds question management [task: T-XXX]
-# Currently: raises NotImplementedError
-raise NotImplementedError("Survey question management not yet available in API")
+```markdown
+> Not available: question management is not present in the current platform schema.
+> Tracking: T-XXX
 ```
 
 The `[task: T-XXX]` must reference a real task in the planner. No orphan TODOs.
 
 If you discover that an API endpoint doesn't exist, **do not fabricate one**. Instead:
-1. Remove the tool or mark it with `NotImplementedError`
+1. Remove the claimed operation
 2. Update the SKILL.md to document the limitation
-3. File a task to add the endpoint
+3. File a platform task to add the endpoint
 
 ### The stub-and-stamp anti-pattern (what caused the original SKILL.md problem)
 
@@ -47,10 +45,10 @@ Before marking any task DONE:
 
 | Check | Requirement |
 |-------|-------------|
-| Code exists | The implementation is written |
-| Wired | The tool is registered and callable via MCP |
-| Tested | At least one test covers the happy path |
-| Verified | A real API call confirms the endpoint works |
+| Capability exists | The hosted platform implements the documented operation |
+| Wired | The skill points to the real tool or REST endpoint |
+| Tested | Executable helpers pass syntax and behavior checks |
+| Verified | The live schema, developer reference, or a safe API call confirms the contract |
 | Documented | The SKILL.md reflects what the tool actually does |
 
 If any answer is NO → it's not DONE.
@@ -60,20 +58,14 @@ If any answer is NO → it's not DONE.
 | Label | Meaning |
 |-------|---------|
 | DONE | All 5 checks above pass |
-| FILE ONLY | Module exists but no tool registered |
-| STUB | Tool registered but returns fake/empty data |
+| DOC ONLY | Documentation exists but the platform capability is absent |
+| STUB | Claimed workflow returns fake or placeholder data |
 | UNTESTED | Implementation exists but no test coverage |
 | UNDOCUMENTED | Tool works but SKILL.md not updated |
 
 ---
 
-## 3. File Front Matter
-
-Every Python tool file must start with a module docstring:
-
-```python
-"""<Domain> tool domain — <one-line description of what these tools do>."""
-```
+## 3. Skill Structure
 
 Every SKILL.md must start with YAML frontmatter:
 
@@ -85,7 +77,16 @@ argument-hint: "[action] [options]"
 ---
 ```
 
-The `description` field is what appears in tool listings and MCP capability summaries. It must describe what the tools **actually do**, not what you hope they'll do someday.
+Every public skill must also contain `skill.json`:
+
+```json
+{
+  "visibility": "public",
+  "repo": "github.com/geekdreamzz/ari-dai-skills"
+}
+```
+
+The `description` field appears in agent skill listings. It must describe what the hosted platform or shipped helper **actually does**, not what you hope it will do someday.
 
 ---
 
@@ -94,11 +95,9 @@ The `description` field is what appears in tool listings and MCP capability summ
 - **No inline comments unless the WHY is non-obvious.** Well-named identifiers are self-documenting.
 - **Do** comment hidden constraints, API gotchas, or workarounds for specific behavior:
 
-```python
-def _ds_id() -> str:
-    # v2 endpoints require the DB id, not the URI — passing the URI causes a 403
-    # because membership is stored by datasphereId not uri.
-    ...
+```javascript
+// v2 membership is keyed by the database ID, so a datasphere URI is invalid here.
+const path = `/api/v2/dataspheres/${datasphereId}/tasks`;
 ```
 
 - **Don't** comment what the code does — only why it does it that way.
@@ -106,39 +105,36 @@ def _ds_id() -> str:
 
 ---
 
-## 5. API Endpoint Verification
+## 5. Platform Contract Verification
 
-Before writing any tool that calls an API endpoint:
+Before documenting a platform operation:
 
-1. **Find the route file** in `src/server/routes/` or `src/server/v2/routes/`
-2. **Confirm the mount point** from `src/server/index.ts` or the v2 router
-3. **Verify the body shape** from the controller
+1. **Find the operation** in `/api/mcp/schema` or the developer reference
+2. **Confirm the HTTP method and complete path**
+3. **Verify request fields, response shape, role requirements, and side effects**
 4. **Check URI vs DB ID**: v1 endpoints use URI; v2 endpoints use DB ID
-
-The correct helper:
-- `_ds()` → URI (for `/api/v1/dataspheres/:uri/...`)
-- `_ds_id()` → DB ID (for `/api/v2/dataspheres/:dsId/...`)
+5. **Use a safe read request** when documentation and schema disagree
 
 Calling a v2 endpoint with a URI causes 403 "Moderator access required" — the membership lookup uses DB ID, not URI.
 
 ---
 
-## 6. Test Coverage
+## 6. Validation
 
-Every new tool function must have at minimum:
+Every changed skill must be checked for:
 
-1. **Happy path test** — correct call with mocked `DaiClient`, verifies URL + body
-2. **Error path test** — tool raises `ValueError` or propagates `ApiError` correctly
-3. **State test** — if the tool reads `_ds()` or `_ds_id()`, test the "no active datasphere" case
+1. **Happy path** — the documented fields and endpoint match the platform contract
+2. **Error path** — common authentication, authorization, and missing-resource failures have actionable guidance
+3. **Context** — the workflow says how to resolve its datasphere URI or database ID
+4. **Installer** — the skill installs into a temporary project
 
-Run tests before marking any tool task done:
+For executable JavaScript, run:
 
 ```bash
-cd /path/to/dai-skills
-python -m pytest tests/ -v
+node --check path/to/script.mjs
 ```
 
-All tests must pass. No skipped tests without documented reason.
+For shell helpers, run `bash -n`. CI performs these checks for every tracked script and smoke-tests `install.sh`.
 
 ---
 
@@ -146,8 +142,8 @@ All tests must pass. No skipped tests without documented reason.
 
 A SKILL.md is only complete when it contains:
 
-- [ ] A real workflow section showing actual tool calls with realistic arguments
-- [ ] The correct API endpoint table (verified against the route files)
+- [ ] A real workflow section showing actual tool or REST calls with realistic arguments
+- [ ] The correct API endpoint table (verified against the live schema or developer reference)
 - [ ] Any critical gotchas (URI vs DB ID, missing endpoints, SSE limitations)
 - [ ] Error patterns for the 3 most common failure modes
 
