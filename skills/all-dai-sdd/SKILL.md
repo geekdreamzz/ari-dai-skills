@@ -659,6 +659,35 @@ The command must test the REQUIREMENT, not the component: "modal shows success s
 
 **The regression wall: `--regress` gates "complete".** `node loop.mjs --regress` executes every VA's validation_command across the whole board and records the result in `.sdd-state.json`. `--next` will NOT report `complete` — and DONE mode cannot start — without a fresh all-pass at the current done-count (status `regress-required` otherwise). Any task advancing after the last pass invalidates it. No green suite, no complete, no Next Steps page.
 
+## Harness Self-Improvement — telemetry, retro, board→benchmark
+
+The gates above measure CORRECTNESS. These three mechanisms close the loop on the harness itself: cost per task, structured friction capture, and completed boards as private benchmarks. (Added 2026-08-06 from the harness-engineering gaps — HN 49164896.)
+
+**Per-task efficiency telemetry (automatic — no new commands).** Every `--check-item`/`--advance` invocation that a gate REJECTS increments that task's `gateRejections` counter; the first `--next` that serves a task stamps `firstSeenAt`; a successful advance stamps `advancedAt` + `wallMinutes` and appends a `**telemetry:** gate_rejections=N · wall_minutes=M` line to the completion comment. All of it lives in `.sdd-state.json → initiatives.<slug>.telemetry`. This is clean credit assignment: A/B a harness change (new skill, trimmed context, different model) against a comparable board and read the rejection/wall-time delta instead of vibes.
+
+**The retro transition (`--retro`) gates close-out.** After the regression wall passes, `--next` returns `status: retro-pending` — the board CANNOT read `complete` until the executor files a structured retrospective:
+
+```bash
+node loop.mjs --retro --retro-body "FAILED-TOOLS: <tool calls that failed repeatedly, why>
+GATE-REJECTIONS: <which gates rejected you, what the evidence gap was>
+DOCS: <spec/skill sections that were confusing, wrong, or missing>
+UNUSED-CONTEXT: <context loaded but never used this initiative>
+IMPROVE: <the ONE harness change that would have saved the most cycles>"
+```
+
+Requires ≥200 chars and ≥3 of the 5 sections; the aggregated telemetry is auto-appended as evidence. The retro lands as a typed `harness-retro` intake item (queue + board card) — triage its IMPROVE items into real tasks like any other intake. Answer honestly from THIS initiative's execution; the retro-pending payload includes your telemetry summary so the whinging is grounded in data, not memory.
+
+**Board → benchmark (`--export-evals` / `--run-evals`).** Every completed initiative is already a corpus of executable, typed validation commands. Export it as a standing private benchmark:
+
+```bash
+node loop.mjs --export-evals                       # → sdd-evals/<slug>.evals.json
+node loop.mjs --export-evals --holdout-every 4     # every 4th VC marked holdout
+node loop.mjs --run-evals sdd-evals/<slug>.evals.json            # TRAIN split — iterate freely
+node loop.mjs --run-evals sdd-evals/<slug>.evals.json --holdout  # HOLDOUT — grade a harness change
+```
+
+The holdout discipline is the point: iterate your harness against the train split, then grade the change on holdout evals it never optimized against — that is what stops reward hacking. Accumulate packs from every completed initiative; together they are your private, uncontaminated benchmark suite. (Small boards may produce 0 holdouts at the default `--holdout-every 5` — lower it or accept train-only.)
+
 **`validation_kind` front matter routes VA evidence gates.** A VA task whose title pattern-matches UI keywords gets the screenshot gate by default. When the validation is NOT visual, declare it in the VA front matter (or stamp it at triage with `--validation-kind`):
 
 | `validation_kind` | Evidence gate requires |

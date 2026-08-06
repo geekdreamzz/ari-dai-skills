@@ -1,10 +1,12 @@
 ---
 name: sequences
-description: Create and run automated workflows in Dataspheres AI
+description: DEPRECATED - the sequencer is retired. Use the graphs skill (agent/schedule/hook nodes) for all automation.
 argument-hint: "[action] [options]"
 ---
 
-# sequences — Automated Workflows
+# sequences — RETIRED (use /graphs)
+
+> **⚠ DEPRECATED 2026-08-06.** The sequencer is retired: `/sequences*` routes redirect to Graphs, the editor is unrouted, and ARI no longer creates sequences. Everything below exists only to READ legacy data. For any new automation use the **graphs** skill — agent nodes (instructions + capability), schedule nodes (cron), hook nodes (webhooks + platform events), `depends_on` cascades.
 
 Sequences are node-based automation pipelines scoped to a datasphere. Each sequence has a trigger type, a graph of nodes, and an execution history. Sequences run server-side and can be triggered manually, on a schedule, or via webhook.
 

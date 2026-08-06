@@ -1,6 +1,6 @@
 ---
 name: sequencers
-description: Sequencers tools for Dataspheres AI
+description: DEPRECATED - superseded by graphs (agent/schedule/hook nodes). Read-only access to legacy sequencers only.
 ---
 
 # Sequencers

@@ -168,7 +168,7 @@ Source: `getDeepLinkPath()` in `UnifiedActivityFeed.tsx`. Used by `TranslateButt
 | DOCUMENT_ANALYZED | `/app/{uri}/documents/{documentId}/analysis` |
 | TASK_* | `/app/{uri}/planner?taskId={taskId}` |
 | SURVEY_CREATED | `/survey/{resourceId}` |
-| SEQUENCE_EXECUTED | `/app/{uri}/sequences/{seqId}/executions/{execId}` |
+| SEQUENCE_EXECUTED | (retired 2026-08-06 — /sequences* redirects to Graphs) |
 | POST_CREATED / REPLY_CREATED | `/app/{uri}/completions/{postId}` |
 | MERMAID_DIAGRAM_* | `null` (modal only) |
 | LINKED_URL_* | `/app/{uri}/library?tab=urls&linkedUrlId={resourceId}` |
@@ -192,7 +192,6 @@ For `TranslateButton` resource IDs:
 | Media Library | ✅ | ✅ | ✅ | MODERATOR |
 | Newsletters | ✅ | ✅ | ✅ | ADMIN |
 | Tasks (Planner) | ✅ | ✅ | ✅ | MODERATOR |
-| Sequencer | ✅ | ✅ | ✅ | MODERATOR |
 | Surveys | ✅ | ✅ | ✅ | MODERATOR |
 | Analyses | ✅ | ✅ | ✅ | MODERATOR |
 | Datasets | ✅ | ✅ | ✅ | MODERATOR |

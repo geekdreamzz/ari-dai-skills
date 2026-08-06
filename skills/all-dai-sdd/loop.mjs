@@ -122,6 +122,13 @@ let verifyPageSlug = null;
 let verifyPageKind = null;
 let attachPaths = [];   // --attach <path[,path...]> (repeatable) — result files to
                         // upload and attach to the validation item's evidence.
+// Harness self-improvement (HN 49164896 gaps, 2026-08-06):
+let retroMode = false;        // --retro — file the structured agent retrospective
+let retroBody = null;         // --retro-body "<answers>" — the agent's retro content
+let exportEvalsMode = false;  // --export-evals — board VC suite → private benchmark
+let holdoutEvery = 5;         // --holdout-every N — every Nth VC is holdout (default 5)
+let runEvalsFile = null;      // --run-evals <file> — execute an exported eval pack
+let holdoutOnly = false;      // --holdout — run ONLY holdout evals (default: train only)
 
 for (let i = 2; i < process.argv.length; i++) {
   if (process.argv[i] === '--initiative' && process.argv[i + 1]) {
@@ -198,6 +205,18 @@ for (let i = 2; i < process.argv.length; i++) {
     verifyPageKind = process.argv[++i];
   } else if (process.argv[i] === '--attach' && process.argv[i + 1]) {
     attachPaths.push(...process.argv[++i].split(',').map(s => s.trim()).filter(Boolean));
+  } else if (process.argv[i] === '--retro') {
+    retroMode = true;
+  } else if (process.argv[i] === '--retro-body' && process.argv[i + 1]) {
+    retroBody = process.argv[++i];
+  } else if (process.argv[i] === '--export-evals') {
+    exportEvalsMode = true;
+  } else if (process.argv[i] === '--holdout-every' && process.argv[i + 1]) {
+    holdoutEvery = Math.max(2, parseInt(process.argv[++i], 10) || 5);
+  } else if (process.argv[i] === '--run-evals' && process.argv[i + 1]) {
+    runEvalsFile = process.argv[++i];
+  } else if (process.argv[i] === '--holdout') {
+    holdoutOnly = true;
   }
 }
 
@@ -276,6 +295,70 @@ function setIntakeItems(slug, items) {
   if (!data.initiatives[slug]) data.initiatives[slug] = {};
   data.initiatives[slug].items = items;
   saveIntakeFile(data);
+}
+
+// ── Per-task efficiency telemetry ─────────────────────────────────────────────
+// Correctness gates never measured COST. Telemetry gives every VC clean credit
+// assignment: how many gate rejections before it passed, and how long it lived
+// from first serve to Done. A/B a harness change (new skill, trimmed context)
+// against the same board and read the delta — instead of vibes.
+// (HN 49164896 "harness engineering" gap 3, 2026-08-06.)
+function stampTelemetry(slug, taskKey, fields) {
+  if (!taskKey) return;
+  try {
+    const state = loadState();
+    const ini = state?.initiatives?.[slug];
+    if (!ini) return;
+    if (!ini.telemetry) ini.telemetry = {};
+    ini.telemetry[taskKey] = { ...(ini.telemetry[taskKey] || {}), ...fields };
+    saveState(state);
+  } catch { /* telemetry must never break a gate */ }
+}
+
+function taskTelemetry(slug, taskKey) {
+  return loadState()?.initiatives?.[slug]?.telemetry?.[taskKey] || {};
+}
+
+/** Count EVERY gate rejection uniformly: arm once after the task is resolved;
+ *  any non-zero exit from this invocation increments the task's rejection count.
+ *  Success paths exit 0 and never bump. */
+function armRejectionCounter(slug, taskKey) {
+  if (!taskKey) return;
+  process.on('exit', (code) => {
+    if (code === 0) return;
+    try {
+      const p = path.join(findGitRoot(), '.sdd-state.json');
+      const st = JSON.parse(fs.readFileSync(p, 'utf-8'));
+      const ini = st.initiatives?.[slug];
+      if (!ini) return;
+      if (!ini.telemetry) ini.telemetry = {};
+      const t = ini.telemetry[taskKey] || (ini.telemetry[taskKey] = {});
+      t.gateRejections = (t.gateRejections || 0) + 1;
+      t.lastRejectionAt = new Date().toISOString();
+      fs.writeFileSync(p, JSON.stringify(st, null, 2), 'utf-8');
+    } catch { /* never break the exit path */ }
+  });
+}
+
+/** Aggregate telemetry for the retro + dashboards: totals and the worst offenders. */
+function telemetrySummary(slug) {
+  const tele = loadState()?.initiatives?.[slug]?.telemetry || {};
+  const rows = Object.entries(tele).map(([key, t]) => ({
+    key,
+    gateRejections: t.gateRejections || 0,
+    wallMinutes: t.wallMinutes ?? null,
+    advanced: !!t.advancedAt,
+  }));
+  const totalRejections = rows.reduce((s, r) => s + r.gateRejections, 0);
+  const advancedRows = rows.filter(r => r.advanced && r.wallMinutes != null);
+  return {
+    tasksTracked: rows.length,
+    totalGateRejections: totalRejections,
+    avgWallMinutes: advancedRows.length
+      ? Math.round(advancedRows.reduce((s, r) => s + r.wallMinutes, 0) / advancedRows.length)
+      : null,
+    worst: rows.sort((a, b) => b.gateRejections - a.gateRejections).slice(0, 5),
+  };
 }
 
 function nextIntakeId(items) {
@@ -603,9 +686,37 @@ function v2Hierarchy(task, byId) {
   return chain;
 }
 
+// HARDENING (2026-07-16): a code artifact must be WIRED, not merely exist. A src/
+// module that NO production file imports is a dead seam — the exact "marked DONE but
+// never called" gap that let native-tool-routing / react-followthrough be advanced as
+// "injection seams" before they were invoked. Static AND dynamic imports count; the
+// module's own tests/evals don't (a module imported only by its test is not wired into
+// production). Non-src paths, tests, evals and scripts are exempt (they are entry points
+// or verification, not wired-into modules).
+function moduleIsWired(gitRoot, fp) {
+  const rel = fp.replace(/\\/g, '/');
+  if (!/^src\/.+\.(ts|tsx|js|mjs)$/.test(rel)) return true;
+  if (/\.(test|spec)\.|\/__tests__\/|\/__evals__\//.test(rel)) return true;
+  const base = path.basename(rel).replace(/\.(ts|tsx|js|mjs)$/, '');
+  const esc = base.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  let out = '';
+  try {
+    // Match a QUOTED module path ending in this basename — 'x/base', './base', '../a/base'.
+    // Precise on purpose: catches static AND dynamic import() paths but ignores prose that
+    // merely mentions the name (a loose scan false-passed dead modules via comments and
+    // false-flagged wired ones via dynamic import). `|| true` so "no match" doesn't throw.
+    out = execSync(`git grep -lE "['\\"][^'\\"]*[/.]${esc}['\\"]" -- src 2>/dev/null || true`,
+      { cwd: gitRoot, encoding: 'utf-8' });
+  } catch { return true; } // tooling error → don't hard-fail the gate
+  const importers = out.split('\n').map(s => s.trim().replace(/\\/g, '/')).filter(Boolean)
+    .filter(f => f !== rel && !/\.(test|spec)\.|\/__tests__\/|\/__evals__\//.test(f));
+  return importers.length > 0;
+}
+
 // AR citation gates per artifact_type — what "clean artifacts" means:
 //   code   → every cited file exists AND carries the parent VC uuid/key in a
-//            decorator comment (heading front matter or inline)
+//            decorator comment (heading front matter or inline) AND (src modules)
+//            is imported by production code — not a dead seam
 //   media  → metadata block per asset: file name + sha256 + byte size
 //   report → at least 2 resolvable links (page URLs or task refs)
 function verifyV2Artifact(task, gitRoot) {
@@ -636,6 +747,7 @@ function verifyV2Artifact(task, gitRoot) {
       const vcKey = c.match(/parent_key:[ \t]*((?:VC|VA)-\d+)/)?.[1];
       const linked = (parentUuid && text.includes(parentUuid)) || (vcKey && text.includes(vcKey));
       if (!linked) issues.push(`cited file lacks a decorator pointing at its validation criteria (${vcKey || parentUuid}): ${fp}`);
+      if (!moduleIsWired(gitRoot, fp)) issues.push(`code artifact NOT WIRED: no production file imports ${fp} — a module that exists + is decorated but is never imported/called is a dead seam. Wire it into the code path (import + call it) or cite the file that actually uses it.`);
     }
   } else if (aType === 'media') {
     if (!/sha256[:=][ \t]*[a-f0-9]{16,}/i.test(c)) issues.push('media artifact needs a metadata block: file + sha256 + size per asset');
@@ -1942,6 +2054,8 @@ async function checkItemCommand(cfg, iState, slug) {
     console.error(`✗ Task "${checkItemTaskId}" not found. Pass the task ID or key (VA-003).`);
     process.exit(1);
   }
+  // Telemetry: every gate rejection from here on counts against this task.
+  armRejectionCounter(slug, sddKey(task.title) || task.id);
 
   // Parse checklist items in document order, preserving raw <li> for surgical replace
   const itemRe = /<li(?=[^>]*data-type="taskItem")[^>]*data-checked="(false|true)"[^>]*>[\s\S]*?<p>([^<]+)<\/p>[\s\S]*?<\/li>/g;
@@ -2844,6 +2958,26 @@ async function findNextTask(cfg, iState, slug) {
         return;
       }
     }
+    // Retro gate — after the regression wall passes, the executor MUST file the
+    // structured retrospective before the board can read complete. This is the
+    // "listen to your agent's whinging" transition made mechanical: the friction
+    // data (failed tools, gate rejections, confusing docs, unused context) lands
+    // as a typed intake item instead of evaporating with the session.
+    // (HN 49164896 gap 1, 2026-08-06.)
+    {
+      const retro = loadState()?.initiatives?.[slug]?.retro;
+      if (!retro?.filedAt) {
+        process.stdout.write(JSON.stringify({
+          status: 'retro-pending',
+          links, done, total, pct: 100,
+          telemetry: telemetrySummary(slug),
+          instruction: 'All tasks Done and regression green — file the harness retrospective before close-out. Answer honestly from THIS initiative\'s execution: which tool calls failed repeatedly, which gates rejected you and why, which docs/spec sections were confusing or wrong, which loaded context was never used, and what one harness change would have saved the most cycles. Telemetry above is your evidence.',
+          action: 'node loop.mjs --retro --retro-body "FAILED-TOOLS: ... GATE-REJECTIONS: ... DOCS: ... UNUSED-CONTEXT: ... IMPROVE: ..."',
+          note: 'The retro lands as a typed intake item (harness-retro) on this board\'s Intake queue — triage its IMPROVE items into real tasks here or copy them to a standing harness board.',
+        }, null, 2));
+        return;
+      }
+    }
     // Next Steps page gate — DONE mode generates a close-out page from the
     // next-steps-uat template. The loop is NOT "complete" until that page exists
     // AND matches the template contract. Three outcomes:
@@ -2907,6 +3041,11 @@ async function findNextTask(cfg, iState, slug) {
     const freshState = loadState();
     const freshSlug = initiativeOverride || freshState?.currentInitiative;
     if (freshState && freshSlug) setActiveTask(freshState, freshSlug, next.id);
+    // Telemetry: wall-clock starts the FIRST time this task is served.
+    {
+      const tk = sddKey(next.title) || next.id;
+      if (!taskTelemetry(slug, tk).firstSeenAt) stampTelemetry(slug, tk, { firstSeenAt: new Date().toISOString() });
+    }
     // Tag the next task with sdd-active so focus-tree can resolve it without a static data-active-task-id.
     // The tags endpoint expects `tagName` (NOT `name`) — a silent .catch hid this
     // for the whole project, so Current Focus never lit up. Idempotent find-or-create.
@@ -3531,6 +3670,9 @@ async function advanceTask(cfg, iState, slug) {
   const type = sddType(task.title);
   const key = sddKey(task.title);
 
+  // Telemetry: every gate rejection from here on counts against this task.
+  armRejectionCounter(slug, key || task.id);
+
   // Per-item gate — NO mass-ticking. Every checklist item must have been
   // individually verified via --check-item with its own evidence comment.
   // tickAll() on advance was the rubber-stamp engine: it checked every box
@@ -3651,8 +3793,18 @@ async function advanceTask(cfg, iState, slug) {
   const advUploaded = await uploadAttachments(cfg, iState, attachPaths);
 
   const ts = new Date().toISOString();
+  // Efficiency telemetry rides the completion record: rejections-before-pass and
+  // wall-time from first serve — the per-task cost signal correctness gates never
+  // captured. (HN 49164896 gap 3.)
+  const teleKey = key || task.id;
+  const tele = taskTelemetry(slug, teleKey);
+  const wallMinutes = tele.firstSeenAt
+    ? Math.max(0, Math.round((Date.now() - new Date(tele.firstSeenAt).getTime()) / 60000))
+    : null;
+  stampTelemetry(slug, teleKey, { advancedAt: ts, wallMinutes });
+  const teleLine = `\n\n**telemetry:** gate_rejections=${tele.gateRejections || 0}${wallMinutes != null ? ` · wall_minutes=${wallMinutes}` : ''}`;
   // postComment prepends the [all-dai-sdd-system-message] badge — do not double it.
-  const comment = `**Gate: PASS — AI-substantiated** | ${ts}\n\n${evidenceText}${attachmentEvidenceLines(advUploaded)}`;
+  const comment = `**Gate: PASS — AI-substantiated** | ${ts}\n\n${evidenceText}${attachmentEvidenceLines(advUploaded)}${teleLine}`;
   await postComment(cfg, task.id, comment, advUploaded.map(u => u.url));
 
   if (type === 'VA') {
@@ -3723,6 +3875,150 @@ async function advanceTask(cfg, iState, slug) {
   const done = nonAR.filter(t => t.isDone).length;
   const total = nonAR.length;
   console.log(`   Progress: ${done}/${total} (${Math.round(done/total*100)}%)`);
+}
+
+// ── Harness self-improvement commands (HN 49164896 gaps, 2026-08-06) ─────────
+
+/** --retro: file the structured agent retrospective as a typed intake item.
+ *  The retro is the transition between "all tasks done + regression green" and
+ *  "complete" — friction data becomes tracked work instead of evaporating. */
+async function retroCommand(cfg, iState, slug) {
+  const MARKERS = ['FAILED-TOOLS', 'GATE-REJECTIONS', 'DOCS', 'UNUSED-CONTEXT', 'IMPROVE'];
+  const body = (retroBody || '').trim();
+  const present = MARKERS.filter(m => body.toUpperCase().includes(m));
+  if (body.length < 200 || present.length < 3) {
+    console.error('✗ --retro requires --retro-body with an HONEST retrospective (>=200 chars, >=3 of the 5 sections).');
+    console.error('  Answer from THIS initiative\'s actual execution — telemetry below is your evidence:');
+    console.error(`  ${JSON.stringify(telemetrySummary(slug))}`);
+    console.error('  Template:');
+    console.error('    FAILED-TOOLS: <tool calls that failed repeatedly, and why>');
+    console.error('    GATE-REJECTIONS: <which gates rejected you, what the evidence gap was>');
+    console.error('    DOCS: <spec/skill sections that were confusing, wrong, or missing>');
+    console.error('    UNUSED-CONTEXT: <context that was loaded but never used this initiative>');
+    console.error('    IMPROVE: <the ONE harness change that would have saved the most cycles>');
+    process.exit(1);
+  }
+
+  const tele = telemetrySummary(slug);
+  const fullBody = `${body}\n\nTELEMETRY: ${JSON.stringify(tele)}`;
+  const items = getIntakeItems(slug);
+  const id = nextIntakeId(items);
+  const item = {
+    id, type: 'harness-retro', priority: 'normal', status: 'pending', source: 'agent',
+    summary: `Harness retro: ${slug} (${tele.totalGateRejections} gate rejections across ${tele.tasksTracked} tasks)`,
+    body: fullBody,
+    targetType: null, targetRef: null, taskIds: [], uatRef: null, uatOutcome: null,
+    createdAt: new Date().toISOString(), triagedAt: null, doneAt: null,
+  };
+  // Board card (best-effort, queue is authoritative) — same pattern as --intake.
+  if (cfg?.intakeGroupId) {
+    try {
+      const esc = s => (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      const num = parseInt(id.replace('INT-', ''), 10) || 1;
+      const created = await api('POST', `/api/v2/dataspheres/${cfg.dsId}/tasks`, {
+        title: cfg.schema === 2 ? `IN-${pad3(num)} · Harness retro: ${slug}` : `${id} · [RETRO] ${slug}`,
+        content: cfg.schema === 2
+          ? `<pre><code class="language-yaml">\ntype: IN\nintake_ref: ${id}\npriority: normal\nplan_mode_id: ${cfg.planModeId}\n</code></pre>\n<h2>Origin Prompt <!-- #origin --></h2>\n<blockquote><p>${esc(fullBody).replace(/\n/g, '</p><p>')}</p></blockquote>`
+          : `<p><strong>Harness retro ${id}</strong></p><p>${esc(fullBody).replace(/\n/g, '</p><p>')}</p>`,
+        statusGroupId: cfg.intakeGroupId,
+        planModeId: cfg.planModeId,
+      });
+      item.boardTaskId = created.task?.id || created.id || null;
+    } catch { /* queue is authoritative */ }
+  }
+  items.push(item);
+  setIntakeItems(slug, items);
+
+  // Mark the retro filed — this is what unblocks --next's retro-pending gate.
+  const state = loadState();
+  if (state?.initiatives?.[slug]) {
+    state.initiatives[slug].retro = { filedAt: new Date().toISOString(), intakeId: id, sections: present };
+    saveState(state);
+  }
+  console.log(JSON.stringify({
+    filed: true, id, sections: present, telemetry: tele,
+    boardTaskId: item.boardTaskId || null,
+    nextStep: 'Retro filed — re-run --next to continue close-out. Triage IMPROVE items into real tasks (here or on a standing harness board): node loop.mjs --triage ' + id + ' --target-type EX',
+  }, null, 2));
+}
+
+/** --export-evals: the board's VC suite becomes a private, executable benchmark.
+ *  Every Nth VC (--holdout-every, default 5) is HOLDOUT — run those only when
+ *  grading a harness change, never while iterating on it, so the harness is
+ *  scored on criteria it never optimized against. */
+async function exportEvalsCommand(cfg, iState, slug) {
+  const tasks = await readBoard(cfg);
+  const vcType = cfg.schema === 2 ? 'VC' : 'VA';
+  const vcs = tasks.filter(t => sddType(t.title) === vcType)
+    .sort((a, b) => (sddNum(a.title) || 0) - (sddNum(b.title) || 0));
+  if (vcs.length === 0) {
+    console.error(`✗ No ${vcType} items on this board — nothing to export.`);
+    process.exit(1);
+  }
+  const evals = vcs.map((t, i) => ({
+    key: sddKey(t.title),
+    title: t.title.replace(/^[A-Z]+-\d+\s*[·\-:]\s*/, '').slice(0, 120),
+    kinds: vaEffectiveKinds(t.content || ''),
+    commands: extractValidationCommands(t.content || '').map(c => ({ kind: c.kind || 'general', command: c.cmd })),
+    done: !!t.isDone,
+    holdout: (i + 1) % holdoutEvery === 0,
+  }));
+  const withCmds = evals.filter(e => e.commands.length > 0);
+  const outDir = path.join(findGitRoot(), 'sdd-evals');
+  fs.mkdirSync(outDir, { recursive: true });
+  const outFile = path.join(outDir, `${slug}.evals.json`);
+  const pack = {
+    initiative: slug,
+    exportedAt: new Date().toISOString(),
+    source: boardLinks(cfg, slug).plannerUrl,
+    holdoutEvery,
+    counts: { total: evals.length, executable: withCmds.length, holdout: evals.filter(e => e.holdout).length },
+    evals,
+  };
+  fs.writeFileSync(outFile, JSON.stringify(pack, null, 2), 'utf-8');
+  console.log(JSON.stringify({
+    exported: true, file: path.relative(findGitRoot(), outFile), ...pack.counts,
+    skippedNoCommands: evals.filter(e => e.commands.length === 0).map(e => e.key),
+    usage: [
+      `Train set (iterate freely):  node loop.mjs --run-evals ${path.relative(findGitRoot(), outFile)}`,
+      `Holdout (grade a harness change — do not iterate against): add --holdout`,
+    ],
+  }, null, 2));
+}
+
+/** --run-evals <file>: execute an exported eval pack. Default runs the TRAIN
+ *  split; --holdout runs only the holdout split. Non-zero exit on any failure. */
+async function runEvalsCommand() {
+  const f = path.isAbsolute(runEvalsFile) ? runEvalsFile : path.join(findGitRoot(), runEvalsFile);
+  if (!fs.existsSync(f)) {
+    console.error(`✗ Eval pack not found: ${f}`);
+    process.exit(1);
+  }
+  const pack = JSON.parse(fs.readFileSync(f, 'utf-8'));
+  const selected = (pack.evals || []).filter(e => e.commands.length > 0 && (holdoutOnly ? e.holdout : !e.holdout));
+  if (selected.length === 0) {
+    console.error(`✗ No executable ${holdoutOnly ? 'holdout' : 'train'} evals in ${path.basename(f)}.`);
+    process.exit(1);
+  }
+  console.log(`Running ${selected.length} ${holdoutOnly ? 'HOLDOUT' : 'train'} eval(s) from ${pack.initiative} (exported ${pack.exportedAt}):\n`);
+  const results = [];
+  for (const e of selected) {
+    for (const c of e.commands) {
+      const started = Date.now();
+      let pass = false, detail = '';
+      try {
+        execSync(c.command, { cwd: findGitRoot(), stdio: 'pipe', timeout: 600_000 });
+        pass = true;
+      } catch (err) {
+        detail = (err.stdout?.toString() || err.message || '').split('\n').slice(-5).join('\n').slice(0, 400);
+      }
+      results.push({ key: e.key, kind: c.kind, pass, seconds: Math.round((Date.now() - started) / 1000), detail });
+      console.log(`  ${pass ? '✓' : '✗'} ${e.key} [${c.kind}] (${Math.round((Date.now() - started) / 1000)}s)${pass ? '' : `\n      ${detail.replace(/\n/g, '\n      ')}`}`);
+    }
+  }
+  const failed = results.filter(r => !r.pass);
+  console.log(`\n${failed.length === 0 ? '✅' : '✗'} ${results.length - failed.length}/${results.length} passed${holdoutOnly ? ' (HOLDOUT)' : ''}.`);
+  if (failed.length > 0) process.exit(1);
 }
 
 // ── Backfill artifacts ────────────────────────────────────────────────────────
@@ -3937,6 +4233,21 @@ async function main() {
 
   if (regressMode) {
     await regressCommand(cfg, iState, slug);
+    return;
+  }
+
+  if (retroMode) {
+    await retroCommand(cfg, iState, slug);
+    return;
+  }
+
+  if (exportEvalsMode) {
+    await exportEvalsCommand(cfg, iState, slug);
+    return;
+  }
+
+  if (runEvalsFile) {
+    await runEvalsCommand();
     return;
   }
 

@@ -395,7 +395,9 @@ curl -X PUT "$DATASPHERES_BASE_URL/api/v1/dataspheres/<uri>" \
 
 ---
 
-### `/dataspheres-api create sequencer in <uri>`
+> **⚠ Sequencer recipes DEPRECATED 2026-08-06.** Endpoints still respond for legacy data, but the sequencer is retired — build automations with the GRAPH runtime (graphs skill / ari-dai-skills §12: agent, schedule, hook nodes, depends_on cascades). Do not create new sequencers.
+
+### `/dataspheres-api create sequencer in <uri>` (deprecated)
 
 Create a scheduled web search sequencer. Template: `trigger → batch-web-search`.
 
