@@ -43,6 +43,11 @@ let initiativeSlug = null;
 let maxTasks = Infinity;
 let dryRun = false;
 let claudeExe = 'claude';
+// Headless spawns MUST pin a model. Without --model the CLI default is used, which
+// can be a different quota pool than the account's plan: on 2026-08-25 every task
+// died with 'You're out of usage credits' while the same account answered fine
+// under --model opus. Override with SDD_CLAUDE_MODEL or --model.
+let claudeModel = process.env.SDD_CLAUDE_MODEL || 'opus';
 let maxTurns = 60;            // heavy scrub/refactor tasks blow past 30
 let taskTimeoutMin = 30;      // per-task wall clock (was a hard 10 min)
 // Unattended runs MUST skip interactive permission prompts: in --print mode a
@@ -60,6 +65,7 @@ for (let i = 2; i < process.argv.length; i++) {
   else if (process.argv[i] === '--dry-run') dryRun = true;
   else if (process.argv[i] === '--no-skip-permissions') skipPermissions = false;
   else if (process.argv[i] === '--claude' && process.argv[i + 1]) claudeExe = process.argv[++i];
+  else if (process.argv[i] === '--model' && process.argv[i + 1]) claudeModel = process.argv[++i];
 }
 
 // ── Paths ─────────────────────────────────────────────────────────────────────
@@ -269,7 +275,7 @@ async function main() {
     // ── Step 3: invoke claude ──────────────────────────────────────────────
     const boost = turnBoost.get(task.id) || 1;
     const effectiveTurns = maxTurns * boost;
-    const claudeArgs = ['--print', '--max-turns', String(effectiveTurns)];
+    const claudeArgs = ['--print', '--model', claudeModel, '--max-turns', String(effectiveTurns)];
     if (skipPermissions) claudeArgs.push('--dangerously-skip-permissions');
     console.log(`   [${new Date().toISOString()}] Invoking: ${claudeExe} ${claudeArgs.join(' ')} (timeout ${taskTimeoutMin * boost}m${boost > 1 ? `, boosted x${boost}` : ''})`);
     const claudeResult = spawnSync(claudeExe, claudeArgs, {
