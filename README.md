@@ -81,7 +81,7 @@
 
 ---
 
-## Setup (3 steps)
+## Setup (4 steps)
 
 ### 1. Get your API key
 
@@ -105,13 +105,47 @@ bash install.sh --all --project /path/to/your/project
 
 This copies all skills into `.claude/skills/` (or `.cursor/rules/`, `.github/instructions/` — see IDE flags below) and wires three Claude hooks for ambient enforcement.
 
-### 3. Init the SDD conductor (once per project)
+The installer deliberately stops there. It does **not** run `sdd-conductor init` — that needs a `tasks.yaml` and a live board, which step 3 creates.
+
+### 3. Create the board and `tasks.yaml` (once per project)
+
+In your project directory, ask your AI:
+
+```
+/all-dai-sdd
+```
+
+With no board and no `tasks.yaml`, the skill runs in **NEW** mode: it interviews you about the initiative, writes `<project-dir>/tasks.yaml`, and publishes the plan mode + status groups to your datasphere. You never hand-write `tasks.yaml` — the skill authors it.
+
+The skill picks its mode from what already exists:
+
+| Board | `tasks.yaml` | Mode | What happens |
+|---|---|---|---|
+| no | no | **NEW** | Full 14-step publish — authors the spec and the yaml |
+| no | yes | **PUBLISH** | Skips ahead and publishes the existing yaml |
+| yes | no | **AUDIT** | Generates a `tasks.yaml` from live board state |
+| yes | yes | **SYNC** | Diffs yaml against the board and reports drift |
+
+Schema reference: the "tasks.yaml Shape" section of `skills/all-dai-sdd/SKILL.md`.
+
+### 4. Init the SDD conductor (once per project)
+
+Requires all three of the above: an API key in `~/.dataspheres.env`, a `tasks.yaml` at the repo root with a `targetDatasphere` field, and a published plan mode for the initiative. `init` adopts an existing board — it does not bootstrap one.
 
 ```bash
 node /path/to/ari-dai-skills/skills/sdd-conductor/sdd-conductor.mjs init
 ```
 
 Connects to your datasphere, finds the plan mode, and writes `.sdd-state.json`. Done.
+
+Common failures, in the order `init` checks them:
+
+| Error | Cause | Fix |
+|---|---|---|
+| `DATASPHERES_API_KEY not set` | No key on disk | Redo step 1 |
+| `No tasks.yaml found` | Step 3 skipped | Run `/all-dai-sdd` |
+| `tasks.yaml missing targetDatasphere field` | Incomplete yaml | Add the datasphere URI |
+| `No plan mode found for initiative "X"` | Yaml exists, never published | Run `/all-dai-sdd` (PUBLISH mode) |
 
 ---
 
