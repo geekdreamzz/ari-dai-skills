@@ -84,3 +84,21 @@ jobs:
           source_skills=(skills/*/SKILL.md)
           installed_skills=("$tmp_dir"/.claude/skills/*/SKILL.md)
           test "${#installed_skills[@]}" -eq "${#source_skills[@]}"
+
+      - name: Smoke-test stale-link pruning
+        shell: bash
+        run: |
+          tmp_dir="$(mktemp -d)"
+          trap 'rm -rf "$tmp_dir"' EXIT
+          skills_dir="$tmp_dir/.claude/skills"
+          mkdir -p "$skills_dir"
+
+          # a skill that was deleted upstream leaves a dangling link behind
+          ln -s "$PWD/skills/__deleted_upstream__" "$skills_dir/__deleted_upstream__"
+          # a dangling link owned by something else must survive
+          ln -s "/nonexistent/other-tool/rule" "$skills_dir/not-ours"
+
+          bash install.sh --all --project "$tmp_dir"
+
+          test ! -L "$skills_dir/__deleted_upstream__"
+          test -L "$skills_dir/not-ours"
