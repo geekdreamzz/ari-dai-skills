@@ -19,7 +19,7 @@ never copies the rules, so a new rule reaches every agent the moment it deploys.
 
 1. Fetch the rulebook. Record `version.hash` in your run notes.
 2. Read the `approvalOrder`: the owner approves the deck before the video, the video before the kit, and the kit before publishing. Never skip a step, and never publish or post without the owner's go.
-3. For each stage you work on, fetch `?stage=<stage>` and work to those rules. `enforce: machine` rules have a check that must pass. `enforce: review` rules are a rubric you score and record.
+3. For each stage you work on (`research`, `deck`, `video`, `kit`, `publish`; gate names like `script_review` are not stages), fetch `?stage=<stage>` and work to those rules. `enforce: machine` rules have a check that must pass. `enforce: review` rules are a rubric you score and record.
 
 ## The media-kit process: one definition, served by the platform
 
