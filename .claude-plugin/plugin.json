@@ -1,0 +1,18 @@
+{
+  "name": "dataspheres",
+  "displayName": "Dataspheres AI",
+  "version": "0.3.0",
+  "description": "The hosted Dataspheres AI MCP server (OAuth sign-in, no API key) plus the ari-dai-skills: pages, decks, narrated videos, research, datasets, surveys, newsletters, courses, planner and spec-driven development inside your dataspheres.",
+  "author": { "name": "Dataspheres AI", "url": "https://dataspheres.ai" },
+  "homepage": "https://dataspheres.ai/app/developers?tab=connect",
+  "repository": "https://github.com/geekdreamzz/ari-dai-skills",
+  "license": "MIT",
+  "keywords": ["dataspheres", "mcp", "knowledge-base", "content", "research", "presentations", "sdd"],
+  "skills": ["./skills/"],
+  "mcpServers": {
+    "dataspheres": {
+      "type": "http",
+      "url": "https://dataspheres.ai/mcp"
+    }
+  }
+}

@@ -81,6 +81,20 @@
 
 ---
 
+## Quick install: the hosted MCP server (no API key)
+
+The same tools and skills are served by **https://dataspheres.ai/mcp** (OAuth sign-in, nothing stored
+locally). Every skill below is also an MCP **prompt** on that server, and a **resource** at
+`dataspheres://skills/<name>`, so a host that only has the URL still gets these instructions.
+
+| Host | How |
+|------|-----|
+| Claude.ai / Claude Desktop | Settings → Connectors → Add custom connector → paste the URL |
+| Claude Code | `/plugin marketplace add geekdreamzz/ari-dai-skills` then `/plugin install dataspheres@ari-dai-skills` (server + skills), or `claude mcp add --transport http dataspheres https://dataspheres.ai/mcp` |
+| Cursor, VS Code / Copilot, Codex | One-click links and one-liners at [dataspheres.ai/app/developers?tab=connect](https://dataspheres.ai/app/developers?tab=connect) |
+
+The file-based setup below still works and is what the `install.sh` flow uses.
+
 ## Setup (3 steps)
 
 ### 1. Get your API key

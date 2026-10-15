@@ -1,0 +1,18 @@
+{
+  "name": "ari-dai-skills",
+  "owner": { "name": "Dataspheres AI", "url": "https://dataspheres.ai" },
+  "metadata": {
+    "description": "Dataspheres AI for Claude Code: the hosted MCP server and the ari-dai-skills in one plugin.",
+    "version": "0.3.0"
+  },
+  "plugins": [
+    {
+      "name": "dataspheres",
+      "source": "./",
+      "description": "Hosted Dataspheres AI MCP server (OAuth) + 56 skills for pages, decks, video, research, datasets, surveys, newsletters, courses, planner and SDD.",
+      "category": "productivity",
+      "tags": ["dataspheres", "mcp", "skills", "content", "research"],
+      "homepage": "https://dataspheres.ai/app/developers?tab=connect"
+    }
+  ]
+}
