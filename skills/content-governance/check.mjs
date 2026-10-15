@@ -3,8 +3,8 @@
 //   node check.mjs rules [stage]          print the live rules (all, or one stage)
 //   node check.mjs links <url> [...]      GOV-001: every link is on the live site and opens a real page there
 //   node check.mjs page <uri> <slug>      GOV-020: the page has a feature image (og:image) that loads
-//   node check.mjs process <templateId> [uri]  the ONE media-kit process the platform serves (destination, stages, gates);
-//                                         with a uri, GOV-029: refuse when the run would start outside the template's datasphere
+//   node check.mjs process <uri> [agent]  the media-kit process each AI agent of the datasphere serves (destination, stages, gates);
+//                                         GOV-029: refuse an agent whose recipe publishes somewhere else; no agent = create one first
 //   node check.mjs hosts <uri>            GOV-003: the datasphere has AI hosts and every one has a face (before any voice is bought)
 // DATASPHERES_BASE_URL overrides the live site (default https://dataspheres.ai); DATASPHERES_API_KEY is needed for `page`.
 // Verdicts are returned, never process.exit()ed: on Windows, Node 24 aborts on a libuv assertion when exit() races fetch's closing
@@ -69,20 +69,28 @@ async function main() {
   }
   if (cmd === 'process') {
     // One definition for ARI and for this skill (owner 2026-10-14: "media kits needs to be a consistent process whether its
-    // ari-dai-skills or ari in the platform"): read it from the platform, never keep a copy of the steps here.
-    const [id, uri] = args;
-    if (!id) { console.error('usage: check.mjs process <templateId> [uri]'); return 2; }
-    const r = await fetch(`${BASE}/api/v1/content-templates/${encodeURIComponent(id)}`);
-    if (!r.ok) { console.error(`template ${id} unavailable (${r.status})`); return 2; }
-    const p = (await r.json()).process;
-    if (!p) { console.error('this platform does not serve the process yet - update it before running a media kit'); return 2; }
-    console.log(`${p.templateId} v${p.templateVersion} - governance v${p.governance.version}.${p.governance.hash}`);
-    console.log(`publish in: ${p.destination ? `${p.destination.name} (${p.destination.datasphereUri})` : 'the datasphere you start in'}`);
-    p.stages.forEach((st, i) => console.log(`${String(i + 1).padStart(2)}. ${st.label}${st.gate ? `  <- STOP: ${st.gateLabel} (the owner decides)` : ''}`));
-    console.log(`rules: ${p.rules.join(', ')}`);
-    if (uri && p.destination && uri !== p.destination.datasphereUri) { console.log(`GOV-029: refuse - start this run in ${p.destination.datasphereUri}, not ${uri}`); return 1; }
-    if (uri) console.log('GOV-029: pass');
-    return 0;
+    // ari-dai-skills or ari in the platform"). A media kit starts FROM one of the datasphere's AI agents (owner: "media-kits need to
+    // select an ai-agent or create a new one before getting started"); each agent serves the process its runs follow.
+    const [uri, which] = args;
+    if (!uri || !process.env.DATASPHERES_API_KEY) { console.error('usage: DATASPHERES_API_KEY=... check.mjs process <uri> [agent id or label]'); return 2; }
+    const r = await fetch(`${BASE}/api/v2/content-pipelines?datasphere=${encodeURIComponent(uri)}`, { headers: { Authorization: `Bearer ${process.env.DATASPHERES_API_KEY}` } });
+    if (!r.ok) { console.error(`agents unavailable (${r.status})`); return 2; }
+    const agents = ((await r.json()).data?.definitions || []);
+    const pick = which ? agents.filter((d) => d.id === which || d.label.toLowerCase() === which.toLowerCase()) : agents;
+    if (!pick.length) { console.log(`no AI agent ${which ? `"${which}" ` : ''}in ${uri}: create one first (POST /api/v2/content-pipelines, or ARI's create_content_pipeline), then start the media kit from it`); return 1; }
+    let refused = false;
+    for (const d of pick) {
+      const p = d.process;
+      console.log(`\n${d.label} (${d.id})${d.cron ? ` - ${d.enabled ? 'scheduled' : 'schedule paused'} ${d.cron} ${d.timezone ?? ''}` : ''}${d.config?.render === 'hold' ? ' - stops at Ready to render' : ''}`);
+      if (!p) { console.log('  no recipe: the platform research-to-deck path, the datasphere it lives in'); continue; }
+      console.log(`  recipe ${p.recipeId} v${p.recipeVersion}.${p.recipeHash} - governance v${p.governance.version}.${p.governance.hash}`);
+      console.log(`  publish in: ${p.destination ? `${p.destination.name} (${p.destination.datasphereUri})` : 'this datasphere'}`);
+      p.stages.forEach((st, i) => console.log(`  ${String(i + 1).padStart(2)}. ${st.label}${st.gate ? `  <- STOP: ${st.gateLabel} (the owner decides)` : ''}`));
+      console.log(`  rules: ${p.rules.join(', ')}`);
+      if (p.destination && p.destination.datasphereUri !== uri) { console.log(`  GOV-029: refuse - this agent publishes in ${p.destination.datasphereUri}, not ${uri}`); refused = true; }
+      else console.log('  GOV-029: pass');
+    }
+    return refused ? 1 : 0;
   }
   if (cmd === 'hosts') {
     const [uri] = args;
@@ -96,7 +104,45 @@ async function main() {
     console.log(ok ? `GOV-003: pass - ${hosts.length} hosts, all with faces` : `GOV-003: refuse - ${hosts.length ? `${faceless.length} host(s) without a face` : 'no AI hosts in this datasphere'}; seat hosts with faces before writing the script`);
     return ok ? 0 : 1;
   }
-  console.error('usage: check.mjs rules [stage] | links <url> [...] | page <uri> <slug> | process <templateId> [uri] | hosts <uri>');
+  if (cmd === 'kit-page') {
+    // GOV-041: the media-kit narrative page follows the served template (owner, 2026-10-15: "just template it and enforce it").
+    const [uri, slug, deckPageId] = args;
+    if (!uri || !slug || !deckPageId || !process.env.DATASPHERES_API_KEY) { console.error('usage: DATASPHERES_API_KEY=... check.mjs kit-page <uri> <slug> <deckPageId>'); return 2; }
+    const auth = { headers: { Authorization: `Bearer ${process.env.DATASPHERES_API_KEY}` } };
+    const rule = ((await rules('kit')).rules || []).find((x) => x.id === 'GOV-041');
+    const sections = rule && rule.params && rule.params.sections;
+    if (!Array.isArray(sections) || !sections.length) { console.error('GOV-041 template is not served - do not write the page'); return 2; }
+    const pr = await fetch(`${BASE}/api/v1/dataspheres/${uri}/pages/${slug}`, auth);
+    const pj = await pr.json().catch(() => ({}));
+    const html = String((pj.page || pj).content || '');
+    if (!pr.ok || !html) { console.error(`page unavailable (${pr.status})`); return 2; }
+    const kr = await fetch(`${BASE}/api/v1/dataspheres/${uri}/presentations/${deckPageId}/distribution-kit`, auth);
+    const kit = kr.ok ? (await kr.json()).kit : null;
+    const failures = [];
+    const headings = [...html.matchAll(/<h2[^>]*>(.*?)<[/]h2>/gi)].map((m) => m[1].replace(/<[^>]+>/g, '').trim().toLowerCase());
+    let pos = -1;
+    for (const sec of sections) { const at = headings.findIndex((h, i) => i > pos && h === String(sec).toLowerCase()); if (at < 0) failures.push(`section "${sec}" is missing or out of order`); else pos = at; }
+    const inline = [...html.matchAll(/<video(?=[ >])[^>]*>/gi)].map((m) => m[0]);
+    const embedded = [...html.matchAll(/data-embed-html="([^"]*)"/g)].map((m) => decodeURIComponent(m[1])).filter((h) => /<video(?=[ >])/i.test(h)).map((h) => (h.match(/<video(?=[ >])[^>]*>/i) || [''])[0]);
+    const videos = [...inline, ...embedded];
+    if (!videos.length) failures.push('the page has no video preview');
+    for (const v of videos) if (!/ poster="[^"]+"/i.test(v)) failures.push('a video on the page has no poster (it must be a thumbnail + play preview)');
+    const panels = [...html.matchAll(/<aside[^>]*data-type="distribution-kit"[^>]*>/g)].map((m) => m[0]);
+    if (panels.length !== 1) failures.push('the page must contain exactly one shared download/copy panel');
+    else {
+      const owner = (panels[0].match(/data-deck-page-id="([^"]*)"/) || [])[1];
+      if (owner !== deckPageId) failures.push('the download/copy panel belongs to a different deck');
+      if (!kit) failures.push('the kit has not been built');
+      else { let saved = null; try { saved = JSON.parse(decodeURIComponent((panels[0].match(/data-kit="([^"]*)"/) || [])[1] || '')); } catch { saved = null; }
+        if (!saved || saved.sourceJobId !== kit.sourceJobId || saved.builtAt !== kit.builtAt) failures.push('the download/copy panel does not match the built kit'); }
+    }
+    if (html.includes('localhost') || html.includes('dev.dataspheres')) failures.push('the page links to dev or localhost');
+    const unique = [...new Set(failures)];
+    for (const f of unique) console.log(`  - ${f}`);
+    console.log(unique.length ? `GOV-041: refuse - fix the ${unique.length} issue(s) above, then run again` : `GOV-041: pass - the narrative follows the kit template (${sections.join(' > ')})`);
+    return unique.length ? 1 : 0;
+  }
+  console.error('usage: check.mjs rules [stage] | links <url> [...] | page <uri> <slug> | process <uri> [agent] | hosts <uri> | kit-page <uri> <slug> <deckPageId>');
   return 2;
 }
 

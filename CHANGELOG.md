@@ -8,6 +8,13 @@ Format: [Semantic Versioning](https://semver.org). Breaking changes are marked *
 ## [Unreleased]
 
 ### Added
+- content-governance: **IDE mode** (`IDE-MODE.md`) - research, reasoning, deck, substantiation and script in the IDE; scrape, checks and render local; the platform only stores the deck and voices. The cut is authored on each turn (`cue`, `offsetMs`), never a timer.
+- content-governance: after the video approval the skill asks **"Finish the media kit?"**, builds the kit on the platform, embeds the served download/copy panel (`GET .../distribution-kit/block`) and writes the narrative page to the served template (GOV-041).
+- content-governance: `check.mjs kit-page <uri> <slug> <deckPageId>` - GOV-041: sections in order, every video a thumbnail + play preview, exactly one panel that matches the built kit, no dev link.
+- content-governance: $0 re-renders over a stored take (`requeue-voice`, `respace` + `requeue-respaced`).
+
+
+### Added
 - **`courses` skill** — complete LMS course + quiz REST reference. Build a curriculum (course → modules → lessons), author graded quizzes with correct answers + points, manage enrollment, track per-quiz results + the course gradebook, and issue verifiable certificates. Mirrors the `/api/v1/dataspheres/:uri/courses` endpoints and their ARI tools (`create_course`, `add_quiz_question`, `list_quiz_questions`, `update_quiz_question`, `delete_quiz_question`, `get_quiz_results`, …). Documents the pages-native model — a course is a `COURSE` page + folder; the student view is the overview page at `/pages/:uri/:courseSlug`.
 
 ### Removed

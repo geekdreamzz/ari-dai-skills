@@ -18,21 +18,31 @@ never copies the rules, so a new rule reaches every agent the moment it deploys.
 ## At the start of every content run
 
 1. Fetch the rulebook. Record `version.hash` in your run notes.
-2. Read the `approvalOrder`: the owner approves the deck before the video, the video before the kit, and the kit before publishing. Never skip a step, and never publish or post without the owner's go.
+2. Read the `approvalOrder`: the owner approves the deck before the video, the video before the kit, and the kit before publishing. Never skip a step, and never publish or post without the owner's go. After the video approval, ask "Finish the media kit?" and build it only on a yes (IDE-MODE.md section 7: the kit, the panel, the narrative page).
 3. For each stage you work on (`research`, `deck`, `video`, `kit`, `publish`; gate names like `script_review` are not stages), fetch `?stage=<stage>` and work to those rules. `enforce: machine` rules have a check that must pass. `enforce: review` rules are a rubric you score and record.
 
 ## The media-kit process: one definition, served by the platform
 
-ARI in the platform and this skill run the same process. Read it from the template; never keep your own list of steps:
+A media kit always starts **from one of the datasphere's AI agents**: pick the agent that fits, or create one first. The agent carries
+the kind of kit's whole recipe (where it publishes, research prompts, deck, article, video rules, banned phrases, calls to action) and,
+when scheduled, its cadence. ARI in the platform and this skill run the same agents through the same process; never keep your own list
+of steps and never write a recipe into code.
 
 ```bash
-node skills/content-governance/check.mjs process nfl-weekly-pickem sports-intelligence   # steps, gates, rules; GOV-029 destination check
-DATASPHERES_API_KEY=... node skills/content-governance/check.mjs hosts sports-intelligence  # GOV-003: every AI host has a face
+DATASPHERES_API_KEY=... node skills/content-governance/check.mjs process ai-news            # every agent: recipe, destination, stages, gates, rules
+DATASPHERES_API_KEY=... node skills/content-governance/check.mjs process sports-intelligence "Weekly NFL Pick'em"
+DATASPHERES_API_KEY=... node skills/content-governance/check.mjs hosts ai-news              # GOV-003: every AI host has a face
 ```
 
-1. **Destination first (GOV-029).** Start the run in `process.destination` (sports analysis publishes in Sports Analytics, `sports-intelligence`, never the main DATASPHERES AI datasphere). The platform refuses a run started anywhere else.
-2. **Faces before voice (GOV-003).** The datasphere's AI hosts are seated on every on-screen seat, each with a face. No hosts, no script: seat them first.
-3. **Follow `process.stages` in order and stop at every `process.gates` entry** for the owner's decision. Never skip a gate.
+1. **Pick or create the agent.** `GET /api/v2/content-pipelines?datasphere=<uri>` lists them (with each one's process); `POST /api/v2/content-pipelines` creates one. Start a run with `POST /api/v2/content-pipelines/runs { datasphere, definitionId, variables?, topic? }` - the platform refuses a run without an agent.
+2. **Destination first (GOV-029).** An agent whose recipe names a destination only runs there (sports analysis publishes in Sports Analytics, `sports-intelligence`; AI news in AI News, `ai-news`).
+3. **Faces before voice (GOV-003, every run).** The datasphere's AI hosts are seated on every on-screen seat, each with a face. No hosts, no script: seat them first.
+4. **Follow `process.stages` in order and stop at every `process.gates` entry** for the owner's decision. An agent configured `render: "hold"` prepares everything and parks at **Ready to render** (content checked and frozen, no paid voice) until the owner says render (`POST .../runs/:id/resume`).
+5. **Costs are the person's capacity.** Every amount the platform shows a person is in their own capacity dollars; budgets a person states go in `budgetCapacityUsd`. Never quote or derive the platform's own costs.
+
+## IDE mode
+
+When the owner asks for IDE mode, or the platform's own models aren't needed, follow [IDE-MODE.md](IDE-MODE.md). You do the research, the reasoning, the deck and the script in the IDE. Scraping, checks and the render run locally. The platform only stores the deck and voices the script. The agent config and the rulebook govern the run exactly as they do on the platform.
 
 ## Before you show the owner anything, and before anything is published
 
