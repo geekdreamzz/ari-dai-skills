@@ -12,6 +12,8 @@ Format: [Semantic Versioning](https://semver.org). Breaking changes are marked *
 - content-governance: after the video approval the skill asks **"Finish the media kit?"**, builds the kit on the platform, embeds the served download/copy panel (`GET .../distribution-kit/block`) and writes the narrative page to the served template (GOV-041).
 - content-governance: `check.mjs kit-page <uri> <slug> <deckPageId>` - GOV-041: sections in order, every video a thumbnail + play preview, exactly one panel that matches the built kit, no dev link.
 - content-governance: $0 re-renders over a stored take (`requeue-voice`, `respace` + `requeue-respaced`).
+- content-governance: `check.mjs preflight <uri>` (GOV-042) proves destination access before any work: rulebook served, destination on the public base, this key's user a member who can upload and publish, hosts seated with faces.
+- content-governance: `publish.mjs` carries pages rendered elsewhere to the public base, media included: upload, publish, verify each file opens, rewrite, create the page, verify it opens; stops at the first failure.
 
 
 ### Added

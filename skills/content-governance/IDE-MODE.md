@@ -15,6 +15,19 @@ DATASPHERES_API_KEY=... node skills/content-governance/check.mjs rules deck     
 The recipe's sections, `mustCover`, visuals, banned moves and calls to action are your brief. The rulebook's every-run rules
 are your checks. Follow the approval order: deck, then video, then kit, then publish. Stop for the owner at each step.
 
+## 0. Preflight: prove the run can finish (GOV-042)
+
+Before any research, deck, render or kit:
+
+```bash
+DATASPHERES_API_KEY=<public base key> node skills/content-governance/check.mjs preflight <uri>
+```
+
+It refuses the run unless the rulebook is served, the destination datasphere exists on the public base and opens publicly,
+this key's user is a member who can upload and publish there, and the AI hosts are seated with faces. A refusal is fixed
+first (add the user to the datasphere, seat the hosts); nothing starts until every line passes. This is what stops a kit
+from being refused after ten minutes of work because the pages it links cannot exist.
+
 ## 1. Research and verify (IDE)
 
 - Search the web for the edition window. Use the agent's `{since}`, which is the previous edition's date.
@@ -98,6 +111,21 @@ It would re-run the picture pass on chart and text slides, and it can write a ne
 the local render worker (GPU) records and encodes the video. Watch the job with `GET .../render/:jobId`. Send the owner the
 watch link and wait for the video approval before starting the kit.
 
+
+## 6b. Publish to the public base (when the render happened elsewhere)
+
+A deck rendered on dev or locally lives on that instance; the kit's links must open on the public base, and so must every
+file the pages show. Carry them over with the publish script, which downloads each media file from the source, uploads it to
+the target datasphere's library, confirms the copy opens, rewrites the pages, creates them on the target under the same slugs,
+and confirms each opens publicly, stopping at the first failure:
+
+```bash
+SOURCE_BASE=https://dev.dataspheres.ai SOURCE_API_KEY=<dev key> DATASPHERES_BASE_URL=https://dataspheres.ai DATASPHERES_API_KEY=<public key> node skills/content-governance/publish.mjs <uri> <deck-slug> <deck-slug>-watch <deck-slug>-episode
+```
+
+Rehearse first with `--dry-run` (lists what would move) or `--slug-suffix -rehearsal` (publishes under rehearsal slugs).
+Only after the deck, watch and episode pages open on the public base does the kit build (section 7); the narrative page is
+published the same way afterwards.
 
 ## 7. Finish the media kit (after the video approval)
 

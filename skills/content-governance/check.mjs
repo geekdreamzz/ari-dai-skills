@@ -104,6 +104,32 @@ async function main() {
     console.log(ok ? `GOV-003: pass - ${hosts.length} hosts, all with faces` : `GOV-003: refuse - ${hosts.length ? `${faceless.length} host(s) without a face` : 'no AI hosts in this datasphere'}; seat hosts with faces before writing the script`);
     return ok ? 0 : 1;
   }
+  if (cmd === 'preflight') {
+    // GOV-042: destination access BEFORE any work (owner, 2026-10-15: a kit was refused after ten minutes of work because the
+    // key's user could not publish to the destination). Refuse to start a run until every line below is a pass.
+    const [uri] = args;
+    if (!uri || !process.env.DATASPHERES_API_KEY) { console.error('usage: DATASPHERES_API_KEY=... check.mjs preflight <uri>'); return 2; }
+    const auth = { headers: { Authorization: `Bearer ${process.env.DATASPHERES_API_KEY}` } };
+    const rows = [];
+    const row = (ok, label, detail) => { rows.push(ok); console.log(`${ok ? 'PASS   ' : 'REFUSE '} ${label}${detail ? ` - ${detail}` : ''}`); };
+    let rb = null; try { rb = await rules(); } catch { rb = null; }
+    row(!!rb && Array.isArray(rb.rules) && rb.rules.length > 0, 'rulebook served', rb ? `v${rb.version} ${rb.hash}` : `not served by ${BASE}`);
+    const ds = await fetch(`${BASE}/api/v1/dataspheres/${uri}`, auth).catch(() => ({ ok: false, status: 0 }));
+    const dsj = ds.ok ? await ds.json().catch(() => ({})) : {};
+    const d = dsj.datasphere || dsj.data || dsj;
+    row(ds.ok && !!d.id, `destination "${uri}" exists on ${BASE}`, ds.ok ? `${d.name || ''} (${d.id || '?'})` : `HTTP ${ds.status}`);
+    const pub = await fetch(`${BASE}/pages/${uri}`, { headers: { 'User-Agent': UA } }).catch(() => ({ ok: false, status: 0 }));
+    row(pub.ok, `destination page opens publicly`, `${BASE}/pages/${uri} HTTP ${pub.status}`);
+    const docs = await fetch(`${BASE}/api/v1/dataspheres/${uri}/documents`, auth).catch(() => ({ ok: false, status: 0 }));
+    row(docs.ok, "this key's user is a member who can upload and publish there", docs.ok ? 'member' : `HTTP ${docs.status} - add the user to the datasphere (or use a member's key) before any work`);
+    const hr = await fetch(`${BASE}/api/v1/dataspheres/${uri}/hosts`, auth).catch(() => ({ ok: false, status: 0 }));
+    const hosts = hr.ok ? ((await hr.json().catch(() => ({}))).hosts || []) : [];
+    const faceless = hosts.filter((h) => !h.headshotUrl);
+    row(hosts.length > 0 && !faceless.length, 'AI hosts seated with faces (GOV-003)', hosts.length ? `${hosts.length} hosts, ${faceless.length} without a face` : 'no hosts');
+    const ok = rows.every(Boolean);
+    console.log(ok ? 'GOV-042: pass - start the run' : `GOV-042: refuse - ${rows.filter((r) => !r).length} precondition(s) unmet; fix them before any research, deck or render`);
+    return ok ? 0 : 1;
+  }
   if (cmd === 'kit-page') {
     // GOV-041: the media-kit narrative page follows the served template (owner, 2026-10-15: "just template it and enforce it").
     const [uri, slug, deckPageId] = args;
@@ -142,7 +168,7 @@ async function main() {
     console.log(unique.length ? `GOV-041: refuse - fix the ${unique.length} issue(s) above, then run again` : `GOV-041: pass - the narrative follows the kit template (${sections.join(' > ')})`);
     return unique.length ? 1 : 0;
   }
-  console.error('usage: check.mjs rules [stage] | links <url> [...] | page <uri> <slug> | process <uri> [agent] | hosts <uri> | kit-page <uri> <slug> <deckPageId>');
+  console.error('usage: check.mjs rules [stage] | links <url> [...] | page <uri> <slug> | process <uri> [agent] | hosts <uri> | preflight <uri> | kit-page <uri> <slug> <deckPageId> | (publish: node skills/content-governance/publish.mjs)');
   return 2;
 }
 
