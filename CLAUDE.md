@@ -23,6 +23,8 @@ Before any Dataspheres write operation, surface one line:
 2. Copy `.env.example` → `.env` in this folder, fill in `DATASPHERES_API_KEY` (never paste the key in chat)
 3. Tell Ari "done" — Ari reads the file and verifies access with `GET /api/v1/dataspheres`. No workspace URI is needed when the account has only one datasphere.
 
+**Datasphere instructions are the brief.** Before the first piece of content you produce in a datasphere (a page, a deck, an image, a video script, a research run, a newsletter issue), call `get_datasphere` for it and read `purpose` and `systemInstructions`. They are the owner's standing rules for that datasphere: voice, canon, visual theme, methodology. Treat them exactly as you treat this file: follow them in every prompt you write and every tool call you make there. When `systemInstructions` has a `## Visual theme` section, paste that section into every image or video `prompt` you send for that datasphere (the platform injects it on its own for `POST /api/v2/media/generate`; the v1 image tools and anything you write yourself need it from you). When a request would contradict the instructions, say which rule and ask before proceeding. Do not re-fetch them every turn; keep them in conversation context like the selected URI.
+
 ---
 
 ## What You Help People Do
@@ -240,3 +242,16 @@ Skills are hand-maintained mirrors of the platform REST/MCP schema. This reposit
    `node skills/sdd-conductor/sdd-conductor.mjs gate tiptap-html <filePath>`
    The gate enforces: no raw markdown, Mermaid uses `<div data-type="mermaid" data-source="...">`, lists use `class="tiptap-bullet-list"` with `<li><p>` wrappers, images use `<figure data-image-figure>`, tables use `tiptap-table` classes, links use `class="tiptap-link"`, and the page has exactly one `<h1>` title.
    Fix every violation before publishing. Raw markdown content will not render in the Tiptap editor.
+10. **Never rewrite a whole artifact to change part of it.** A person may be editing the
+   same deck or page right now, and a whole-artifact write silently discards their work.
+   Change the one slide (`update_presentation_slide_content`), the one section, the one row.
+   The whole-deck `PUT` refuses on a deck that already has slides unless you send
+   `expectedUpdatedAt` from your own read; if someone edited in between it names when.
+   Before writing anything a human may have touched since you last read it, re-read first.
+11. **Copy voice gate (applies to ALL skills — the same trigger as the gate above):**
+   `node skills/sdd-conductor/sdd-conductor.mjs gate copy-voice <filePath>`
+   Customer-facing copy does not explain why it exists, narrate our diligence, pre-empt an
+   objection nobody raised, or name the artifact the reader is looking at. It also carries no
+   hype words and no filler openers. Say the thing and stop; less is more.
+   Sourcing is exempt and is the point — publisher and date in the sentence, link out.
+   Fix every violation before publishing. Ari never ships internal notes as customer copy.

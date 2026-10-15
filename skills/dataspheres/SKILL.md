@@ -37,7 +37,7 @@ Don't fire the next step automatically — ASK the user before chaining. HIL at 
 
 ### `get_datasphere` — Datasphere Info
 
-Gets full details for a single datasphere — name, URI, description, purpose, status, member count, banner/profile images. Use when the user wants to know details about a specific datasphere.
+Gets full details for a single datasphere — name, URI, description, purpose, `systemInstructions`, status, member count, banner/profile images. Use when the user wants to know details about a specific datasphere, and ALWAYS before producing content there: `systemInstructions` is the owner's brief for that datasphere (voice, canon, visual theme) and binds every page, deck, image, video and research run you make in it.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
