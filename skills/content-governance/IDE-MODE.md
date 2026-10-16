@@ -5,7 +5,13 @@ reasoning, the deck and the script in the IDE. Scraping, checks and the render r
 used only for what it alone can do: storing the deck, voicing the script and serving the video.** The platform's thinking
 models are never asked to plan, research or write.
 
-The agent config still governs the run. Fetch it first and work to it exactly as the platform pipeline would:
+The agent config still governs the run, and every agent inherits the **media-kit baseline** (the platform's
+`config/content-recipe-baseline.json`: the story arc in the owner's words - welcome, today we are diving into, insights first with
+context, narrative, climax, what it means and what to look for or do, close with the sign-up call to action - plus the transitions,
+the slide template per beat, the universal rules, the rubric, the kit template). An agent recipe carries only its domain delta
+(`extends: "media-kit-baseline"`); `check.mjs process <uri>` prints the baseline it runs on. The datasphere's own
+`systemInstructions` (voice, canon, visual theme; `get_datasphere`) sit between the two: read them before the first piece of content.
+Fetch the agent first and work to it exactly as the platform pipeline would:
 
 ```bash
 DATASPHERES_API_KEY=... node skills/content-governance/check.mjs process <datasphere-uri>   # the agent's recipe, stages, gates, rules
@@ -27,6 +33,29 @@ It refuses the run unless the rulebook is served, the destination datasphere exi
 this key's user is a member who can upload and publish there, and the AI hosts are seated with faces. A refusal is fixed
 first (add the user to the datasphere, seat the hosts); nothing starts until every line passes. This is what stops a kit
 from being refused after ten minutes of work because the pages it links cannot exist.
+
+## 0b. Find the topic: the Trends-first procedure (Go Viral agents)
+
+Owner 2026-10-16: "look at Google search trends, find the top search happening at this exact moment, substantiate it, scrape the
+pages it links to, scrape multimedia, search YouTube and X, TikToks; evaluate if this is the best topic - if NOT, go on to the next
+top Google trend." In order: (1) `trends-headlines.ts` (scripts/ide-driver) reads Trending now with each term's headlines and hero
+images through the platform scraper; (2) take the top trend, scrape its pages and media; (3) search YouTube, X, TikTok,
+Threads/Bluesky for it; (4) score it on the agent's scorecard (substance >= 4 and the weighted total >= 55 passes); (5) if it
+fails, the next trend; stop at the first pass (never past the top 10 without telling the owner). Record every trend tried and
+its scores on the tracker page. Then synthesize the pick into the baseline arc.
+
+### The older signal hunt (kept for agents that are not trend-driven)
+
+A Go Viral agent's recipe (`topicSelection`) never assumes a topic. Before research, score at least five candidates on the
+recipe's scorecard (substance x3, unknown x3, wild x2, social signal x2, search momentum x2, personal stake x2, identity-safe x1,
+runway x1; 0-5 each) and record every candidate's scores and the pick on the datasphere's tracker page. The signal sources are
+Google Trends ("Trending now" with each term's headline articles and hero images, and Explore for the candidate's terms), X,
+Reddit, TikTok and YouTube, Threads and Bluesky, and the primary documents behind each candidate (court dockets, FOIA releases,
+agency data, congressional letters, studies). A story under 3 on substance is dropped; a story everyone already knows scores 0
+on unknown and loses (owner 2026-10-16: a big, known story "is not viral content"). Headline pages are read with the platform's
+own scraper (`urlScraperService.fetchHtml` + `extractPageAssets`: robots.txt honoured, a refusing site is skipped, never spoofed).
+
+The committed helpers live in the platform repo at `scripts/ide-driver/` (README there); set `WORK` to the edition's workspace.
 
 ## 1. Research and verify (IDE)
 
@@ -52,6 +81,9 @@ Rules that every deck must pass:
 - **GOV-035, rich media.** At least 40% of slides carry a real picture, and no more than 3 text-only slides run in a row.
 - **GOV-036, numbers in context.** A table of numbers becomes a chart (a bar or line chart, not a table). A lone big number is
   set against a yardstick, such as the #1 entry or the market. Explain benchmarks in plain words.
+- **GOV-044, money reads as money.** A chart of money or percentages carries its unit on every value ($1,100, 4.3%): set
+  `chart.valueFormat` ('currency' | 'percent'), or let the layout infer it from a $ / dollars / % cue in the axis labels or title.
+  A money comparison is a horizontal bar chart sorted largest first with the whole named, never a bare number on a bar.
 - **GOV-038, no visual cuts anything off.** Every chart label, value and title shows in full. Bars whose names don't fit
   under them are drawn horizontally.
 - No slide or line explains how the stories were ranked; present the stories and say why each matters.
@@ -61,7 +93,17 @@ Rules that every deck must pass:
 Check every number and named fact on every slide, and every name in the script, against the scraped text of the source
 it came from. A plain string match is enough; no model is needed. Any fact confirmed only by a secondary summary is listed
 for the owner, never silently passed. Then screenshot every slide from the public reader view, look at each chart, and
-confirm nothing is cut off. Send the owner the deck link and the result, then wait for the deck approval.
+confirm nothing is cut off. Send the owner the deck link and the result, then wait for the deck approval. Review links are the dev tunnel
+(`https://dev.dataspheres.ai/...`), never localhost; the video gets a watch page there too. Published links are prod only.
+
+## 4b. Outline the tone (GOV-046, every run)
+
+Before the deck, decide the vibe the topic calls for and write it down: `classifyTone` proposes one of somber, serious, neutral,
+upbeat, playful, urgent from the topic's words (a shooting is somber, an investigation serious, a launch upbeat); the agent
+config or the owner may override. Put `goal.tone` and a two-line `goal.vibe` in the IDE script; attach-script records them on
+the run's goal and refuses the script when a line breaks the tone (an exclamation or a hype word in a somber or serious script).
+The personas keep their names but drop their humour where the tone says so; the renderer plays no bed for somber or urgent runs
+and cuts slowly; captions and the post pack follow the same language note.
 
 ## 5. Write the script (IDE)
 
@@ -95,7 +137,7 @@ The video's rhythm comes from metadata on each spoken turn, never from a timed f
 - `offsetMs`: how the line follows the one before. A speaker change is 100 ms; the same voice going on is 250 ms. A slide
   change keeps the wipe's 800 ms.
 
-The IDE helper `author-cues.ts` writes both from the slide's own elements and the line's words, through the deck validator.
+The IDE helper `author-cues.ts` (scripts/ide-driver) writes both from the slide's own elements and the line's words, through the deck validator.
 Without them the planner fills gaps with pushes and phrases on a timer, which is what read as "stale" and "weird zoom".
 
 Rules the shared renderer enforces on every path (rulebook GOV-039 and GOV-040): a picture from another slide cuts in only
@@ -148,7 +190,10 @@ When the owner approves the video, ask one question: **"Finish the media kit?"**
      the page's main job;
    - the course call to action, last.
    Every video on the page renders the same way: thumbnail, play button, load on click. Every image renders. Nothing links
-   to dev or localhost.
+   to dev or localhost. **GOV-043, captions once:** a video whose captions are burned in (the kit's 16:9 and every cut) is
+   embedded with `data-captions-burned-in` and no caption track; write every video figure with the platform's own
+   `videoEmbedFigure` (narrated-publish.service), never a hand-rolled figure - a hand-rolled one put a VTT track over burned
+   captions and the owner saw two subtitle layers.
 4. **Check it before anyone sees it** (GOV-041, the template rule; `GET /api/v1/content-governance?stage=kit` serves its
    `params.sections`, the headings in order): `node skills/content-governance/check.mjs kit-page <uri> <slug> <deckPageId>`.
    It fails on a missing or misordered section, a video without a poster, a panel that is not the built kit's, or a dev link.

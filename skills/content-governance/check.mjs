@@ -84,6 +84,7 @@ async function main() {
       console.log(`\n${d.label} (${d.id})${d.cron ? ` - ${d.enabled ? 'scheduled' : 'schedule paused'} ${d.cron} ${d.timezone ?? ''}` : ''}${d.config?.render === 'hold' ? ' - stops at Ready to render' : ''}`);
       if (!p) { console.log('  no recipe: the platform research-to-deck path, the datasphere it lives in'); continue; }
       console.log(`  recipe ${p.recipeId} v${p.recipeVersion}.${p.recipeHash} - governance v${p.governance.version}.${p.governance.hash}`);
+      if (p.baseline) console.log(`  inherits ${p.baseline.id} v${p.baseline.version}.${p.baseline.hash} (the media-kit baseline every agent shares)`);
       console.log(`  publish in: ${p.destination ? `${p.destination.name} (${p.destination.datasphereUri})` : 'this datasphere'}`);
       p.stages.forEach((st, i) => console.log(`  ${String(i + 1).padStart(2)}. ${st.label}${st.gate ? `  <- STOP: ${st.gateLabel} (the owner decides)` : ''}`));
       console.log(`  rules: ${p.rules.join(', ')}`);
@@ -158,9 +159,13 @@ async function main() {
     else {
       const owner = (panels[0].match(/data-deck-page-id="([^"]*)"/) || [])[1];
       if (owner !== deckPageId) failures.push('the download/copy panel belongs to a different deck');
-      if (!kit) failures.push('the kit has not been built');
-      else { let saved = null; try { saved = JSON.parse(decodeURIComponent((panels[0].match(/data-kit="([^"]*)"/) || [])[1] || '')); } catch { saved = null; }
-        if (!saved || saved.sourceJobId !== kit.sourceJobId || saved.builtAt !== kit.builtAt) failures.push('the download/copy panel does not match the built kit'); }
+      // A kit built in IDE mode (the local worker) is not on the public base's job row; the panel carries it. Accept the panel's own
+      // kit when the deck has no built kit there, and say so.
+      let built = kit; let fromPanel = false;
+      if (!built) { try { built = JSON.parse(decodeURIComponent((panels[0].match(/data-kit="([^"]*)"/) || [])[1] || '')); fromPanel = !!built; } catch { built = null; } }
+      if (!built) failures.push('the kit has not been built');
+      else { if (fromPanel) console.log('kit: carried by the panel (built in IDE mode; no kit job on the public base)'); let saved = null; try { saved = JSON.parse(decodeURIComponent((panels[0].match(/data-kit="([^"]*)"/) || [])[1] || '')); } catch { saved = null; }
+        if (!saved || saved.sourceJobId !== built.sourceJobId || saved.builtAt !== built.builtAt) failures.push('the download/copy panel does not match the built kit'); }
     }
     if (html.includes('localhost') || html.includes('dev.dataspheres')) failures.push('the page links to dev or localhost');
     const unique = [...new Set(failures)];

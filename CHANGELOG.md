@@ -5,6 +5,12 @@ Format: [Semantic Versioning](https://semver.org). Breaking changes are marked *
 
 ---
 
+## 2026-10-16 - rulebook v19: GOV-043 captions once, GOV-044 money reads as money; the signal hunt (IDE-MODE 0b)
+
+- GOV-043: burned-caption videos never get a second caption track; `check.mjs kit-page` fails a figure with both layers.
+- GOV-044: money/percent charts carry their unit on every value (`chart.valueFormat`, inferred from the labels); the deck gate refuses a bare money chart.
+- IDE-MODE 0b: Go Viral agents pick the topic on the recipe's scorecard from Google Trends + X + Reddit + TikTok/YouTube + Threads/Bluesky + primary documents, recorded on the tracker page; review links are the dev tunnel, never localhost.
+
 ## [Unreleased]
 
 ### Added
