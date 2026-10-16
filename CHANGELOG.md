@@ -5,6 +5,11 @@ Format: [Semantic Versioning](https://semver.org). Breaking changes are marked *
 
 ---
 
+## 2026-10-16 - rulebook v24: renders made elsewhere register on the public base (IDE-MODE 6b)
+
+- GOV-041: a locally rendered video is registered with `POST .../presentations/:pageId/renders/import` (files already in the media library) before the kit page; the deck's finished render then carries the kit + post pack, so the panel's post buttons work.
+- `check.mjs kit-page` reads `GET .../publish/youtube` and refuses a kit page whose deck reports no post pack.
+
 ## 2026-10-16 - rulebook v19: GOV-043 captions once, GOV-044 money reads as money; the signal hunt (IDE-MODE 0b)
 
 - GOV-043: burned-caption videos never get a second caption track; `check.mjs kit-page` fails a figure with both layers.

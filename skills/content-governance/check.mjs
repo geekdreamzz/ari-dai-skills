@@ -168,6 +168,13 @@ async function main() {
         if (!saved || saved.sourceJobId !== built.sourceJobId || saved.builtAt !== built.builtAt) failures.push('the download/copy panel does not match the built kit'); }
     }
     if (html.includes('localhost') || html.includes('dev.dataspheres')) failures.push('the page links to dev or localhost');
+    // The post buttons read the deck's finished render on the public base. A render made elsewhere must be registered with
+    // POST .../presentations/:pageId/renders/import (owner 2026-10-16: "upload it into the media library and mark it processed and ready").
+    const yr = await fetch(`${BASE}/api/v1/dataspheres/${uri}/presentations/${deckPageId}/publish/youtube`, auth);
+    const yt = yr.ok ? ((await yr.json().catch(() => ({}))).data || {}) : null;
+    if (!yt) failures.push(`the post-button status is unavailable (${yr.status})`);
+    else if (!yt.postPackReady) failures.push('the deck has no finished render with a post pack on the public base - import the render (POST .../renders/import) before the kit page');
+    else console.log(`post buttons: render ${yt.sourceJobId}; YouTube ${yt.connected ? 'connected' : 'not connected (Connect once from the kit page)'}; ${yt.hasShort ? 'video + Short' : 'video only'}`);
     const unique = [...new Set(failures)];
     for (const f of unique) console.log(`  - ${f}`);
     console.log(unique.length ? `GOV-041: refuse - fix the ${unique.length} issue(s) above, then run again` : `GOV-041: pass - the narrative follows the kit template (${sections.join(' > ')})`);

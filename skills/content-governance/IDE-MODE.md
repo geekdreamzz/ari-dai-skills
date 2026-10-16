@@ -169,6 +169,15 @@ Rehearse first with `--dry-run` (lists what would move) or `--slug-suffix -rehea
 Only after the deck, watch and episode pages open on the public base does the kit build (section 7); the narrative page is
 published the same way afterwards.
 
+**Register the render on the public base.** The kit panel's post buttons (YouTube video + Short, and the others) read the
+deck's latest FINISHED render there; a video made locally has none until you import it. After the kit files are uploaded to
+the media library (processed and ready), `POST /api/v1/dataspheres/:uri/presentations/:pageId/renders/import` with the 16:9
+(`video: { url, durationSec, bytes, captionLayout, posterUrl }`), the audio, `vttUrl`/`srtUrl`, and `kit: { items, carousel,
+postPack }` where every file item is a media-library URL. It writes the SUCCEEDED deck-render job with that kit; re-running
+replaces it. `scripts/ide-driver/kit-local.ts` does this itself after the GOV-041 check, and `check.mjs kit-page` refuses a
+kit page whose deck reports no post pack (`GET .../publish/youtube` -> `postPackReady`). Owner 2026-10-16: "if you gen
+everything locally just upload it into the media library and mark it processed and ready."
+
 ## 7. Finish the media kit (after the video approval)
 
 When the owner approves the video, ask one question: **"Finish the media kit?"** Do nothing until they say yes. Then:
