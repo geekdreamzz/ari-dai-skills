@@ -40,9 +40,18 @@ DATASPHERES_API_KEY=... node skills/content-governance/check.mjs hosts ai-news  
 4. **Follow `process.stages` in order and stop at every `process.gates` entry** for the owner's decision. An agent configured `render: "hold"` prepares everything and parks at **Ready to render** (content checked and frozen, no paid voice) until the owner says render (`POST .../runs/:id/resume`).
 5. **Costs are the person's capacity.** Every amount the platform shows a person is in their own capacity dollars; budgets a person states go in `budgetCapacityUsd`. Never quote or derive the platform's own costs.
 
-## IDE mode
+## IDE mode is the default
 
-When the owner asks for IDE mode, or the platform's own models aren't needed, follow [IDE-MODE.md](IDE-MODE.md). You do the research, the reasoning, the deck and the script in the IDE. Scraping, checks and the render run locally. The platform only stores the deck and voices the script. The agent config and the rulebook govern the run exactly as they do on the platform.
+**You do the research, the reasoning, the picture judging, the deck and its checks, and the script here, in the IDE.** The only paid platform step is the ElevenLabs voicing. Follow [IDE-MODE.md](IDE-MODE.md). Scraping,
+checks and the render run on the local machine; the platform only stores the deck, voices the script, renders and serves the video.
+Never start a platform research run, a platform deck writer or a platform script writer for a kit unless the owner asks for the
+platform by name in that conversation. Owner, 2026-10-16, after a day of platform research drained his capacity: "why isnt it
+running the IDE and using claude to do the research and not my exa system".
+
+The agent carries the choice: `config.executor` is `ide` (the platform refuses to think for it and parks the run before its first
+research, plan, deck, check or script stage) or `platform` (the platform's own models do the work, paid from the owner's capacity).
+Create the owner's agents with `executor: "ide"`; a datasphere listed in the platform's `CONTENT_PIPELINE_IDE_DATASPHERES` gets it
+by default. When you find an agent set to `platform` and the owner has not asked for the platform, say so before starting anything.
 
 ## Before you show the owner anything, and before anything is published
 

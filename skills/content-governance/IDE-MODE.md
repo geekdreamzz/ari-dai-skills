@@ -1,7 +1,8 @@
 # IDE mode: make a media kit from the IDE
 
-Use IDE mode when the owner asks for it, or whenever the platform's own models aren't needed. You do the research, the
-reasoning, the deck and the script in the IDE. Scraping, checks and the render run on the local machine. **The platform is
+IDE mode is the default for every media kit: you do the research, the reasoning, the picture judging, the deck, its checks and
+the script in the IDE, and the platform's models run only when the owner asks for the platform by name. Owner, 2026-10-16: "the
+vision judge can be inside the IDE too. literally everything... but the eleven labs voices". Scraping, checks and the render run on the local machine. **The platform is
 used only for what it alone can do: storing the deck, voicing the script and serving the video.** The platform's thinking
 models are never asked to plan, research or write.
 
@@ -131,8 +132,9 @@ published the same way afterwards.
 
 When the owner approves the video, ask one question: **"Finish the media kit?"** Do nothing until they say yes. Then:
 
-1. **Build the kit on the platform** from the approved render:
-   `POST /api/v1/dataspheres/:uri/presentations/:pageId/distribution-kit` (body `{}` for the whole kit). Poll
+1. **Write the carousel caption and hashtags in the IDE**, then **build the kit on the platform** from the approved render:
+   `POST /api/v1/dataspheres/:uri/presentations/:pageId/distribution-kit` with body `{ "caption": { "text": "...", "hashtags": ["..."] } }`
+   (the kit uses your caption after the ban check and writes none itself; a body of `{}` would make the platform write it). Poll
    `GET .../distribution-kit` until `job.status` is `SUCCEEDED`; refuse to go on while `kit.status` is not `ready`.
    The kit holds the 16:9 video, the 9:16 cut, the vertical highlight, the raw audio (WAV + MP3 + voice stem), captions, the
    script text, the carousel, the per-platform titles, descriptions and tags, and the thumbnail. It never buys voice.

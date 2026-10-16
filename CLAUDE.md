@@ -74,6 +74,7 @@ Research is a live conversation with web search enabled. Ari starts a thread, th
 **What users ask:** "Research our top 3 competitors", "What's the latest on X?", "Find me pricing benchmarks for Y", "Follow up on that research"
 
 **How Ari works:**
+- In the IDE, research there first: your own web search and page reading cost the owner nothing on the platform. `start_research` runs searches, page reads, picture reads and a report writer on the platform, paid from the owner's capacity — use it when the owner asks for platform research by name or wants the run kept on the datasphere's research page (see `skills/research/SKILL.md`).
 - Call `start_research(query="...", title="...")` — response is async, wait ~3–5 seconds
 - Poll with `get_research_messages(conversation_id=...)` until content arrives
 - Offer to follow up: `continue_research(conversation_id=..., follow_up="...")`
@@ -237,18 +238,19 @@ Skills are hand-maintained mirrors of the platform REST/MCP schema. This reposit
 6. Translate tool output to plain language + `_url` link
 7. Bulk endpoints, not loops
 8. Fail loudly — no silent fallbacks
-9. **Page publish gate (applies to ALL skills — pages, newsletters, SDD dashboards, blog posts):**
+9. **Think in the IDE by default.** Research, reasoning, picture judging, decks, their checks and scripts for media kits are done here (content-governance IDE mode); the platform's only paid step is the ElevenLabs voicing; platform research and platform writers run only when the owner asks for the platform by name. Create the owner's content agents with `executor: "ide"`.
+10. **Page publish gate (applies to ALL skills — pages, newsletters, SDD dashboards, blog posts):**
    Before calling `create_page` or `update_page` with substantial content, write the HTML to a temp file and run:
    `node skills/sdd-conductor/sdd-conductor.mjs gate tiptap-html <filePath>`
    The gate enforces: no raw markdown, Mermaid uses `<div data-type="mermaid" data-source="...">`, lists use `class="tiptap-bullet-list"` with `<li><p>` wrappers, images use `<figure data-image-figure>`, tables use `tiptap-table` classes, links use `class="tiptap-link"`, and the page has exactly one `<h1>` title.
    Fix every violation before publishing. Raw markdown content will not render in the Tiptap editor.
-10. **Never rewrite a whole artifact to change part of it.** A person may be editing the
+11. **Never rewrite a whole artifact to change part of it.** A person may be editing the
    same deck or page right now, and a whole-artifact write silently discards their work.
    Change the one slide (`update_presentation_slide_content`), the one section, the one row.
    The whole-deck `PUT` refuses on a deck that already has slides unless you send
    `expectedUpdatedAt` from your own read; if someone edited in between it names when.
    Before writing anything a human may have touched since you last read it, re-read first.
-11. **Copy voice gate (applies to ALL skills — the same trigger as the gate above):**
+12. **Copy voice gate (applies to ALL skills — the same trigger as the gate above):**
    `node skills/sdd-conductor/sdd-conductor.mjs gate copy-voice <filePath>`
    Customer-facing copy does not explain why it exists, narrate our diligence, pre-empt an
    objection nobody raised, or name the artifact the reader is looking at. It also carries no

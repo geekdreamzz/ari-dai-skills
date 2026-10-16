@@ -6,6 +6,15 @@ argument-hint: "[action] [options]"
 
 # research — AI Web Research
 
+## Research in the IDE first
+
+Every `start_research` runs on the platform: its web searches, page reads, picture reads and the report writer are all paid from
+the owner's capacity, and one deep research can make dozens of searches. **Default to researching in the IDE**: use your own
+web search and page reading, write the findings with sources, and save them to the datasphere as a page when the owner wants
+them kept. Start a platform research run only when the owner asks for platform research by name, when they want the run on the
+datasphere's research page with its staged media, or when a scheduled research is theirs to configure. Say which you are doing.
+Owner, 2026-10-16: "why isnt it running the IDE and using claude to do the research and not my exa system".
+
 Research is powered by the Dataspheres AI **assistant conversations** API with `webSearch: true`. There is no dedicated research endpoint — each research session is a conversation with web search enabled. The AI searches the web, synthesizes findings, and returns a structured response.
 
 ## Core Workflow
@@ -80,7 +89,9 @@ Research responses include inline citation badges `[N]` that link every factual 
 
 ## Cost Note
 
-Each `start_research` call triggers a web search + LLM completion. Web searches consume capacity tokens. Confirm with the user before running bulk research loops.
+Each `start_research` call runs web searches, page reads, picture reads and an LLM report on the platform, all paid from the owner's
+capacity; a deep research is many searches, not one. Never run research loops or fan-outs on the platform without the owner's go for
+that batch, and prefer the IDE (above).
 
 ## Error Patterns
 
