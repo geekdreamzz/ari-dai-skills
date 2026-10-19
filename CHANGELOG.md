@@ -5,6 +5,10 @@ Format: [Semantic Versioning](https://semver.org). Breaking changes are marked *
 
 ---
 
+## 2026-10-19 - rulebook v25: GOV-047 the picture matches the line
+
+- A named person's picture is shown only over a line that names them; captions lead with the name and role (or `images[].person`); the render worker refuses a wrong face. IDE-MODE 6 explains the cue table.
+
 ## 2026-10-16 - rulebook v24: renders made elsewhere register on the public base (IDE-MODE 6b)
 
 - GOV-041: a locally rendered video is registered with `POST .../presentations/:pageId/renders/import` (files already in the media library) before the kit page; the deck's finished render then carries the kit + post pack, so the panel's post buttons work.

@@ -148,6 +148,12 @@ chart, and no camera push cuts into a picture slide. The news briefing has no st
 
 ## 6. Voice and render
 
+**GOV-047, the picture matches the line (owner 2026-10-19: "wrong headshot").** Every authored picture of a person must say who it
+shows: lead the caption with the name and role (`Mike Evans, SF WR, $9,600: ...`, `TOP: Brock Purdy, $16,200 Captain ...`) or set
+`images[].person`. The planner binds that face to the lines that name them and never cuts a named face over another line; the render
+worker refuses a timeline with a wrong face (the job log lists them). `author-cues.ts` cues the named person's picture first; read its
+cue table before you render - a line that names nobody pictured must cue the slide, a chart or a bullet, never `image 0`.
+
 Queue the render with `POST /api/v1/dataspheres/:uri/presentations/:pageId/render`. **Do not call `narrated-video` here.**
 It would re-run the picture pass on chart and text slides, and it can write a new script. The platform voices the turns;
 the local render worker (GPU) records and encodes the video. Watch the job with `GET .../render/:jobId`. Send the owner the
