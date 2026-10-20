@@ -87,6 +87,18 @@ page once more (`check.mjs kit-page`). Then `run.mjs post <uri> <publicDeckId> p
 `run.mjs ledger add "<topic key>" '{"status":"posted","kitUrl":"...","youtube":"...","aliases":[...]}'` so the next hunt skips it, and add the
 edition's row to the datasphere's tracker page (scorecard, posted time, reads due at 24h/72h/7d). Append the run to the session log.
 
+## 3c. Explain it to a stranger (GOV-049, GOV-050, owner 2026-10-20)
+- **Topic verdict** quotes the trend's rank, search volume, read time and who it affects. Lead with the angle that is actually
+  trending and touches the most viewers. Social Security trended as "trust fund depletion", which touches every worker, not as
+  the yearly raise, which only touches people already collecting.
+- **Line 2 defines the subject** in plain words ("Social Security is the monthly check for retirees, disabled workers and their
+  families"), then the script says plainly what changed and who it affects.
+- **No second person.** Never "your check" or "what can you do"; viewers are any age and situation. Say who it is about. Only the
+  sign-up line may address the viewer.
+- **Three parts, plain labels**: The news, Why it matters ("Here's why it matters."), What to do ("What can people do?"). Every
+  beat carries `section: what | so-what | now-what`; plates show the plain label. No unexplained term (COLA, Part B, trust fund);
+  at most eight spoken figures. The renderer refuses on any miss.
+
 ## What never happens
 - No verdict written without looking. No publish while a required verdict is missing or failed. No vendor or model names in copy.
 - No dev or localhost link in anything published. No sensitive-class story auto-published. No post from any account but Faceless.
