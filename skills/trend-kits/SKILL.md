@@ -87,6 +87,12 @@ page once more (`check.mjs kit-page`). Then `run.mjs post <uri> <publicDeckId> p
 `run.mjs ledger add "<topic key>" '{"status":"posted","kitUrl":"...","youtube":"...","aliases":[...]}'` so the next hunt skips it, and add the
 edition's row to the datasphere's tracker page (scorecard, posted time, reads due at 24h/72h/7d). Append the run to the session log.
 
+**Everything is built before the post (owner 2026-10-20: "all of this should be done before you post moving forward").**
+While the owner reviews the Short, finish the rest: render + video verdict, deck/pages on prod, the kit job, the approved-Short
+swap into the kit, the post pack copy (GOV-049), the kit page with every platform's copy-paste and downloads. The owner's
+"post it" then triggers ONLY `run.mjs post` and the ledger, and the reply carries every link at once: kit page, YouTube
+video, YouTube Short. If the owner changes the Short, re-swap it and re-run the kit phase before posting.
+
 ## 3c. Explain it to a stranger (GOV-049, GOV-050, owner 2026-10-20)
 - **Topic verdict** quotes the trend's rank, search volume, read time and who it affects. Lead with the angle that is actually
   trending and touches the most viewers. Social Security trended as "trust fund depletion", which touches every worker, not as
