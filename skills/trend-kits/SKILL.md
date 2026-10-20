@@ -46,12 +46,17 @@ Routing before any research:
 Write the numbers against a yardstick (GOV-036) and the other side's strongest case (baseline `other-side`). If any of the four is missing,
 `run.mjs verdict substantiated fail <what is missing>` and go back to the hunt.
 
+**The bigger story (GOV-056, owner 2026-10-20).** The trending term is the doorway. Before authoring, write facts.json
+biggerStory {rootCause: [the chain], affects, gains, pays, next}; the substantiated verdict needs a "bigger story:" line. Chevron
+trended on analyst targets; the edition was the Iran war -> Hormuz ->  oil -> \.33 gas and record diesel -> Chevron's profit up almost 5x.
+
 ## 3. Author
 - `$WORK/create-body.json`: the recipe's sections on the baseline arc (welcome -> dive-in -> insights first -> narrative -> climax -> meaning
   -> close). Picture captions lead with name + role. Charts carry units. No slide without a picture or a data visual beyond the
   GOV-035 share. `run.mjs deck create-body.json <uri>` -> deck id; `run.mjs gates <id>` must print four passes; `run.mjs shots <uri> <slug> <n>`.
 - **Look at every screenshot** (`$WORK/shots/r*.png`). `run.mjs verdict slides pass <what you checked>` only when nothing is truncated,
   every picture renders, every table reads, and the welcome/close slides are right.
+- The LAST welcome turn becomes the post-pack lede: write it as the story in one sentence, never a line about the search.
 - `$WORK/script.json`: the format's cast from the datasphere's hosts, welcome first with the show name and the goal, tone per GOV-046
   (set `goal.tone`), one bold call, the sign-up close. `run.mjs attach <id> script.json` (cast, identity, tone and welcome checks, cues).
   Read the cue table it prints: a line that names a pictured person cues that picture; a line naming nobody pictured never cues a face.
