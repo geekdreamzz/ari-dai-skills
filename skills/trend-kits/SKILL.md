@@ -93,6 +93,19 @@ swap into the kit, the post pack copy (GOV-049), the kit page with every platfor
 "post it" then triggers ONLY `run.mjs post` and the ledger, and the reply carries every link at once: kit page, YouTube
 video, YouTube Short. If the owner changes the Short, re-swap it and re-run the kit phase before posting.
 
+## 3d. Every format on its own terms (GOV-052..055, owner 2026-10-20)
+"long form video, reel, and carousel are the main things that have different strategies and requirements from content, story
+arc, and presentation". Each is substantiated and gets its own verdict; `run.mjs post` refuses until topic, substantiated,
+pictures, slides, video, short, carousel and kit (plus embeds when `$WORK/embeds.json` exists) all passed.
+- **Long video**: the render worker refuses a wrong face (GOV-047) and a picture from another slide over a line that does not name
+  it (GOV-052). attach-script refuses second person outside the sign-up line.
+- **Short / Reel**: GOV-048/049/051 (portrait-short.ts) plus the owner's verdict.
+- **Carousel**: write `$WORK/carousel.json` (src/shared/carousel-post.ts), `npx tsx scripts/ide-driver/carousel.ts <json> --kit
+  <kitStem>`; it refuses on any GOV-053 issue or text that spills; read `$WORK/carousel/contact.jpg` card by card; verdict carousel.
+- **Post copy**: kit-local refuses second person in titles and ledes and a Short title about another story.
+- **Embedded posts (GOV-055)**: substantiate the account (who, history, reach, stake) AND the claim; show the post, an account
+  card and the evidence, and say plainly "credible because" or "worth noting, be skeptical because". `verdict embeds` must say it.
+
 ## 3c. Explain it to a stranger (GOV-049, GOV-050, owner 2026-10-20)
 - **Topic verdict** quotes the trend's rank, search volume, read time and who it affects. Lead with the angle that is actually
   trending and touches the most viewers. Social Security trended as "trust fund depletion", which touches every worker, not as
