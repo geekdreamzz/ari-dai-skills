@@ -48,7 +48,7 @@ Write the numbers against a yardstick (GOV-036) and the other side's strongest c
 
 **The bigger story (GOV-056, owner 2026-10-20).** The trending term is the doorway. Before authoring, write facts.json
 biggerStory {rootCause: [the chain], affects, gains, pays, next}; the substantiated verdict needs a "bigger story:" line. Chevron
-trended on analyst targets; the edition was the Iran war -> Hormuz ->  oil -> \.33 gas and record diesel -> Chevron's profit up almost 5x.
+trended on analyst targets; the edition was the Iran war -> Hormuz -> $110 oil -> $4.33 gas and record diesel -> Chevron's profit up almost 5x.
 
 ## 3. Author
 - `$WORK/create-body.json`: the recipe's sections on the baseline arc (welcome -> dive-in -> insights first -> narrative -> climax -> meaning
