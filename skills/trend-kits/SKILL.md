@@ -65,6 +65,12 @@ owner's verdict on the short is the substance litmus test; `run.mjs verdict shor
 `run.mjs require short` before the kit. No two-speaker footer in portrait; one active-speaker chip; captions in the middle; no
 word may break.
 
+**The flow (research 2026-10-20: hook in 2-3 s, why-you right after, a new visual every few seconds, payoff in the back half, an
+action, a last line that returns to the first; ~35-55 s).** Write the short's OWN script (`$WORK/short-script.json`, 7-8 lines) and
+voice it with `short-voice.ts <script> <cast.json>`; then `portrait-short.ts --manifest ... --voice ... <beats.json>`. The guardrails
+the renderer enforces: hook first word by 0.5 s, <= 10 words, no greeting; stake by 8 s; no beat over 12 s; payoff starts at 40-78% of
+the runtime; the loop line <= 7 s and shares a word or figure with the hook; the end card one spoken line; sentences <= 18 words.
+
 ## 4. Render and look
 `run.mjs render <uri> <id>` -> job id; `run.mjs jobstat <jobId>` until SUCCEEDED (the worker refuses a timeline with a wrong face:
 GOV-047 picture + subject audits in its log). Then pull frames (`ffmpeg -ss <t> -i <mp4> -frames:v 1`) at the welcome, each picture
