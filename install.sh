@@ -18,6 +18,9 @@
 #   ./install.sh all-dai-sdd --project ~/Projects/my-app --ide cursor
 #   ./install.sh --all --project ~/Projects/my-app
 #   ./install.sh all-dai-sdd --copy               (copy instead of symlink)
+#
+# --all also prunes dangling links from skills that were renamed or deleted
+# upstream, so `./update.sh` leaves no broken symlinks behind.
 
 set -euo pipefail
 
@@ -71,6 +74,41 @@ target_path() {
     copilot)  echo "$PROJECT_DIR/.github/instructions" ;;
     *)        echo "Unknown IDE: $IDE" >&2; exit 1 ;;
   esac
+}
+
+# Directory a full install writes into, per IDE
+install_dir() {
+  case "$IDE" in
+    claude)   echo "$PROJECT_DIR/.claude/skills" ;;
+    cursor)   echo "$PROJECT_DIR/.cursor/rules" ;;
+    copilot)  echo "$PROJECT_DIR/.github/instructions" ;;
+    *)        echo "Unknown IDE: $IDE" >&2; exit 1 ;;
+  esac
+}
+
+# Remove links left dangling by skills that were renamed or deleted upstream.
+# Only broken symlinks that point back into a dai-skills tree are touched — a
+# working link, a real file, or a link to anything else is left alone.
+prune_stale_links() {
+  local dir="$1"
+  local entry target removed=0
+
+  [[ -d "$dir" ]] || return 0
+
+  while IFS= read -r entry; do
+    [[ -e "$entry" ]] && continue          # link still resolves — keep it
+    target="$(readlink "$entry")" || continue
+    case "$target" in
+      "$SKILLS_DIR"/*|*/ari-dai-skills/skills/*|*/dai-skills/skills/*) ;;
+      *) continue ;;                        # not ours — leave it for its owner
+    esac
+    rm -f "$entry"
+    echo "✗ removed stale link: $(basename "$entry")"
+    (( ++removed )) || true
+  done < <(find "$dir" -maxdepth 1 -type l)
+
+  [[ "$removed" -gt 0 ]] && echo ""
+  return 0
 }
 
 # Try symlink; fall back to copy on failure (Windows without Dev Mode)
@@ -160,6 +198,7 @@ if [[ "$INSTALL_ALL" == true ]]; then
     fi
   done
   echo ""
+  prune_stale_links "$(install_dir)"
   echo "Installed $count skill(s) into $PROJECT_DIR (ide: $IDE)"
 else
   install_skill "$SKILL"
